@@ -80,6 +80,13 @@ Or `domino create-snapshot <owner>/<project>/<dataset>` from a machine with the 
 the snapshot's `status` to become `active` before editing files. Tag the ones you will refer to
 (`baseline`, `pre-cleanup`) and pin Jobs to a snapshot when a run must be reproducible.
 
+A snapshot is not mounted in the execution that took it; executions started after it became
+`active` mount it, and [API.md](./API.md) shows how to read it immediately through the internal
+file route or `DatasetClient`.
+
+Large uploads from a laptop: `domino upload-dataset` reads `DOMINO_UPLOAD_CHUNK_BYTES` (default
+3 MB) and `DOMINO_UPLOAD_THREADS` (default 8) to tune chunking and parallelism.
+
 ## Reading data larger than memory
 
 Chunked:
