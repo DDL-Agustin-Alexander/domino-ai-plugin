@@ -149,7 +149,7 @@ no create route in the Public API. See [domino-workspaces](../domino-workspaces/
 |------|---------|
 | 200 | Success. Job start, project create and most creates return 200 with the object. |
 | 201 | Created (taxonomy creates). |
-| 204 | No content (taxonomy deletes, some remotefs RPCs). |
+| 204 | No content (taxonomy deletes; remotefs `delete-volume`, `delete-snapshot` and tag delete). The remotefs attach, detach, mark, restore-volume and restore-snapshot RPCs are specified as 204 but returned 200 with a record live. |
 | 400, 401, 403, 404, 409, 500 | See [ERRORS.md](../domino-api-intro/ERRORS.md). |
 
 ### Error body

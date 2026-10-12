@@ -184,7 +184,7 @@ r = requests.post(f"{base}/api/registeredmodels/v2", headers=headers, json={
     "discoverable": False,
     "modelSource": {
         "sourceType": "mlflow",
-        "mlflowSource": {"experimentRunId": RUN_ID, "artifactPath": "model"},
+        "mlflowSource": {"experimentRunId": RUN_ID, "loggedModelId": LOGGED_MODEL_ID},   # "m-..." from mlflow 3; see below
     },
 })
 r.raise_for_status()
@@ -199,7 +199,7 @@ requests.get(f"{base}/api/registeredmodels/v1/churn-gbm/versions/{version}/model
 
 Verified on Domino Cloud 6.4 (2026-10-12): `PATCH` with `description` and `discoverable` returns 200 and the description persists, but `GET /api/registeredmodels/v1/{modelName}` returns neither `discoverable` nor aliases; its keys are `name`, `description`, `latestVersion`, `project`, `tags`, `ownerUsername`, `createdAt`, `updatedAt`, `requestingUserAccess`. Aliases live in MLflow: read them with `GET /api/2.0/mlflow/registered-models/get?name=...` (`aliases`) on the deployment URL with the same bearer token, or with the MLflow client (see `domino-experiment-tracking`).
 
-`mlflowSource` takes `experimentRunId` (required) plus `artifactPath` or `loggedModelId`; `huggingFaceSource` takes `modelId` (required), `modelRevision`, `huggingFaceToken`. `sourceType` is `mlflow` or `huggingface` and names which of the two you filled in. List with `GET /api/registeredmodels/v2?projectId=...&maxResults=25`; the response's `metadata.nextPageToken` goes into the next request's `pageToken` query parameter until it is absent. `POST /api/registeredmodels/v1/{modelName}/versions` (`description`, `experimentRunId`, `artifact`) still exists but is deprecated since 6.2.1.
+`mlflowSource` takes `experimentRunId` (required) plus `artifactPath` or `loggedModelId`. With an MLflow 3 client, `log_model` stores the model as a LoggedModel (`m-<id>`, `mlflow.last_logged_model()` or the `model_id` on the returned model info) rather than as a run artifact, so pass `loggedModelId`; verified on an internal Domino test cluster (6.4.0, MLflow 3.3.2), `artifactPath: "model"` also returned 200 but the version pointed at a nonexistent run artifact and `mlflow.pyfunc.load_model` failed, while the `loggedModelId` version loaded. Use `artifactPath` only for models logged as run artifacts by MLflow 2 clients. `huggingFaceSource` takes `modelId` (required), `modelRevision`, `huggingFaceToken`. `sourceType` is `mlflow` or `huggingface` and names which of the two you filled in. List with `GET /api/registeredmodels/v2?projectId=...&maxResults=25`; the response's `metadata.nextPageToken` goes into the next request's `pageToken` query parameter until it is absent. `POST /api/registeredmodels/v1/{modelName}/versions` (`description`, `experimentRunId`, `artifact`) still exists but is deprecated since 6.2.1.
 
 ## python-domino equivalents
 

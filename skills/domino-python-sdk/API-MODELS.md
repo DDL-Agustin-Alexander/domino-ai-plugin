@@ -125,7 +125,7 @@ flag); `GET .../consumer/access` reports the caller's access.
 
 ```
 GET  /api/modelServing/v1/modelApis/{modelApiId}/versions
-POST /api/modelServing/v1/modelApis/{modelApiId}/versions        -> 201
+POST /api/modelServing/v1/modelApis/{modelApiId}/versions        -> the version record (spec says 201; live returned 200)
 GET  /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}
 GET  /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/buildLogs
 GET  /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/exportLogs
@@ -134,8 +134,9 @@ GET  /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/in
 
 New-version body is the `version` object above (`projectId`, `source`,
 `logHttpRequestResponse`, `monitoringEnabled` required; `description` optional). The
-response includes `deployment.status`, `deployment.isPending`, `environmentRevisionId`,
-`number`.
+response includes `environmentRevisionId` and `number`, and `deployment.status` /
+`deployment.isPending` once deployed. `shouldDeploy: false` still builds the image (the
+build logs complete) but creates no deployment (verified live).
 
 ## Model Deployments
 
@@ -178,13 +179,22 @@ GET  /api/registeredmodels/v2/{modelName}/versions[/{version}]
 ```
 
 Register (`POST /api/registeredmodels/v2`) requires `modelName`, `modelSource` and
-`create` (true to create the registered model, false to add a version to an existing
-one). `modelSource` is
-`{"sourceType": "mlflow", "mlflowSource": {"experimentRunId": "...", "artifactPath": "model", "loggedModelId": "..."}}`
-or `{"sourceType": "huggingface", "huggingFaceSource": {"modelId": "org/model", "modelRevision": "...", "huggingFaceToken": "..."}}`.
+`create` (true to create the registered model; false to add a version to an existing
+one, and `true` on an existing name is a 400). `modelSource` is
+`{"sourceType": "mlflow", "mlflowSource": {"experimentRunId": "...", "loggedModelId": "m-..."}}`
+(or `"artifactPath": "..."` instead of `loggedModelId`), or
+`{"sourceType": "huggingface", "huggingFaceSource": {"modelId": "org/model", "modelRevision": "...", "huggingFaceToken": "..."}}`.
 Optional: `description`, `discoverable`, `modelCategory` (`genai`, `ml`), `modelType`,
 `projectId` (required for Hugging Face sources only; MLflow sources take the project from
 the run). Response: `{"registeredModel": {...}, "modelVersion": {...}}`.
+
+**Use `loggedModelId` for models logged with MLflow 3.** MLflow 3 clients store
+`log_model` output as a LoggedModel (`m-<id>`) rather than as a run artifact, so a
+version registered with `artifactPath: "model"` points at a path that does not exist and
+`mlflow.pyfunc.load_model("models:/<name>/<version>")` fails. Verified on an internal
+Domino test cluster (6.4.0, MLflow client 3.3.2): both bodies return 200, only the
+`loggedModelId` version loads. Get the id from the run (`mlflow.last_logged_model()`, or
+the `model_id` on the logged model info).
 
 ```python
 result = requests.post(f"{base_url}/api/registeredmodels/v2", headers=headers, json={
@@ -192,7 +202,7 @@ result = requests.post(f"{base_url}/api/registeredmodels/v2", headers=headers, j
     "description": "Random forest fraud classifier",
     "create": True,
     "modelSource": {"sourceType": "mlflow",
-                    "mlflowSource": {"experimentRunId": run_id, "artifactPath": "model"}},
+                    "mlflowSource": {"experimentRunId": run_id, "loggedModelId": logged_model_id}},
 }).json()
 print(result["modelVersion"]["modelVersion"])
 ```

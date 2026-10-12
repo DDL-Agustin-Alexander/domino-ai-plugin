@@ -93,12 +93,16 @@ GET  /api/datasetrw/v1/snapshots/{snapshotId}
 in the snapshot
 (https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/datasets/version-data-with-snapshots).
 Use `["*"]` for every file; verified on an internal Domino test cluster (6.4.0), where `["/*"]` returns 200 and
-the snapshot then goes to `failed`. Nested paths (`sub/b.txt`) work. Only one snapshot
-copy runs at a time; a second POST while one is `pending` returns 400. Tags are added
-separately (below). Response: `{"snapshot": {"id", "datasetId", "createdAt", "creatorId",
-"description", "status", "lastMounted"}, "metadata": {...}}` with `status` one of `active`,
-`pending`, `copying`, `markForDeletion`, `deletionInProgress`, `deleted`, `failed`; poll
-`GET /api/datasetrw/v1/snapshots/{snapshotId}` until `active`.
+the snapshot then goes to `failed`. File paths (`sub/b.txt`) and directory paths
+(`labels/`) both work and include only what you list. Only one snapshot copy runs at a
+time; a second POST while one is `pending` returns 400. Tags are added separately
+(below). Response: `{"snapshot": {"id", "datasetId", "createdAt", "creatorId", "status"}, "metadata": {...}}`
+(the schema's `description` and `lastMounted` were absent live) with `status` one of
+`active`, `pending`, `copying`, `markForDeletion`, `deletionInProgress`, `deleted`,
+`failed`; poll `GET /api/datasetrw/v1/snapshots/{snapshotId}` until `active`. To create a
+new editable dataset from a snapshot, `POST /api/datasetrw/v1/datasets` with `name`,
+`snapshotId` and `description` (verified live; it lands in the source's project with its
+own snapshot).
 
 ```python
 snapshot = requests.post(f"{base_url}/api/datasetrw/v1/datasets/{dataset_id}/snapshots",
@@ -108,11 +112,14 @@ snapshot = requests.post(f"{base_url}/api/datasetrw/v1/datasets/{dataset_id}/sna
 ## Tags
 
 ```
-POST   /api/datasetrw/v1/datasets/{datasetId}/tags            body: {"snapshotId": "<snapshot-id>", "tagName": "v1.0"}
+POST   /api/datasetrw/v1/datasets/{datasetId}/tags            body: {"snapshotId": "<snapshot-id>", "tagName": "v1-0"}
 DELETE /api/datasetrw/v1/datasets/{datasetId}/tags/{tagName}
 ```
 
-Both body fields are required. The response is the updated `{"dataset": {...}}`; the
+Both body fields are required. Tag names must start with a letter and contain only
+letters, digits and hyphens: `v1.0` is rejected with
+`400 Tags must start with a letter and contain only alphanumeric, dashes, and hyphen characters`
+(verified live), so write `v1-0`. The response is the updated `{"dataset": {...}}`; the
 dataset's `tags` map shows every `tagName -> snapshotId`. A tag name is unique within the
 dataset: pointing an existing tag at another snapshot returns
 `400 Tag <name> already exists within dataset`, so `DELETE` it first and re-`POST`.
@@ -147,7 +154,7 @@ Datasets shared from another project mount read-only at `/domino/datasets/<name>
 ```python
 import pandas as pd
 df = pd.read_parquet("/mnt/data/customer-features/features.parquet")                   # live
-df_v1 = pd.read_parquet("/mnt/data/snapshots/customer-features/v1.0/features.parquet")  # tag
+df_v1 = pd.read_parquet("/mnt/data/snapshots/customer-features/v1-0/features.parquet")  # tag (no dots in tag names)
 ```
 
 The job object from [API-JOBS.md](./API-JOBS.md) lists the actual mounts under
