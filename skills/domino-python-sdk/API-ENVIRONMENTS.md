@@ -138,7 +138,7 @@ rev = requests.post(f"{base_url}/api/environments/beta/environments/{env_id}/rev
 
 Poll `GET /api/environments/v1/environments/{environmentId}` and read
 `environment.latestRevision.status`. The spec enum is lowercase (`queued`, `starting`,
-`pulling`, `building`, `pushing`, `succeeded`, `failed`, `killed`) but Domino Cloud 6.4.0
+`pulling`, `building`, `pushing`, `succeeded`, `failed`, `killed`) but an internal Domino test cluster (6.4.0)
 returns capitalized values (`Succeeded`, `Failed`, `Killed`), so compare
 case-insensitively. `latestRevision` is the newest build; `selectedRevision` is the one
 executions use, and the two differ when the newest build failed or was killed.
