@@ -779,3 +779,130 @@ def test_tools_run_through_fastmcp_with_threaded_wrapper(server, laptop, http, r
     result = run(server.mcp.call_tool("check_domino_job_run_status", {"run_id": "job1"}))
     text = " ".join(getattr(c, "text", "") for c in (result if isinstance(result, list) else result[0]))
     assert '"status": "Running"' in text
+
+
+# ---------------------------------------------------------------------------------------------
+# Read-after-write lag: own writes are waited for; another client's later write still conflicts
+# ---------------------------------------------------------------------------------------------
+
+class FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(server, monkeypatch):
+    c = FakeClock()
+    monkeypatch.setattr(server.time, "monotonic", c.monotonic)
+    monkeypatch.setattr(server.time, "sleep", c.sleep)
+    return c
+
+
+def _add_read_sequence(http, path, contents):
+    """Successive content reads return successive items (bytes, or None for "missing"); the last repeats."""
+    http.add("GET", f"/api/projects/beta/projects/{PID}/commits/latest", FakeResponse(200, {"commitId": COMMIT, "metadata": {}}))
+    _add_listing(http, [])
+    served = []
+
+    def handler(kw):
+        item = contents[min(len(served), len(contents) - 1)]
+        served.append(item)
+        if item is None:
+            return FakeResponse(403, {"errors": [f"Not authorized: File {path} ... are not valid."]})
+        return FakeResponse(200, content=item)
+    http.add("GET", f"/api/projects/v1/projects/{PID}/files/{COMMIT}/{path.replace('/', '%2F')}/content", handler)
+    return served
+
+
+def _baseline_then_upload(server, http, run, path="a.py"):
+    """download v1 (baseline), then smart_sync v2 which uploads; returns nothing, cache holds the own write."""
+    _add_project_lookup(http)
+    _add_file(http, path, b"v1\n")
+    run(server.download_file_from_domino_project(OWNER, PROJECT, path))
+    _add_upload(http, path)
+    assert run(server.smart_sync_file(OWNER, PROJECT, path, "v2\n"))["action"] == "uploaded"
+
+
+def test_stale_read_after_own_upload_is_not_a_false_conflict(server, laptop, http, run, clock):
+    _baseline_then_upload(server, http, run)
+    served = _add_read_sequence(http, "a.py", [b"v1\n", b"v1\n", b"v2\n"])   # Domino still shows v1 for a while
+    result = run(server.smart_sync_file(OWNER, PROJECT, "a.py", "v3\n"))
+    assert result["action"] == "uploaded" and http.calls[-1][2]["data"] == b"v3\n"
+    assert served == [b"v1\n", b"v1\n", b"v2\n"] and clock.sleeps == [2.0, 2.0]
+
+
+def test_download_after_own_create_waits_until_the_file_is_visible(server, laptop, http, run, clock):
+    _add_project_lookup(http)
+    _add_file(http, "new.py", None)
+    _add_upload(http, "new.py")
+    assert run(server.upload_file_to_domino_project(OWNER, PROJECT, "new.py", "x\n"))["success"]
+    served = _add_read_sequence(http, "new.py", [None, None, b"x\n"])
+    result = run(server.download_file_from_domino_project(OWNER, PROJECT, "new.py"))
+    assert result["content"] == "x\n" and len(served) == 3 and len(clock.sleeps) == 2
+    # once confirmed, later reads do not wait
+    run(server.download_file_from_domino_project(OWNER, PROJECT, "new.py"))
+    assert len(served) == 4 and len(clock.sleeps) == 2
+
+
+def test_another_clients_newer_write_in_the_window_is_a_conflict(server, laptop, http, run, clock):
+    _baseline_then_upload(server, http, run)
+    served = _add_read_sequence(http, "a.py", [b"v1\n", b"v3\n"])             # stale, then someone else's v3
+    result = run(server.smart_sync_file(OWNER, PROJECT, "a.py", "v4\n"))
+    assert result["conflict"] is True and result["remote_content"] == "v3\n"
+    assert result["remote_key"] == hashlib.sha1(b"v3\n").hexdigest()
+    assert result["your_base_key"] == hashlib.sha1(b"v2\n").hexdigest()
+    assert "note" not in result and clock.sleeps == [2.0]                     # stopped as soon as a newer key appeared
+    assert not any(c[0] == "PUT" and c[2]["data"] == b"v4\n" for c in http.calls)
+
+
+def test_visibility_timeout_returns_the_stale_read_with_a_note(server, laptop, http, run, clock):
+    _baseline_then_upload(server, http, run)
+    served = _add_read_sequence(http, "a.py", [b"v1\n"])                      # never catches up
+    result = run(server.smart_sync_file(OWNER, PROJECT, "a.py", "v3\n"))
+    assert result["conflict"] is True and result["remote_content"] == "v1\n"
+    assert "lag" in result["note"] and "again" in result["note"]
+    assert sum(clock.sleeps) >= server._WRITE_VISIBILITY_TIMEOUT and len(served) == len(clock.sleeps) + 1
+    assert not any(c[0] == "PUT" and c[2]["data"] == b"v3\n" for c in http.calls)
+
+
+def test_run_domino_job_waits_for_recent_uploads(server, laptop, http, run, clock):
+    _add_project_lookup(http)
+    _add_file(http, "scripts/train.py", None)
+    _add_upload(http, "scripts/train.py")
+    run(server.upload_file_to_domino_project(OWNER, PROJECT, "scripts/train.py", "print(42)\n"))
+    served = _add_read_sequence(http, "scripts/train.py", [None, b"print(42)\n"])
+    http.add("POST", "/api/jobs/v1/jobs", FakeResponse(200, {"job": {"id": "j1", "status": {}}}))
+    assert run(server.run_domino_job(OWNER, PROJECT, "python scripts/train.py", "t"))["job_id"] == "j1"
+    paths = [c[1] for c in http.calls]
+    assert paths.index("/api/jobs/v1/jobs") > max(i for i, p in enumerate(paths) if p.endswith("/content"))
+    assert len(served) == 2 and clock.sleeps == [2.0]
+    run(server.run_domino_job(OWNER, PROJECT, "python scripts/train.py", "t2"))   # write confirmed: no wait
+    assert len(served) == 2 and clock.sleeps == [2.0]
+
+
+def test_run_domino_job_wait_has_one_budget_for_all_files(server, laptop, http, run, clock):
+    _add_project_lookup(http)
+    for name in ("one.py", "two.py"):
+        _add_file(http, name, None)
+        _add_upload(http, name)
+        run(server.upload_file_to_domino_project(OWNER, PROJECT, name, "x\n"))
+    _add_read_sequence(http, "one.py", [None])
+    _add_read_sequence(http, "two.py", [None])
+    http.add("POST", "/api/jobs/v1/jobs", FakeResponse(200, {"job": {"id": "j1", "status": {}}}))
+    run(server.run_domino_job(OWNER, PROJECT, "python one.py", "t"))
+    assert server._WRITE_VISIBILITY_TIMEOUT <= sum(clock.sleeps) < 2 * server._WRITE_VISIBILITY_TIMEOUT
+
+
+def test_reads_do_not_wait_without_a_recent_own_write(server, laptop, http, run, clock):
+    _add_project_lookup(http)
+    served = _add_read_sequence(http, "a.py", [b"v1\n"])
+    run(server.download_file_from_domino_project(OWNER, PROJECT, "a.py"))
+    assert len(served) == 1 and clock.sleeps == []

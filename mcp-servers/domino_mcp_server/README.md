@@ -57,6 +57,16 @@ new session starts without one, which is the safe direction (a conflict, never a
 path) confirmed by a listing of the parent directory that does not contain the file. Any other
 failure to read the file is an error, and nothing is written over a file that could not be read.
 
+Domino's project-file reads (latest commit and file content) lag a write by up to about 20
+seconds (observed on Domino Cloud 6.4): a read in that window returns the previous version. The
+server remembers the files it wrote in this process and, before trusting a read of one of them,
+re-reads (every 2 s, up to 45 s) until the read shows the version it wrote, a newer one (another
+client wrote after it: a real conflict), or the timeout passes (the result then carries a note
+saying to retry). `run_domino_job` waits the same way for files uploaded moments before, so the
+Job starts from the uploaded version. What this cannot cover: a write by another client in the
+last ~20 s is not visible yet, so a sync in that window may miss it. For shared projects, give
+other people's edits a minute before syncing over them.
+
 Files are read and written as UTF-8 text; reads are capped at 2 MiB. Paths are project-relative;
 `..` is rejected.
 

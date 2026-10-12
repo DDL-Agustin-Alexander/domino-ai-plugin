@@ -16,6 +16,7 @@ import hashlib
 import os
 import re
 import sys
+import time
 import urllib.parse
 import webbrowser
 from pathlib import Path
@@ -490,7 +491,7 @@ def _decode_text(content: bytes, path: str) -> str:
         raise DominoError(f"{path} is not UTF-8 text; this server only syncs text files") from None
 
 
-def _remote_state(user_name: str, project_name: str, path: str, info: Dict[str, Any] | None = None) -> Dict[str, Any]:
+def _read_state(user_name: str, project_name: str, path: str, project_id: str) -> Dict[str, Any]:
     """{"exists": bool, "commit_id": str, "content": str|None, "key": str|None} at the latest commit.
 
     "Does not exist" is concluded only from a 404, or from a 403 confirmed by a successful listing
@@ -498,7 +499,6 @@ def _remote_state(user_name: str, project_name: str, path: str, info: Dict[str, 
     for a missing path). Any other failure raises, so nothing is ever written over a file that
     could not be read.
     """
-    project_id = (info or _project_info(user_name, project_name))["id"]
     commit_id = _latest_commit_id(project_id)
     resp = _read_remote_file(project_id, commit_id, path)
     if resp.status_code == 200:
@@ -509,6 +509,58 @@ def _remote_state(user_name: str, project_name: str, path: str, info: Dict[str, 
             raise DominoError(f"Could not read {path} in {user_name}/{project_name} although it exists "
                               f"({_describe_http_error('GET', 'file content', resp)}). Nothing was changed.")
     return {"exists": False, "commit_id": commit_id, "content": None, "key": None}
+
+
+# Domino's project-file reads (latest commit, file content) lag a write by up to about 20 seconds
+# (observed on Domino Cloud 6.4). A read in that window returns the previous version. The server
+# therefore remembers its own writes and, before trusting a read, waits until the read shows the
+# version it wrote, or a newer one, or this many seconds have passed.
+_WRITE_VISIBILITY_TIMEOUT = 45.0
+_WRITE_POLL_INTERVAL = 2.0
+
+
+def _recent_own_write(entry: Dict[str, Any] | None) -> bool:
+    return bool(entry) and "written_at" in entry and not entry.get("visible") \
+        and time.monotonic() - entry["written_at"] < _WRITE_VISIBILITY_TIMEOUT * 4
+
+
+def _remote_state(user_name: str, project_name: str, path: str, info: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """The remote state of `path`, robust to the read-after-write lag.
+
+    If this process wrote the file recently and the read still shows an older version, re-read
+    until it shows the written version (confirmed, recorded in the cache), a different newer
+    version (another client wrote after us: a real conflict), or the timeout passes (the read is
+    returned as is and the caller reports the lag).
+    """
+    project_id = (info or _project_info(user_name, project_name))["id"]
+    state = _read_state(user_name, project_name, path, project_id)
+    entry = _file_version_cache.get((user_name, project_name, path))
+    if not _recent_own_write(entry):
+        return state
+    expected, first_key = entry["key"], state["key"]
+    deadline = time.monotonic() + _WRITE_VISIBILITY_TIMEOUT
+    while state["key"] != expected and state["key"] == first_key and time.monotonic() < deadline:
+        time.sleep(_WRITE_POLL_INTERVAL)
+        state = _read_state(user_name, project_name, path, project_id)
+    if state["key"] == expected:
+        entry["visible"] = True
+    else:
+        state["lagging_own_write"] = state["key"] == first_key
+    return state
+
+
+def _await_project_writes(user_name: str, project_name: str, info: Dict[str, Any]) -> None:
+    """Before starting a Job, wait until this process's recent writes to the project are visible.
+
+    One timeout budget for all files: once it is spent the Job starts anyway.
+    """
+    start = time.monotonic()
+    for (owner, project, path), entry in list(_file_version_cache.items()):
+        if (owner, project) != (user_name, project_name) or not _recent_own_write(entry):
+            continue
+        if time.monotonic() - start >= _WRITE_VISIBILITY_TIMEOUT:
+            break
+        _remote_state(user_name, project_name, path, info)
 
 
 def _filter_domino_stdout(stdout_text: str) -> str:
@@ -701,7 +753,8 @@ def run_domino_job(user_name: str, project_name: str, run_command: str, title: s
     Runs a command as a Job on the Domino platform, typically a script such as
     'python my_script.py --arg1 val1'. The command runs against the project's latest files: for a
     DFS project the synced files; for a Git-based project the repository's default branch
-    (pushed commits only) unless git_branch names another branch.
+    (pushed commits only) unless git_branch names another branch. Files uploaded by this server
+    moments ago are waited for (Domino file reads lag a write by about 20 s) before the Job starts.
 
     Args:
         user_name (str): The user name of the project owner.
@@ -718,7 +771,9 @@ def run_domino_job(user_name: str, project_name: str, run_command: str, title: s
     """
     if not run_command or not run_command.strip():
         raise DominoError("run_command must not be empty")
-    project_id = _resolve_project_id(user_name, project_name)
+    info = _project_info(user_name, project_name)
+    project_id = info["id"]
+    _await_project_writes(user_name, project_name, info)   # files uploaded moments ago must be at the head
     payload: Dict[str, Any] = {"projectId": project_id, "runCommand": run_command.strip(), "title": title}
     if git_branch:
         payload["mainRepoGitRef"] = {"refType": "branches", "value": git_branch}
@@ -870,6 +925,11 @@ def list_domino_project_files(user_name: str, project_name: str, path: str = "/"
     }
 
 
+def _written(key: str, content: str) -> Dict[str, Any]:
+    """A cache entry for a file this process just wrote (see _WRITE_VISIBILITY_TIMEOUT)."""
+    return {"key": key, "content": content, "written_at": time.monotonic(), "visible": False}
+
+
 def _upload(user_name: str, project_name: str, path: str, content: str) -> Dict[str, Any]:
     encoded_user_name = _validate_url_parameter(user_name, "user_name")
     encoded_project_name = _validate_url_parameter(project_name, "project_name")
@@ -906,7 +966,7 @@ def _upload_file(user_name: str, project_name: str, file_path: str, file_content
                               f"content (key {remote['key']}). Use smart_sync_file to compare and "
                               f"merge, or pass overwrite=True to replace it.")
     result = _upload(user_name, project_name, path, file_content)
-    _file_version_cache[(user_name, project_name, path)] = {"key": result["key"], "content": file_content}
+    _file_version_cache[(user_name, project_name, path)] = _written(result["key"], file_content)
     return result
 
 
@@ -950,7 +1010,8 @@ def download_file_from_domino_project(
 
     IMPORTANT: This function remembers the version you downloaded. When you later use
     smart_sync_file to upload changes, it detects whether someone else modified the file in
-    the meantime.
+    the meantime. Domino file reads lag a write by about 20 s; a file this server uploaded
+    moments ago is waited for, but another client's very recent write may not be visible yet.
 
     Args:
         user_name (str): The username of the project owner (e.g., 'etan_lightstone')
@@ -1041,6 +1102,8 @@ def smart_sync_file(
     3. If you downloaded it earlier and the remote version is unchanged, your content is uploaded.
     4. If the remote version changed since your download, both versions are returned as a conflict.
     Only force_overwrite=True replaces a conflicting remote file.
+    Domino file reads lag a write by about 20 s: the check waits for this server's own recent
+    uploads to become visible, but a write by another client in that window may not be seen.
 
     Args:
         user_name (str): The username of the project owner
@@ -1062,7 +1125,7 @@ def smart_sync_file(
 
     def _do_upload(action: str, **extra: Any) -> Dict[str, Any]:
         result = _upload(user_name, project_name, path, content)
-        _file_version_cache[cache_key] = {"key": result["key"], "content": content}
+        _file_version_cache[cache_key] = _written(result["key"], content)
         return {"success": True, "action": action, "path": path, "key": result["key"],
                 "size": result["size"], "message": f"{action}: {path}", **extra}
 
@@ -1095,7 +1158,7 @@ def smart_sync_file(
 
     # Case 3: a baseline exists; did the remote file change since then?
     if remote["key"] != cached["key"]:
-        return {
+        result = {
             "conflict": True,
             "message": f"Remote file '{path}' changed since you last downloaded it. Nothing was uploaded.",
             "your_base_key": cached["key"],
@@ -1105,6 +1168,11 @@ def smart_sync_file(
             "suggestion": ("Someone modified this file. Review the remote changes, merge if needed, "
                            "then call smart_sync_file again with force_overwrite=True."),
         }
+        if remote.get("lagging_own_write"):
+            result["note"] = (f"The remote read still shows the version from before your own upload "
+                              f"after {int(_WRITE_VISIBILITY_TIMEOUT)} s; Domino file reads normally "
+                              f"lag a write by about 20 s. Wait a minute and call smart_sync_file again.")
+        return result
 
     # Case 4: remote unchanged since the baseline: safe to upload.
     return _do_upload("uploaded")
