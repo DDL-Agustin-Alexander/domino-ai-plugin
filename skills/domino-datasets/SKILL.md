@@ -1,6 +1,6 @@
 ---
 name: domino-datasets
-description: Work with Domino Datasets, the versioned filesystem storage mounted into Workspaces, Jobs, Apps and Launchers. Covers mount paths (/domino/datasets/local/<name> in DFS Projects, /mnt/data/<name> in Git-based Projects), creating and uploading (UI, domino upload-dataset), snapshots, tags and limits, sharing with Owner, Editor and Reader roles, and the /api/datasetrw REST routes. Use when storing or versioning data in Domino, reading a Dataset or snapshot from code, sharing data between Projects, or automating Dataset creation, snapshots and tags.
+description: Create, upload to, mount and read a Domino Dataset; take, list, read or restore (copy to a new Dataset) a snapshot; tag snapshots; share a Dataset with another Project or user. Covers mount paths (/domino/datasets/local/<name> in DFS Projects, /mnt/data/<name> in Git-based Projects), the UI and domino CLI steps, and the /api/datasetrw REST routes with verified bodies, including how to read a snapshot you just took from the same run. Use whenever a task mentions a Dataset, a snapshot, a dataset mount path, versioned or shared data in Domino, or reading, counting or writing files under /domino/datasets or /mnt/data.
 compatibility: Domino 6.3 and Domino Cloud. Requires DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token.
 ---
 
@@ -11,8 +11,7 @@ Applies to Domino 6.3 and Domino Cloud.
 A Dataset is Domino-managed, versioned filesystem storage. Executions mount it as an ordinary
 directory: live data is read-write for Dataset Owners and Editors, read-only for Readers, and
 every snapshot is a read-only directory beside it. Sharing is zero-copy; Domino sets no size or
-file-count cap. For data beyond a few TB or already in object storage use a Data Source
-(domino-data-sdk skill); NetApp ONTAP storage is the netapp-volumes skill.
+file-count cap. Object storage: domino-data-sdk skill; NetApp ONTAP: netapp-volumes skill.
 
 ## Paths
 
@@ -25,8 +24,7 @@ file-count cap. For data beyond a few TB or already in object storage use a Data
 
 `<n>` is the snapshot number, `<tag>` the most recently added tag. Every Project starts with a
 default Dataset named after the Project: Project `churn` has `/mnt/data/churn` (Git-based) or
-`/domino/datasets/local/churn` (DFS); verified live. Detect the layout from the injected
-variables, not by probing paths:
+`/domino/datasets/local/churn` (DFS). Detect the layout from the injected variables:
 
 ```python
 import os
@@ -60,8 +58,7 @@ UI lists mounted paths under **Data > Datasets** (Workspace) and **Details > Dat
 - **CLI** (larger uploads): `domino upload-dataset [--fileUploadSetting Ignore|Overwrite|Rename]
   [--targetRelativePath <dir>] <owner>/<project>/<dataset> <local-folder>`; flags and values
   are case-sensitive. Install and sign in: [domino-cli](../domino-cli/SKILL.md).
-- **From code**: write to the mount path; every execution sees the change at once, and it
-  becomes a version when you snapshot.
+- **From code**: write to the mount path; it becomes a version when you snapshot.
 - **python-domino**: `datasets_upload_files(dataset_id, local_path, ...)`; signature in
   [API.md](./API.md).
 
@@ -70,14 +67,17 @@ UI lists mounted paths under **Data > Datasets** (Workspace) and **Details > Dat
 A snapshot is a read-only, immutable copy taken at a point in time. Do not modify files while
 one is in progress; time scales with size.
 
+**Key fact**: a snapshot is mounted only in executions started after it became `active`. Read
+one from the current run with `GET $DOMINO_API_PROXY/v4/datasetrw/snapshot/{snapshotId}/file/raw?path=<file>`
+(Internal API, may change between Domino versions). The docs' API reference lists this route
+without `/v4`; that form returns 404.
+
 - **Create**: UI **Take Snapshot** (all or selected files, optional tag);
   `domino create-snapshot <owner>/<project>/<dataset>`; or
   `POST /api/datasetrw/v1/datasets/{datasetId}/snapshots` with `{"relativeFilePaths": ["*"]}`.
   `status` starts `pending` and becomes `active`; poll `GET /api/datasetrw/v1/snapshots/{id}`.
-- **Read**: at `.../snapshots/<name>/<n>` or `/<tag>`, but only in executions started after the
-  snapshot became `active`; the Workspace or Job that took it has no such path. To read it
-  now: `GET $DOMINO_API_PROXY/v4/datasetrw/snapshot/{snapshotId}/file/raw?path=<relative>`
-  (internal API, may change between Domino versions; no leading slash; list with
+- **Read**: later executions mount it at `.../snapshots/<name>/<n>` or `/<tag>`. From the run
+  that took it, use the route above (`path` is relative, no leading slash; list with
   `.../files/recursive?path=`, empty for the root), `DatasetClient` with
   `DatasetConfig(snapshot_id=...)`, or a new Job. Examples: [API.md](./API.md). Pinning a
   snapshot at launch mounts it read-only at the live path.
@@ -116,12 +116,11 @@ Project that mounts it; confirm with the user first.
 |---|---|
 | Path missing in the execution | `DOMINO_IS_GIT_BASED`; Dataset mounted in this Project; execution started after the mount |
 | Permission denied writing | Dataset role (Reader is read-only); snapshot paths are always read-only; a pinned snapshot replaces the live mount; test with `os.access(path, os.W_OK)` |
-| Slow reads | Parquet, column projection, chunked reads ([BEST-PRACTICES.md](./BEST-PRACTICES.md)) |
 
 ## Reference files
 
-- [MOUNT-PATHS.md](./MOUNT-PATHS.md): full mount trees, env-based detection, pinned snapshots
-- [API.md](./API.md): every Dataset route with bodies, auth and examples
+- [MOUNT-PATHS.md](./MOUNT-PATHS.md): mount trees, detection, pinned snapshots
+- [API.md](./API.md): routes, bodies, auth, examples
 - [BEST-PRACTICES.md](./BEST-PRACTICES.md): layout, formats, snapshot limits, large reads
 
 Docs: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/datasets and child
