@@ -1,131 +1,57 @@
 # Coding assistants through LLM Gateway 2.0
 
-Applies to Domino 6.3 and Domino Cloud where an administrator has deployed LLM Gateway 2.0. Routing a coding assistant through the gateway puts its model calls under the same grants, budgets, guardrails and usage logging as any other call; each request shows up in the gateway's usage dashboard with user, Project, alias, cost and latency. The docs page https://docs.domino.ai/cloud/platform-capabilities/features/coding-assistants/reuse-credentials#use-with-domino-llm-gateway-2-0 describes the intent; the setup below is per host.
+Applies to Domino 6.3 and Domino Cloud where an administrator has deployed LLM Gateway 2.0 (early access). Routing a coding assistant through the gateway puts its model calls under the same grants, budgets and usage tracking as any other call. The public docs (https://docs.domino.ai/cloud/platform-capabilities/features/coding-assistants/reuse-credentials#use-with-domino-llm-gateway-2-0) say this is possible and send users to their Domino field representative for the routing details; what follows is only the generic configuration any Anthropic- or OpenAI-compatible gateway needs, expressed in the assistant's own documented settings. Ask the field representative for the setup Domino recommends for your deployment before rolling it out to a team.
 
 Shared facts:
 
-- `<base>` is the gateway App's URL (`https://<domino or apps host>/apps/<app id or vanity URL>`); `<alias>` is a gateway alias the user has a grant for.
-- Inside a Workspace the bearer is the access token from `$DOMINO_API_PROXY/access-token` (`http://localhost:8899/access-token`); it expires in minutes, so the host must re-fetch it per request through a token-helper command, not a static variable.
+- `<base>` is the gateway App's URL; `<alias>` is a gateway alias the user has a grant for, used as the model name.
+- Inside a Workspace the bearer is the access token from `$DOMINO_API_PROXY/access-token` (`http://localhost:8899/access-token`). It is short-lived, so the assistant needs a credential helper that re-fetches it, not a pasted value.
 - On a laptop the bearer is a Domino Personal Access Token or a gateway token (`dgw_...`) in an environment variable.
-- Assistants make many small requests per turn, so a tight per-user budget denies them mid-session; plan budgets accordingly.
+- Assistants make many small requests per turn, so a tight per-user budget refuses them mid-session; plan budgets accordingly.
 
 ## Claude Code
 
-Claude Code talks to the gateway's Anthropic-compatible path, `<base>/anthropic`. Three settings do the work: `ANTHROPIC_BASE_URL`, a bearer (the `apiKeyHelper` setting, which runs a command per request and sends its output as `Authorization: Bearer`, or `ANTHROPIC_AUTH_TOKEN` for a static token), and `claude --model <alias>`. Two optional ones help: `CLAUDE_CODE_ATTRIBUTION_HEADER=0` keeps the system prompt byte-stable so provider prompt caching can hit, and `ANTHROPIC_CUSTOM_HEADERS="X-LLM-Tag-projectname: <project>"` tags every request for attribution.
+Claude Code uses the gateway's Anthropic-compatible path. Its own gateway documentation (https://code.claude.com/docs/en/llm-gateway-connect) defines the three pieces used here: `ANTHROPIC_BASE_URL`, a credential (`ANTHROPIC_AUTH_TOKEN` for a static bearer, or `apiKeyHelper` for one that rotates), and the model name.
 
-### In a Workspace, for a whole Compute Environment (administrator or environment owner)
+### In a Workspace
 
-Put this in the Compute Environment's **Pre Run Script** (**Environments** > edit definition > run setup scripts). It runs at Workspace start as the Workspace user, after Domino's environment variables exist. Fill in `<base>`:
-
-```bash
-# Environment variables, sourced by interactive shells
-cat > "$HOME/.anthropic-gateway.sh" <<'EOF'
-export ANTHROPIC_BASE_URL="<base>/anthropic"
-export CLAUDE_CODE_ATTRIBUTION_HEADER=0
-if [ -n "$DOMINO_PROJECT_NAME" ]; then
-  export ANTHROPIC_CUSTOM_HEADERS="X-LLM-Tag-projectname: $DOMINO_PROJECT_NAME"
-fi
-EOF
-MARKER="# >>> domino llm gateway >>>"
-grep -qF "$MARKER" "$HOME/.bashrc" 2>/dev/null || cat >> "$HOME/.bashrc" <<EOF
-
-$MARKER
-[ -f "\$HOME/.anthropic-gateway.sh" ] && . "\$HOME/.anthropic-gateway.sh"
-# <<< domino llm gateway <<<
-EOF
-
-# apiKeyHelper must live in a settings file. Project-scoped settings.local.json is picked up
-# when Claude Code starts inside the project directory (DOMINO_WORKING_DIR: /mnt/code for
-# Git-based projects, /mnt for DFS).
-CODE_DIR="${DOMINO_WORKING_DIR:-/mnt}"
-mkdir -p "$CODE_DIR/.claude"
-cat > "$CODE_DIR/.claude/settings.local.json" <<'EOF'
-{
-  "apiKeyHelper": "curl -sf http://localhost:8899/access-token"
-}
-EOF
-```
-
-Then, in a new Workspace, `cd` into the project directory and run `claude --model <alias>`. Verify with `echo "$ANTHROPIC_BASE_URL"`, `cat "$DOMINO_WORKING_DIR/.claude/settings.local.json"` and `curl -sf http://localhost:8899/access-token | head -c 20`.
-
-Things to know:
-
-- `settings.local.json` is rewritten at every Workspace start; add `.claude/settings.local.json` to `.gitignore` in Git-based projects. Users' own settings belong in `.claude/settings.json`, which the script does not touch.
-- Launch Claude Code from the project directory (or a subdirectory); elsewhere it does not see the project-scoped settings and falls back to whatever credential the environment has.
-- Shells that do not source `~/.bashrc` need the same source line in `~/.profile`.
-
-### In a single Workspace, by hand
-
-User-scoped settings instead of the Pre Run Script:
+Use `apiKeyHelper`, which runs a command and sends its output as the bearer. Put it in the project-local settings file, which Claude Code reads when started inside the project directory and keeps out of git (add `.claude/settings.local.json` to `.gitignore` if you create it by hand). Do not overwrite `~/.claude/settings.json`: on environments with home-directory persistence it holds the user's other settings.
 
 ```bash
-mkdir -p "$HOME/.claude"
-cat > "$HOME/.claude/settings.json" <<EOF
+mkdir -p "$DOMINO_WORKING_DIR/.claude"
+cat > "$DOMINO_WORKING_DIR/.claude/settings.local.json" <<'EOF'
 {
   "env": {
     "ANTHROPIC_BASE_URL": "<base>/anthropic",
-    "ANTHROPIC_CUSTOM_HEADERS": "X-LLM-Tag-projectname: ${DOMINO_PROJECT_NAME}",
-    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
+    "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "60000"
   },
   "apiKeyHelper": "curl -sf http://localhost:8899/access-token"
 }
 EOF
-claude --model <alias>
+cd "$DOMINO_WORKING_DIR" && claude --model <alias>
 ```
 
-The unquoted heredoc expands `${DOMINO_PROJECT_NAME}` at write time. `apiKeyHelper` is preferred over a static `ANTHROPIC_AUTH_TOKEN` inside Domino because the access token expires quickly.
+How the helper behaves (Claude Code settings reference): the output is cached for five minutes by default, or for `CLAUDE_CODE_API_KEY_HELPER_TTL_MS`; it is re-run after that lifetime, when a request fails with 401 or 403, and (from v2.1.246) when the cached output is a JWT that has expired. Set the TTL below the access token's lifetime so a stale token is not sent. The helper's output is sent as both the `Authorization: Bearer` and `X-Api-Key` headers; the gateway reads the bearer.
+
+Credential precedence matters. Claude Code's documented order is `ANTHROPIC_AUTH_TOKEN`, then `ANTHROPIC_API_KEY`, then `apiKeyHelper`, then `CLAUDE_CODE_OAUTH_TOKEN`: a set `ANTHROPIC_AUTH_TOKEN` is used instead of the helper, and a set `ANTHROPIC_API_KEY` outranks the helper too and is sent as `x-api-key`, which the gateway refuses with a 401. Before starting a gateway session, unset both in the shell and check that no Domino user, Project or environment variable sets them (`CLAUDE_CODE_OAUTH_TOKEN` ranks below the helper and is not a problem). Run `/status` in Claude Code to confirm the `Anthropic base URL` line shows the gateway and the credential line names the `apiKeyHelper`.
+
+For a whole team, an administrator can set `ANTHROPIC_BASE_URL` as a Domino environment variable and write the project-local settings file from the Compute Environment's pre-run script (the mechanism the reuse-credentials page describes), writing it only when absent or merging with `jq` so a user's existing project settings survive. Optional attribution: `ANTHROPIC_CUSTOM_HEADERS="X-LLM-Tag-projectname: $DOMINO_PROJECT_NAME"` tags every request with the Project.
 
 ### From a laptop
-
-No sidecar, so use a static token:
 
 ```bash
 export ANTHROPIC_BASE_URL="<base>/anthropic"
 export ANTHROPIC_AUTH_TOKEN="<Personal Access Token or dgw_ gateway token>"
-export CLAUDE_CODE_ATTRIBUTION_HEADER=0
-export ANTHROPIC_CUSTOM_HEADERS="X-LLM-Tag-projectname: <project>"   # optional
 claude --model <alias>
 ```
 
+Verify first with the one-token request from the Claude Code gateway page (`POST $ANTHROPIC_BASE_URL/v1/messages` with `Authorization: Bearer`); an error naming an unknown model still proves the URL and credential work.
+
 ### Claude Code specifics
 
-- Claude Code makes background calls (titles, compaction, tool-result summaries) to its default small model by that model's canonical Anthropic name. If only a large-model alias exists, those calls fail with 404 in the gateway log and titles and summaries degrade; the fix is an alias named exactly like Claude Code's current default small model, pointing at any provider that serves it.
-- Sessions are aggregatable in the gateway's usage views by the session tag the gateway records from Claude Code's session header.
-- Aliases that resolve to non-Anthropic providers are translated to the OpenAI format: tool use and vision work; prompt-cache markers and extended thinking are dropped.
-- If `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is also set (user, Project or environment variables), check which credential wins before assuming traffic goes through the gateway.
-
-## Codex
-
-Codex can use any provider that speaks the OpenAI Responses API, and the gateway serves it at `<base>/v1/responses`. Define a custom provider in `~/.codex/config.toml` (Codex's documented `model_providers` table; `wire_api` is `responses`, the only supported value):
-
-```toml
-model = "<alias>"
-model_provider = "domino-gateway"
-
-[model_providers.domino-gateway]
-name = "Domino LLM Gateway"
-base_url = "<base>/v1"
-wire_api = "responses"
-http_headers = { "X-LLM-Tag-team" = "research" }     # optional attribution
-
-# Inside a Domino Workspace: a command-backed bearer, re-run whenever Codex needs a token
-[model_providers.domino-gateway.auth]
-command = "curl"
-args = ["-sf", "http://localhost:8899/access-token"]
-```
-
-On a laptop, replace the `auth` table with a static token from the environment (do not combine the two):
-
-```toml
-[model_providers.domino-gateway]
-name = "Domino LLM Gateway"
-base_url = "<base>/v1"
-wire_api = "responses"
-env_key = "DOMINO_GATEWAY_TOKEN"        # a Personal Access Token or dgw_ gateway token
-```
-
-Codex sends the alias as the model, so `<alias>` must exist in the gateway and the user must hold a grant. To make the Workspace setup automatic, write `~/.codex/config.toml` from the Compute Environment's Pre Run Script the same way as the Claude Code snippet above; keep any `CODEX_AUTH_JSON` subscription seeding (see the docs page above) out of the picture when the gateway should serve the traffic.
+- Claude Code also calls a smaller model for background work (titles, summaries) by that model's own name; if the gateway has no alias of that exact name, those calls fail quietly and only the main conversation works. Ask the administrator to publish an alias with that name if titles and summaries matter.
+- Which Anthropic features reach the model (prompt caching, extended thinking, native tool use) depends on the provider behind the alias; ask the administrator what the alias is backed by.
 
 ## Other hosts
 
-Any assistant that accepts an OpenAI-compatible base URL (`<base>/v1`) or an Anthropic-compatible one (`<base>/anthropic`) plus a bearer token can use the gateway: configure it the way that host documents, with the alias as the model and, inside Domino, a token helper rather than a pasted token. Hosts that cannot change their API endpoint or that only accept their vendor's own key cannot be routed through the gateway.
+Any assistant that accepts an OpenAI-compatible base URL (`<base>/v1`) or an Anthropic-compatible one (`<base>/anthropic`) plus a bearer token can be pointed at the gateway: configure it the way that host documents, with the alias as the model and, inside Domino, a credential helper rather than a pasted token. Codex, for example, supports custom model providers in its configuration, but routing Codex through the gateway has not been tested; ask the Domino field representative before relying on it. Hosts that cannot change their API endpoint, or that only accept their vendor's own key, cannot be routed through the gateway.

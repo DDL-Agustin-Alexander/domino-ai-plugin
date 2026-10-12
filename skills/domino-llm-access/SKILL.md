@@ -12,12 +12,12 @@ Applies to Domino 6.3 and Domino Cloud. One section differs between them (the le
 
 Four ways exist; pick in this order:
 
-1. **LLM Gateway 2.0** (Cloud and 6.3): where an administrator has deployed it as a Domino App, use it; callers authenticate with their Domino identity and administrators hold the provider keys, grants, budgets and guardrails. Everything about it is in the `domino-llm-gateway` skill.
+1. **LLM Gateway 2.0** (Cloud and 6.3, early access): where an administrator has deployed it as a Domino App, use it; callers authenticate with their Domino identity and administrators hold the provider keys, grants, budgets and guardrails. Everything about it is in the `domino-llm-gateway` skill.
 2. **Option A: external provider.** Code calls OpenAI, Anthropic, Bedrock, Azure OpenAI or Vertex AI through the provider's SDK; Domino injects the API key as an environment variable.
 3. **Option B: Domino-hosted endpoint.** Domino serves a registered model (from Hugging Face or an experiment run) with vLLM on a GPU hardware tier behind an OpenAI-compatible URL.
 4. **Legacy AI Gateway**: Domino 6.3 only, where an administrator enabled it (off by default); removed from Cloud, where its UI and `/api/aigateway/*` routes are gone and MLflow Deployment Client code against it fails.
 
-Options A and B are identical on both targets; only the gateways depend on the deployment.
+Options A and B are identical on both targets; only the gateways vary by deployment.
 
 Find the deployment: `GET $DOMINO_API_HOST/version` (the route `python-domino` uses; send the bearer) returns JSON with a `version` field. `6.3.x` is self-managed 6.3; Cloud reports a later build (`6.4.0` at the time of writing). On 6.3, whether the legacy gateway is enabled is an administrator setting: confirm it in the UI (**Develop** > **Gateway LLMs** lists endpoints only where it is on) or with the administrator. Do not infer it from a 404: in a run, `DOMINO_API_HOST` may be a sidecar that lacks some `/api/*` routes (`domino-api-intro`, HOSTS.md), so retry the public deployment URL with a PAT before concluding anything, and never try to enable the gateway yourself. Below 6.3 this skill does not apply: say so and point to docs.dominodatalab.com for that version. Never tell the user to reinstall or change the plugin.
 
@@ -77,7 +77,7 @@ The OpenAI Responses API is also supported. Keep the URL in a Domino environment
 
 ## Gateways
 
-**LLM Gateway 2.0** (Cloud and 6.3) is the successor to the legacy AI Gateway: one OpenAI- and Anthropic-compatible base URL in front of external providers and Domino-hosted models, with usage tracking, budgets and guardrails. Domino distributes it as a Domino App through the field team or account team; there is no self-service install. Calling it, coding assistants through it, and what the administrator configures: `domino-llm-gateway` skill.
+**LLM Gateway 2.0** (Cloud and 6.3, early access) is the successor to the legacy AI Gateway: one OpenAI-compatible base URL in front of external providers and Domino-hosted models, with usage tracking, budgets and guardrails. Domino distributes it as a Domino App through the Domino field representative; there is no self-service install. Calling it, coding assistants through it, and what the administrator configures: `domino-llm-gateway` skill.
 
 **Legacy AI Gateway** (6.3 only, where enabled): [LEGACY-AI-GATEWAY.md](./LEGACY-AI-GATEWAY.md) covers the Gateway LLMs UI, the MLflow Deployment Client calls it supports, the `/api/aigateway/v1` routes with verified bodies, and the audit download.
 

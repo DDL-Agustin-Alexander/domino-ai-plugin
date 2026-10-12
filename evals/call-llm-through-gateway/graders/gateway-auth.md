@@ -1,5 +1,5 @@
 ---
 type: regex
-target: trace
-pattern: 'access-token[\s\S]*(DOMINO_LLM_GATEWAY_URL|/v1)|(DOMINO_LLM_GATEWAY_URL|/v1)[\s\S]*access-token'
+target: { source: file, path: ask.py }
+pattern: 'access-token[\s\S]*DOMINO_LLM_GATEWAY_URL|DOMINO_LLM_GATEWAY_URL[\s\S]*access-token'
 ---
