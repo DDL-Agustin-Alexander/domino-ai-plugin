@@ -137,8 +137,11 @@ rev = requests.post(f"{base_url}/api/environments/beta/environments/{env_id}/rev
 ## Build status
 
 Poll `GET /api/environments/v1/environments/{environmentId}` and read
-`environment.latestRevision.status`: `queued`, `starting`, `pulling`, `building`,
-`pushing`, `succeeded`, `failed`, `killed`.
+`environment.latestRevision.status`. The spec enum is lowercase (`queued`, `starting`,
+`pulling`, `building`, `pushing`, `succeeded`, `failed`, `killed`) but Domino Cloud 6.4.0
+returns capitalized values (`Succeeded`, `Failed`, `Killed`), so compare
+case-insensitively. `latestRevision` is the newest build; `selectedRevision` is the one
+executions use, and the two differ when the newest build failed or was killed.
 
 ```python
 import time
@@ -146,7 +149,7 @@ deadline = time.time() + 3600
 while time.time() < deadline:
     env = requests.get(f"{base_url}/api/environments/v1/environments/{env_id}",
                        headers=headers).json()["environment"]
-    status = env["latestRevision"]["status"]
+    status = env["latestRevision"]["status"].lower()
     if status in ("succeeded", "failed", "killed"):
         break
     print("building...", status)

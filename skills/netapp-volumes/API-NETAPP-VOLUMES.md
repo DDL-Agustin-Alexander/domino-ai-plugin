@@ -14,11 +14,16 @@ Follow [domino-api-intro](../domino-api-intro/SKILL.md#authentication). Two base
   `$DOMINO_API_PROXY` with no header, else `$DOMINO_API_HOST` with the access token, else
   the deployment URL with a PAT or service account token.
 - `remotefs_url` for `/remotefs/v1/*` volume, filesystem, snapshot and grant operations.
-  Inside a run Domino injects `DOMINO_REMOTE_FILE_SYSTEM_HOSTPORT` for exactly these
-  operations (volumes API page). That host is reached directly, not through the API proxy,
-  so **always** send `Authorization: Bearer` with the token from
-  `http://localhost:8899/access-token` to it, even when `DOMINO_API_PROXY` is set. When the
-  variable is absent, use `base_url` and its headers.
+  **Inside a run these are reachable only on `DOMINO_REMOTE_FILE_SYSTEM_HOSTPORT`**
+  (the volumes API page reserves the variable for these operations) **and only with an
+  explicit `Authorization: Bearer`**. Verified on Domino Cloud 6.4.0 from a Job: the same
+  `GET /remotefs/v1/volumes` returned 404 through `$DOMINO_API_PROXY` (with or without a
+  header) and through the in-run `$DOMINO_API_HOST`, 401 `Authorization header not found`
+  on the hostport without a header, and 200 on the hostport
+  (`http://remotefs.domino-platform:80` there) with the token from
+  `http://localhost:8899/access-token`. The same token is served at
+  `$DOMINO_API_PROXY/access-token`. Outside Domino, the deployment URL with a PAT or
+  service account token works (200).
 
 ```python
 import os
@@ -36,12 +41,13 @@ else:                                                  # outside Domino
     base_url = os.environ["DOMINO_API_HOST"].rstrip("/")
     headers = {"Authorization": f"Bearer {os.environ['DOMINO_API_TOKEN']}"}
 
-remotefs_url, remotefs_headers = base_url, headers
-if os.environ.get("DOMINO_REMOTE_FILE_SYSTEM_HOSTPORT"):
+if os.environ.get("DOMINO_RUN_ID"):                    # inside a run: hostport + bearer, never the proxy
     remotefs_url = os.environ["DOMINO_REMOTE_FILE_SYSTEM_HOSTPORT"].rstrip("/")
     if "://" not in remotefs_url:
         remotefs_url = "http://" + remotefs_url
     remotefs_headers = {"Authorization": f"Bearer {access_token()}"}
+else:                                                  # outside Domino: deployment URL + PAT/SA token
+    remotefs_url, remotefs_headers = base_url, headers
 ```
 
 Error bodies from this service are `{"message": "..."}`. The access token is short-lived;

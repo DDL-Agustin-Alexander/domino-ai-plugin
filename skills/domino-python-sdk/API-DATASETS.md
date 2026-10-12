@@ -73,6 +73,13 @@ PATCH  /api/datasetrw/v1/datasets/{datasetId}                 body: {"name": "ne
 DELETE /api/datasetrw/v1/datasets/{datasetId}
 ```
 
+`DELETE` is a soft, cancellable delete: the dataset disappears from the v2 list at once,
+`GET` by id still returns it, and the internal lifecycle stays `DeletionInProgress` for
+some time (observed for more than ten minutes on Domino Cloud 6.4.0). Snapshot files are
+read through the dataset files service; on that deployment the `/datasetrw/...` routes in
+the spec answered 404 while the `/v4/datasetrw/...` forms worked (internal API, may change
+between Domino versions), so prefer the mount path or python-domino for file access.
+
 ## Snapshots
 
 ```
@@ -84,13 +91,17 @@ GET  /api/datasetrw/v1/snapshots/{snapshotId}
 `relativeFilePaths` (required) lists the paths, relative to the dataset root, to include
 in the snapshot
 (https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/datasets/version-data-with-snapshots).
-Tags are added separately (below). Response: `{"snapshot": {"id", "datasetId", "createdAt",
-"creatorId", "description", "status", "lastMounted"}, "metadata": {...}}` with `status` one of
-`active`, `pending`, `copying`, `markForDeletion`, `deletionInProgress`, `deleted`, `failed`.
+Use `["*"]` for every file; verified on Domino Cloud 6.4.0, where `["/*"]` returns 200 and
+the snapshot then goes to `failed`. Nested paths (`sub/b.txt`) work. Only one snapshot
+copy runs at a time; a second POST while one is `pending` returns 400. Tags are added
+separately (below). Response: `{"snapshot": {"id", "datasetId", "createdAt", "creatorId",
+"description", "status", "lastMounted"}, "metadata": {...}}` with `status` one of `active`,
+`pending`, `copying`, `markForDeletion`, `deletionInProgress`, `deleted`, `failed`; poll
+`GET /api/datasetrw/v1/snapshots/{snapshotId}` until `active`.
 
 ```python
 snapshot = requests.post(f"{base_url}/api/datasetrw/v1/datasets/{dataset_id}/snapshots",
-                         headers=headers, json={"relativeFilePaths": ["features.parquet"]}).json()["snapshot"]
+                         headers=headers, json={"relativeFilePaths": ["*"]}).json()["snapshot"]
 ```
 
 ## Tags
@@ -101,7 +112,9 @@ DELETE /api/datasetrw/v1/datasets/{datasetId}/tags/{tagName}
 ```
 
 Both body fields are required. The response is the updated `{"dataset": {...}}`; the
-dataset's `tags` map shows every `tagName -> snapshotId`.
+dataset's `tags` map shows every `tagName -> snapshotId`. A tag name is unique within the
+dataset: pointing an existing tag at another snapshot returns
+`400 Tag <name> already exists within dataset`, so `DELETE` it first and re-`POST`.
 
 ## Grants (permissions)
 
@@ -112,7 +125,11 @@ DELETE /api/datasetrw/v1/datasets/{datasetId}/grants     body: {"targetId": "<us
 ```
 
 `targetRole` is `DatasetRwOwner`, `DatasetRwEditor` or `DatasetRwReader`; organizations
-cannot be owners. `DELETE` takes the same body. Responses carry `{"grants": [...]}`.
+cannot be owners. `POST` sets (replaces) the target's role rather than adding a second
+grant, and a dataset must keep at least one owner (`400 Dataset must have at least one
+owner` otherwise). `DELETE` takes the same body and is a no-op 200 when no such grant
+exists. `GET` returns `{"grantDetails": [{"targetId", "targetName", "targetRole", "isOrganization"}]}`;
+`POST` returns `{"grants": [...]}`.
 
 ## Mount paths inside executions
 

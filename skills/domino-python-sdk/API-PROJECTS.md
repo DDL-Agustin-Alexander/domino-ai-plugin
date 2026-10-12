@@ -17,10 +17,11 @@ GET /api/projects/beta/projects?offset=0&limit=20
 
 Only `offset` and `limit` (default 10) are accepted; there is no name or owner filter, so
 filter client-side. Response: `{"projects": [...], "metadata": {"offset", "limit", "totalCount", "notices", "requestId"}}`.
-Each project has `id`, `name`, `description`, `visibility` (spec enum `public`,
-`searchable`, `private`; a live deployment has been seen returning `Private`, so compare
-case-insensitively), `ownerId`, `ownerUsername`, `collaborators`, `isRestricted`,
-optional `billingTag` and `mainRepository`.
+Each project has `id`, `name`, `description`, `visibility`, `ownerId`, `ownerUsername`,
+`collaborators`, `isRestricted`, optional `billingTag` and `mainRepository`. The spec
+enum for `visibility` is lowercase (`public`, `searchable`, `private`); live (Domino
+Cloud 6.4.0) the server accepts either case on create and returns `Private`, so compare
+case-insensitively. An unknown value fails with a 500 naming the accepted set.
 
 ```python
 projects = requests.get(f"{base_url}/api/projects/beta/projects", headers=headers,
@@ -49,7 +50,9 @@ project = requests.post(f"{base_url}/api/projects/beta/projects", headers=header
 project_id = project["id"]
 ```
 
-Response: `{"project": {...}, "metadata": {...}}`.
+Response: `{"project": {...}, "metadata": {...}}` with HTTP 200. A `mainRepository`
+of `{"uri": "https://github.com/org/repo", "serviceProvider": "github", "defaultRef": {"refType": "head"}}`
+creates a Git-based project (verified live; the server echoes `Head` and `Github`).
 
 ## Get a project
 
@@ -101,7 +104,8 @@ requests.post(f"{base_url}/api/projects/v1/projects/{project_id}/collaborators",
 ```
 
 There is no Public API route that lists collaborators separately; the project object from
-`GET /api/projects/v1/projects/{projectId}` carries `collaborators`.
+`GET /api/projects/v1/projects/{projectId}` carries `collaborators`. Adding a user who is
+already on the project returns `400 User <id> is already part of project <id>`.
 
 ## Git repositories
 
@@ -144,9 +148,9 @@ with `POST /api/jobs/v1/goals?jobId=...` ([API-JOBS.md](./API-JOBS.md#job-goals)
 ## Shared datasets
 
 ```
-GET    /api/projects/v1/projects/{projectId}/shared-datasets
+GET    /api/projects/v1/projects/{projectId}/shared-datasets      -> {"dataset": {"projectId", "sharedDatasetIds": [...]}} (200 even when empty)
 POST   /api/projects/v1/projects/{projectId}/shared-datasets      body: {"datasetId": "<dataset-id>"}
-DELETE /api/projects/v1/projects/{projectId}/shared-datasets/{datasetId}
+DELETE /api/projects/v1/projects/{projectId}/shared-datasets/{datasetId}   -> {"success": true}
 ```
 
 ## Project files

@@ -94,8 +94,11 @@ POST  /api/apps/beta/apps/{appId}/versions/{versionId}/start
 POST  /api/apps/beta/apps/{appId}/versions/{versionId}/stop
 ```
 
-Use `start` and `stop` on a version to run or halt the app. A version record carries
-`currentInstance` (`id`, `status`, `createdAt`, `dfsCommitId`, `gitCommitId`).
+Use `start` and `stop` on a version to run or halt the app; the beta routes accept an
+empty request (verified on Domino Cloud 6.4.0: start with no body returned 200 and the
+instance was `Running` about 35 s later). A version record carries `currentInstance`
+(`id`, `status`, `createdAt`, `dfsCommitId`, `gitCommitId`). Instance statuses seen live:
+`Queued`, `Pending`, `Preparing`, `Running`, `Stopped`.
 
 ## Instances and logs
 
@@ -109,8 +112,9 @@ POST   /api/apps/beta/apps/{appId}/versions/{versionId}/instances/{instanceId}/v
 ```
 
 ```python
-version = requests.get(f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}", headers=headers).json()
-instance_id = version["currentInstance"]["id"]
+instances = requests.get(f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}/instances",
+                         headers=headers).json()          # {"items": [{"id", "createdAt", "status", "dfsCommitId"}], "metadata": {...}}
+instance_id = instances["items"][0]["id"]
 logs = requests.get(
     f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}/instances/{instance_id}/logs",
     headers=headers)

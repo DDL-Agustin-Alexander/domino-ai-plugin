@@ -81,7 +81,9 @@ curl -s -H "$H" "$BASE/tags?namespaceId=<ns>&rootOnly=true&limit=50"
 # Create (label and namespaceId required; description optional; parentId nests under a tag in the same namespace)
 curl -s -X POST -H "$H" -H "Content-Type: application/json" \
   -d '{"label":"SDTM","namespaceId":"<ns>","description":"Study Data Tabulation Model","parentId":"<parent-tag>"}' "$BASE/tags"
-# 201 -> tag record with fullPath, e.g. ["Clinical_Data","SDTM"]
+# 201 -> tag record (id, label, description, namespaceId, parentId, status, entityCount, ...).
+#        The schema lists an optional fullPath; on Domino Cloud 6.4.0 neither this response nor
+#        GET /tags/{id} included it, so build the path from parentId or use /tags/autocomplete.
 
 # Get one
 curl -s -H "$H" "$BASE/tags/<id>"

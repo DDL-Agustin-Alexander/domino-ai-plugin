@@ -37,7 +37,7 @@ items = requests.get(f"{base_url}/api/modelServing/v1/modelApis", headers=header
 ### Create
 
 ```
-POST /api/modelServing/v1/modelApis        -> 201 with the Model API record
+POST /api/modelServing/v1/modelApis        -> the Model API record (spec says 201; Domino Cloud 6.4.0 returned 200)
 ```
 
 Required: `name`, `description`, `environmentId`, `isAsync`, `strictNodeAntiAffinity`,
@@ -71,6 +71,23 @@ model_api = requests.post(f"{base_url}/api/modelServing/v1/modelApis", headers=h
 model_api_id = model_api["id"]
 ```
 
+Verified live (Domino Cloud 6.4.0) with this body: the record came back with
+`hardwareTierId: "small-k8s"` (the project default, not the deployment's
+`isDefaultForModelApi` tier), an access token created automatically (id only, no value),
+and `activeVersion` without a `deployment` key until the build finished; after about
+2.5 minutes `activeVersion.deployment` was `{"status": "Running", "isPending": false}`.
+
+```python
+import time
+deadline = time.time() + 1800
+while time.time() < deadline:
+    api = requests.get(f"{base_url}/api/modelServing/v1/modelApis/{model_api_id}", headers=headers).json()
+    deployment = (api.get("activeVersion") or {}).get("deployment")   # absent until deployed
+    if deployment and not deployment["isPending"]:
+        print("status:", deployment["status"]); break
+    time.sleep(15)
+```
+
 ### Get, update, delete
 
 ```
@@ -80,8 +97,14 @@ DELETE /api/modelServing/v1/modelApis/{modelApiId}
 ```
 
 The GET response carries `access.accessTokens[]` (token ids and metadata, not the secret
-values) and `activeVersion.deployment.status`. It does not include the invocation URL;
-read that from the Model API's page in Domino.
+values) and, once deployed, `activeVersion.deployment.status`. It does not include the
+invocation URL; read that from the Model API's page in Domino.
+
+`DELETE` on a running Model API returns `500 Model API with id <id> is running`. The
+Public API has no stop route; stop it first with
+`POST /v4/models/{modelApiId}/{modelApiVersionId}/stopModelDeployment` (body `{}`;
+internal API, may change between Domino versions) or from the UI, then `DELETE`. After
+deletion `GET` returns 404 and the list no longer includes the record.
 
 **Cloud only:** `PUT /api/modelServing/beta/modelApis/{modelApiId}/access` (body
 `collaborators[]` with `id`, `isOrganization`, `role` `Owner`/`Editor`/`Operator`/`Viewer`,
