@@ -24,7 +24,7 @@ and frameworks you used in the reply so the user can change them.
 
 1. Copy `assets/experiment_setup.py` from this skill's folder into the project. It provides:
    - `setup_experiment(base_name)`: sets an experiment named `<base>-<project>-<username>`.
-   - `log_domino_context()`: tags the run with the Domino user, project, run ID, and hardware tier.
+   - `log_domino_context()`: tags the run with the Domino user, project, run ID, run number, and hardware tier id (`DOMINO_HARDWARE_TIER_ID`).
    - `setup_autolog()`: enables MLflow autologging for whichever supported frameworks are installed.
 2. Report which frameworks were detected and will be autologged, for example:
 

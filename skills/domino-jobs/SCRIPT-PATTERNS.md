@@ -1,129 +1,126 @@
 # Job script patterns
 
-Command lines for running Python, notebooks, R and shell scripts as Domino Jobs; what a script sees inside a job (environment variables, output paths, logs); script-side best practices; and troubleshooting failed jobs.
+Applies to Domino 6.3 and Domino Cloud. What a script sees inside a Domino Job, where to write outputs, how logs and results are captured, and script-side practices. Starting, scheduling and monitoring Jobs: [SKILL.md](./SKILL.md).
 
-Starting, scheduling and monitoring jobs: [SKILL.md](./SKILL.md).
+## Job commands
 
-## Job Commands
+The command is run from `DOMINO_WORKING_DIR` with the Project files in place. Domino recognises the file type from the extension:
 
-### Run Python Script
 ```bash
-python train.py
+python train.py --data /mnt/data/my-dataset/train.csv   # Python script with arguments
+train.py --epochs 10                                      # same; interpreter chosen by extension
+Rscript analysis.R                                        # R
+notebook.ipynb                                            # executes the notebook and saves the result
+bash pipeline.sh                                          # shell wrapper (for spark-submit, nbconvert, ...)
 ```
 
-### Run with Arguments
+Any non-zero exit code marks the Job **Failed**. To treat a specific code (here `2`) as success, wrap the command so the wrapper's last status is what Domino sees:
+
 ```bash
-python train.py --data /mnt/data/train.csv --output /mnt/artifacts/model.pkl
+bash -c 'python train.py "$@"; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 2 ]' _ --epochs 10
 ```
 
-### Run Jupyter Notebook
-```bash
-jupyter nbconvert --to notebook --execute notebook.ipynb
-```
+## Environment variables in a Job
 
-### Run R Script
-```bash
-Rscript analysis.R
-```
-
-### Run Shell Script
-```bash
-bash pipeline.sh
-```
-
-## Environment Variables in Jobs
+Documented defaults (full glossary: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environments/manage-compute-environments/manage-environment-variables/5-glossary-default-variables):
 
 ```python
 import os
 
-# Domino-provided
-run_id = os.environ.get('DOMINO_RUN_ID')
-project_name = os.environ.get('DOMINO_PROJECT_NAME')
-username = os.environ.get('DOMINO_USER_NAME')
-
-# Custom (set in project or job settings)
-api_key = os.environ.get('MY_API_KEY')
+os.environ["DOMINO_RUN_ID"], os.environ["DOMINO_RUN_NUMBER"]
+os.environ["DOMINO_PROJECT_ID"], os.environ["DOMINO_PROJECT_NAME"], os.environ["DOMINO_PROJECT_OWNER"]
+os.environ["DOMINO_USER_NAME"], os.environ["DOMINO_STARTING_USERNAME"]
+os.environ["DOMINO_WORKING_DIR"]                 # /mnt (DFS) or /mnt/code (Git-based)
+os.environ.get("DOMINO_IS_GIT_BASED")            # "true" / "false"
+os.environ["DOMINO_HARDWARE_TIER_ID"]
+os.environ["DOMINO_API_HOST"], os.environ["DOMINO_API_PROXY"]
+os.environ.get("MY_SETTING")                     # Project, environment or user variable you defined
 ```
 
-## Accessing Job Results
+Names starting with `DOMINO_` are reserved; prefix your own variables (`ACME_...`). `DOMINO_USER_API_KEY` is deprecated: call the API through `DOMINO_API_PROXY` instead.
 
-### Output Files
-Files written to `/mnt/` directories are available after job completion:
-- `/mnt/results/` - Custom outputs
-- `/mnt/artifacts/` - Model artifacts
+## Where to write outputs
 
-### Job Logs
-View logs in Domino UI or via API:
+| | DFS Project | Git-based Project |
+|---|---|---|
+| Working directory | `/mnt` | `/mnt/code` (the repository) |
+| Tracked as results | anything changed under `/mnt` | changes under `/mnt/artifacts`; put files in `/mnt/artifacts/results/` for email attachments |
+| Datasets | `/domino/datasets/local/<name>` | `/mnt/data/<name>` |
+| `email.html`, `dominostats.json`, `.dominoresults` | Project root `/mnt` | `/mnt/artifacts` (`dominostats.json` at the Project root) |
+
+Results are the files added or modified between the Job's input and output commits; use them for models, reports and metrics files. Large or many files belong in a Dataset ([domino-datasets](../domino-datasets/SKILL.md)): by default a Project holds at most 10,000 files and a single file transfer is capped at 8 GB (both admin-configurable), and sync time grows with size. Project files are not mounted on compute-cluster nodes, so a Job with a cluster writes to a Dataset.
+
 ```python
-# Get job logs
-logs = domino.runs_get_logs(run_id)
-print(logs)
+import json, os
+from pathlib import Path
+
+git_based = os.environ.get("DOMINO_IS_GIT_BASED", "false").lower() == "true"
+out = Path("/mnt/artifacts/results") if git_based else Path(os.environ["DOMINO_WORKING_DIR"]) / "results"
+out.mkdir(parents=True, exist_ok=True)
+joblib.dump(model, out / "model.joblib")
+(out / "metrics.json").write_text(json.dumps(metrics))
 ```
 
-### Stdout/Stderr
-All print statements and errors are captured in job logs.
+## Dashboard columns and emails
 
-## Job Best Practices
+- `dominostats.json` (Project root): a flat JSON object; each key becomes a column on the Jobs dashboard and a series on the Jobs Timeline. Domino deletes the file before each execution, so write it every run.
+  ```python
+  with open("dominostats.json", "w") as f:
+      json.dump({"R^2": 0.99, "sse": 10.49}, f)
+  ```
+- `email.html`: body of the success email; `<head><title>...</title></head>` sets the subject; inline CSS; image paths relative to the Project root.
+- `.dominoresults`: one path or glob per line (`*.pdf`, `results/*.png`, `**/*.txt`) selecting what the results view shows and the email attaches; if you use it, list `email.html` in it. `.dominoignore` patterns are excluded from the new file revision altogether (the files are not saved), so use it for scratch output, never to hide a result you still want.
+- MLflow is the recommended place for metrics ([domino-experiment-tracking](../domino-experiment-tracking/SKILL.md)); `dominostats.json` is the lightweight dashboard option.
 
-### 1. Parameterize Scripts
+## Logs
+
+Everything written to stdout and stderr is captured. In the UI the Job's **Logs** tab offers Setup Output, User Output, Deployment Logs and a Support Bundle. From code:
+
 ```python
-import argparse
+import os, requests
+
+base = os.environ["DOMINO_API_PROXY"]                 # outside a run: DOMINO_API_HOST + Bearer token
+logs = requests.get(f"{base}/api/jobs/beta/jobs/{job_id}/logs",
+                    params={"logType": "stdOut", "limit": 1000}).json()
+for line in logs["logs"]["logContent"]:
+    print(line["timestamp"], line["log"], end="")
+# logs["logs"]["isComplete"]; pass metadata.pagination.latestTimeNano back as latestTimeNano for the next page
+```
+
+`logType` is `stdOut`, `stdErr`, `prepareOutput` (setup) or `complete`.
+
+## Script practices
+
+```python
+import argparse, logging, sys
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--data-path', required=True)
-parser.add_argument('--model-output', required=True)
-parser.add_argument('--epochs', type=int, default=100)
+parser.add_argument("--data-path", required=True)
+parser.add_argument("--epochs", type=int, default=100)
 args = parser.parse_args()
-```
 
-### 2. Log Progress
-```python
-import logging
+logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-logger.info("Starting training...")
-logger.info(f"Epoch {epoch}/{total_epochs}")
-logger.info("Training complete!")
-```
-
-### 3. Handle Failures Gracefully
-```python
 try:
-    train_model(data)
-except Exception as e:
-    logger.error(f"Training failed: {e}")
-    # Save checkpoint
-    save_checkpoint(model, "checkpoint.pt")
-    raise
+    for epoch in range(args.epochs):
+        log.info("epoch %d/%d", epoch + 1, args.epochs)
+        # ...
+except Exception:
+    log.exception("training failed")
+    save_checkpoint(model, out / "checkpoint.pt")    # keep partial work as a result
+    raise                                             # non-zero exit -> Failed, failure email
 ```
 
-### 4. Save Artifacts
-```python
-import joblib
+- Parameterize with arguments or environment variables rather than editing the script per run; the Job records the command.
+- Flush logs (`print(..., flush=True)` or logging to stdout) so progress is visible while running.
+- Pin dependencies in the environment Dockerfile, not `requirements.txt`, for fast repeatable starts ([domino-environments](../domino-environments/SKILL.md)).
+- Read inputs from Datasets or data sources; write reproducible outputs to the results directory and large artifacts to a Dataset with a completion snapshot (`snapshotDatasetsOnCompletion`).
 
-# Save model
-joblib.dump(model, "/mnt/artifacts/model.joblib")
+## Troubleshooting failed Jobs
 
-# Save metrics
-with open("/mnt/artifacts/metrics.json", "w") as f:
-    json.dump(metrics, f)
-```
-
-## Troubleshooting
-
-### Job Fails Immediately
-- Check script syntax
-- Verify file paths exist
-- Check environment has required packages
-
-### Job Times Out
-- Increase hardware tier resources
-- Optimize code performance
-- Check for infinite loops
-
-### Out of Memory
-- Use larger hardware tier
-- Optimize data loading (chunking, generators)
-- Clear variables when no longer needed
+- **Fails at once with `Failed`**: read `stdErr`; typical causes are a wrong relative path (the working directory is `/mnt` or `/mnt/code`), a missing package in the environment revision, or a missing argument.
+- **`Error` state**: platform-side; check `prepareOutput` logs, the environment build status and the hardware tier's capacity, then open the support bundle.
+- **Out of memory**: larger hardware tier, chunked loading, or a compute cluster; check **Usage** on the Job.
+- **Long queue times**: per-user execution limit, tier capacity, or a cluster waiting for workers.
+- **Results missing**: files written outside the tracked directories (table above), or matched by `.dominoignore` (they are dropped from the revision, not just hidden).

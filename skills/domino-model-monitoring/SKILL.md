@@ -1,285 +1,70 @@
 ---
 name: domino-model-monitoring
-description: Monitor deployed models in Domino including drift detection, model quality tracking, and alerting. Covers data drift analysis, prediction capture, baseline comparison, alert configuration, and remediation workflows. Use when monitoring production models, detecting drift, or setting up model health alerts.
+description: Monitor production models in Domino for data drift and model quality. Covers the two workflows (integrated monitoring for Domino endpoints with prediction capture, and Model Monitor for models served elsewhere), the DataCaptureClient prediction-capture library, registering training sets, prediction data and ground truth with the Monitoring Config JSON, drift tests and thresholds, scheduled checks and notifications, where captured predictions live, remediation, and the Model Monitoring REST API including custom metrics. Use when setting up monitoring for an endpoint, registering an external model, ingesting ground truth, reading drift or quality results by API, or automating retraining on drift.
+compatibility: Domino 6.3 and Domino Cloud. Model Monitoring API calls use the same bearer authentication as other Domino APIs (DOMINO_API_PROXY or the localhost:8899 access token in a run; PAT or service account outside). Integrated endpoint monitoring is not available for endpoints on remote data planes.
 ---
 
-# Domino Model Monitoring Skill
+# Domino model monitoring
 
-## Description
-This skill helps users monitor deployed models in Domino, including drift detection, model quality tracking, and alerting.
+Applies to Domino 6.3 and Domino Cloud.
 
-## Activation
-Activate this skill when users want to:
-- Monitor deployed model performance
-- Set up drift detection
-- Configure monitoring alerts
-- Analyze prediction data
-- Understand model degradation
+Operational serving metrics (CPU, latency, status codes) are in `domino-model-endpoints`; this skill is drift and quality. Reference files: [PREDICTION-CAPTURE.md](./PREDICTION-CAPTURE.md) (instrumenting endpoint code, captured data, remediation) and [MONITORING-API.md](./MONITORING-API.md) (REST routes, config JSON, custom metrics).
 
-## What is Model Monitoring?
+## Two workflows
 
-Domino Model Monitoring provides:
-- **Data Drift Detection**: Detect changes in input data distributions
-- **Model Quality Tracking**: Monitor prediction accuracy over time
-- **Alerting**: Get notified when metrics exceed thresholds
-- **Prediction Capture**: Log predictions for analysis
-- **Reproducibility**: Diagnose issues with captured data
+| Model runs as | Workflow | Data handling |
+|---------------|----------|---------------|
+| Domino endpoint | Integrated endpoint monitoring | Domino captures predictions into a project Dataset; you register a TrainingSet and, optionally, ground truth |
+| App, Launcher, Job, or outside Domino | Model Monitor | You connect a data source (S3, generic S3, Azure Blob or Data Lake, GCS, HDFS, NFS, Snowflake) and register training, prediction and ground-truth files with a Monitoring Config JSON |
 
-## Setting Up Monitoring
+Both show up in **Model Monitor** as one list. Endpoint monitoring is not supported for endpoints deployed to a remote data plane.
 
-### Prerequisites
-1. Deployed Model API in Domino
-2. Training dataset (for baseline)
-3. Ground truth data (optional, for quality metrics)
+## Set up monitoring for a Domino endpoint
 
-### Enable Monitoring
-1. Go to your Model API page
-2. Click **Monitoring** tab
-3. Click **Set Up Monitoring**
-4. Upload training dataset
-5. Configure drift detection settings
+1. **Instrument the predict function** with `DataCaptureClient` from `domino_data_capture` (in Domino Standard Environments; otherwise `pip install domino-data-capture` in the environment Dockerfile). Call `capturePrediction(feature_values, predict_values, event_id=..., timestamp=...)` on every request. Full example in [PREDICTION-CAPTURE.md](./PREDICTION-CAPTURE.md).
+2. **Publish the endpoint.** Captured rows land hourly as Parquet in the project Dataset `prediction_data`; nothing is analysed yet.
+3. **Register training data** for drift. The model must have been trained from a Domino TrainingSet in the same project (https://docs.domino.ai/cloud/reference/api/data_api/trainingsets_usecases/create_trainingset). On the endpoint open **Grafana Monitoring** > **Configure Monitoring** > **Data**, pick the Training Set and version, choose **Classification** (categorical target) or **Regression** (numerical target), save.
+4. **Validate**: **Configure Monitoring** > **Target Ranges** shows a populated tests-and-thresholds table once captured predictions have been processed.
+5. **Ground truth** (model quality): predictions need a row identifier (the `event_id` you capture); register a ground-truth file carrying the same identifiers with a config JSON (`variableType: ground_truth`, `forPredictionOutput`) under **Model Monitor** > model > **Model Quality** > **Register Ground Truth**, or by API. **Ingest History** shows `Done` when loaded.
+6. **Schedule and notify**: **Configure Monitoring** > **Schedule** (name, frequency, "new data since last check" or "data since last N days") and **Alert Recipients** (comma- or semicolon-separated emails). Email goes out when a threshold is breached.
 
-### Register Training Data
-```python
-# Training data provides baseline for drift detection
-# Upload via UI or programmatically
+## Set up Model Monitor for an external model
 
-import pandas as pd
+1. Environment: `domino-data-capture` and `dominodatalab[data]` (Python); R needs `DominoDataCapture`.
+2. Connect the data source holding your files: https://docs.domino.ai/cloud/platform-capabilities/features/monitoring/4-set-up-model-monitor/2-connect-a-data-source.
+3. **Model Monitor** > **Register Model** > **Upload Model Config File**: JSON with `variables` (`feature` columns, one `prediction`, optional `timestamp` and `row_identifier`), `datasetDetails` (the training file) and `modelMetadata` (`name`, `modelType` classification or regression, `version`).
+4. **Data Drift** > **Register Prediction** with a config whose `datasetDetails` point at the prediction file. With a `timestamp` variable Domino re-ingests new rows daily at 00:00 UTC; without it each batch needs a new registration (re-registering the same file ingests rows twice).
+5. **Model Quality** > **Register Ground Truth**, then **Schedule** and notifications as above.
 
-# Your training data
-train_df = pd.read_csv("training_data.csv")
+## Drift and quality
 
-# Save for monitoring setup
-train_df.to_csv("/mnt/artifacts/training_data.csv", index=False)
-```
+- Tests: Kullback-Leibler divergence (recommended default), Chi-square (categorical), Population Stability Index (PSI < 0.1 no change, < 0.2 moderate, >= 0.2 significant). Per-feature test, acceptable range and threshold are set on the model's **Data Drift** page (Model Monitor) or **Target Ranges** (endpoint); **Other Actions** > **Save Checks Config** makes them the defaults for scheduled checks; global defaults under **Settings** > **Test Defaults**.
+- Scheduled drift checks run daily at noon UTC by default and analyse data through 23:59 of the previous day.
+- Quality metrics: classification gives accuracy, precision, recall, F1, AUC-ROC, log loss, normalized Gini and a confusion matrix; regression gives MSE, MAE, MAPE, R2 and normalized Gini. AUC, log loss and Gini need `prediction_probability`; Gini also uses `sample_weight`. Ground truth is matched to predictions by the row identifier among labels ingested in the last 90 days.
+- Mute a feature or metric with the bell icon to keep it out of scheduled-check alerts.
 
-## Drift Detection
+## Captured prediction data
 
-### Types of Drift
+Hourly Parquet files in the `prediction_data` Dataset: `/mnt/data/prediction_data/<model_version_id>/...` in Git-based projects, `/domino/datasets/local/prediction_data/<model_version_id>/...` in DFS projects. A daily job deletes files older than 30 days by default. Capture is sized for 8 GB per endpoint per 24 hours. Do not rename the generated files.
 
-| Drift Type | Description |
-|------------|-------------|
-| **Data Drift** | Input feature distributions change |
-| **Concept Drift** | Relationship between inputs and outputs changes |
-| **Prediction Drift** | Output distribution changes |
+## Remediate
 
-### Statistical Tests
-
-Domino supports multiple drift detection tests:
-
-| Test | Best For |
-|------|----------|
-| **Kullback-Leibler Divergence** | General-purpose, most common |
-| **Population Stability Index (PSI)** | Finance industry standard |
-| **Wasserstein Distance** | Comparing distributions |
-| **Energy Distance** | Multivariate distributions |
-
-### Configure Drift Detection
-
-1. Go to Model API > **Monitoring**
-2. Click **Configure Drift Detection**
-3. For each feature:
-   - Select test type
-   - Set threshold
-   - Enable/disable alerts
-
-### Example Thresholds
-
-| Test | Low Drift | Medium Drift | High Drift |
-|------|-----------|--------------|------------|
-| KL Divergence | < 0.1 | 0.1 - 0.2 | > 0.2 |
-| PSI | < 0.1 | 0.1 - 0.25 | > 0.25 |
-
-## Prediction Capture
-
-### How It Works
-Domino automatically captures predictions:
-1. Model receives request
-2. Prediction is made
-3. Input/output logged to dataset
-4. Data available for drift analysis
-
-### Access Captured Data
-```python
-import pandas as pd
-
-# Predictions captured in Domino Dataset
-predictions_df = pd.read_parquet(
-    "/mnt/data/model-predictions/predictions.parquet"
-)
-
-print(predictions_df.head())
-```
-
-### Capture Frequency
-- Predictions batched hourly
-- Full data available in monitoring dataset
-- Retention configurable by admin
-
-## Model Quality Monitoring
-
-### With Ground Truth
-If you provide ground truth labels:
-
-```python
-# Upload ground truth
-ground_truth = pd.DataFrame({
-    "prediction_id": [...],
-    "actual_label": [...]
-})
-
-# Upload to monitoring
-ground_truth.to_csv("/mnt/artifacts/ground_truth.csv", index=False)
-```
-
-### Quality Metrics
-- Accuracy
-- Precision/Recall
-- F1 Score
-- AUC-ROC
-- Mean Squared Error (regression)
-
-### Schedule Quality Checks
-1. Go to Monitoring > **Quality**
-2. Upload ground truth dataset
-3. Configure metric thresholds
-4. Set check frequency
-
-## Alerting
-
-### Configure Alerts
-1. Go to Model API > **Monitoring**
-2. Click **Alerts**
-3. Configure:
-   - Metric to monitor
-   - Threshold
-   - Alert recipients (email)
-
-### Alert Types
-- Drift threshold exceeded
-- Quality metric below threshold
-- Model API health issues
-- Prediction volume anomalies
-
-### Disable Noisy Alerts
-Click the bell icon next to features to exclude from alerts.
-
-## Viewing Monitoring Data
-
-### Monitoring Dashboard
-Go to Model API > **Monitoring** to see:
-- Drift trends over time
-- Feature distributions
-- Quality metrics
-- Alert history
-
-### Export Data
-```python
-# Export monitoring data for custom analysis
-import pandas as pd
-
-drift_report = pd.read_csv("/mnt/data/monitoring/drift_report.csv")
-print(drift_report)
-```
-
-## Responding to Drift
-
-### Investigation Workflow
-1. **Alert received**: Drift detected on feature X
-2. **Investigate**: View feature distribution changes
-3. **Diagnose**: Compare current vs training data
-4. **Action**: Retrain or update model
-
-### Retrain Model
-```python
-# When drift is detected, retrain with recent data
-from sklearn.ensemble import RandomForestClassifier
-
-# Load recent data
-recent_data = pd.read_csv("/mnt/data/recent_predictions.csv")
-
-# Combine with ground truth
-training_data = merge_with_ground_truth(recent_data)
-
-# Retrain
-model = RandomForestClassifier()
-model.fit(training_data[features], training_data[label])
-
-# Deploy new version
-joblib.dump(model, "/mnt/artifacts/model_v2.joblib")
-```
-
-### Automated Retraining
-Set up scheduled job to retrain when drift detected:
-```python
-# scheduled_retrain.py
-from domino import Domino
-
-domino = Domino("project/model-project")
-
-# Check drift status
-drift_status = check_drift_metrics()
-
-if drift_status["max_drift"] > 0.2:
-    # Trigger retrain job
-    domino.runs_start(
-        command="python retrain.py",
-        hardware_tier_name="medium"
-    )
-```
-
-## Best Practices
-
-### 1. Baseline with Quality Data
-Use clean, representative training data for baseline.
-
-### 2. Monitor Key Features
-Focus on features with highest importance:
-```python
-# Identify important features
-importances = model.feature_importances_
-top_features = sorted(
-    zip(feature_names, importances),
-    key=lambda x: x[1],
-    reverse=True
-)[:10]
-```
-
-### 3. Set Appropriate Thresholds
-- Start with conservative thresholds
-- Adjust based on business impact
-- Different thresholds for different features
-
-### 4. Include Business Context
-Not all drift requires action:
-- Seasonal variations may be expected
-- New customer segments may cause drift
-- Consider business impact before reacting
-
-### 5. Regular Reviews
-Schedule periodic monitoring reviews:
-- Weekly: Check drift trends
-- Monthly: Review alert configurations
-- Quarterly: Assess model performance
+1. From the alert, open the model's drift or quality page and the Cohort Analysis report to find the failing cohorts.
+2. On the endpoint click **Open in Workspace**: Domino opens a Workspace on a new branch at the published commit, with `prediction_data` available.
+3. Fix the code or retrain on recent predictions plus labels; publish a new endpoint version (`domino-model-endpoints`).
+4. To automate, a scheduled Job reads check results by API ([MONITORING-API.md](./MONITORING-API.md)) and starts retraining with `POST /api/jobs/v1/jobs` (`projectId`, `runCommand`; see `domino-jobs`).
 
 ## Troubleshooting
 
-### No Data in Monitoring
-- Verify Model API is receiving traffic
-- Check prediction capture is enabled
-- Wait for hourly batch processing
+| Message or symptom | Cause |
+|--------------------|-------|
+| Monitoring is not enabled | No capture client in `predict()`, no training set registered, or the first scheduled check has not run yet |
+| Waiting for data | No processed predictions yet; **Target Ranges** > **Date Filter** > Today shows what has arrived |
+| Selected training set version cannot be used | The TrainingSet version has no schema, is empty, or its target type does not match the chosen model type |
+| `no package called 'DominoDataCapture'` or an import error | The environment lacks the capture library; use a Domino Standard Environment or install it |
 
-### Drift Always High
-- Review training data quality
-- Check for data preprocessing differences
-- Verify feature encoding consistency
+## Documentation
 
-### Alerts Not Sending
-- Check email configuration
-- Verify alert thresholds
-- Review spam folders
-
-## Documentation Reference
-- [Drift detection for monitored models](https://docs.dominodatalab.com/en/latest/user_guide/86bc1f/drift-detection-for-monitored-models/)
-- [Domino endpoint drift detection](https://docs.dominodatalab.com/en/latest/user_guide/c97091/domino-endpoint-drift-detection/)
-- [Monitor workflows](https://docs.dominodatalab.com/en/latest/user_guide/85f76d/monitor-workflows/)
+- https://docs.domino.ai/cloud/platform-capabilities/features/monitoring/index (workflows, setup, config JSON, APIs, troubleshooting)
+- https://docs.domino.ai/cloud/platform-capabilities/features/monitoring/8-json/index
+- https://docs.domino.ai/cloud/platform-capabilities/features/monitoring/6-remediation/2-remediate-a-domino-endpoint

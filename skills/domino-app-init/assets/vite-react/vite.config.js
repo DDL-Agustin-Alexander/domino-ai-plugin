@@ -1,26 +1,20 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// Domino-compatible Vite configuration
-// See: https://github.com/dominodatalab/domino-blueprints/tree/main/React-app-deployment-with-CICD
+// Domino-compatible Vite configuration.
+// Domino serves the App under a URL prefix and strips it before forwarding to the container.
 
 export default defineConfig({
   plugins: [react()],
 
-  // CRITICAL: Use relative base path for Domino proxy compatibility
-  // Without this, assets will 404 behind Domino's reverse proxy
+  // Required: relative asset URLs in the production build. The default '/' emits /assets/...
+  // which 404s behind the proxy. (Vite ignores a relative base in the dev server.)
   base: './',
 
+  // Local development on a laptop only (`npm run dev`). Inside Domino, test with App Preview,
+  // which runs app.sh (build + server.js) in a real App runtime; the published App never uses
+  // the Vite dev server or `vite preview`.
   server: {
-    // Bind to all interfaces so Domino can reach the app
-    host: '0.0.0.0',
-    // Default port for Domino apps (flexible - can use other ports)
-    port: 8888,
-    // Fail if port is unavailable (don't silently switch)
-    strictPort: true,
-  },
-
-  preview: {
     host: '0.0.0.0',
     port: 8888,
     strictPort: true,

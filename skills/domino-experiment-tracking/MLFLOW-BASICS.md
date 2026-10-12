@@ -1,6 +1,6 @@
 # MLflow Basics for Domino Experiment Tracking
 
-This guide covers the fundamentals of using MLflow for experiment tracking in Domino Data Lab.
+Applies to Domino 6.3 and Domino Cloud. This guide covers the fundamentals of using MLflow for experiment tracking in Domino; `MLFLOW_TRACKING_URI` is preconfigured in Workspaces and Jobs, so no tracking-server setup is needed. Product reference: https://docs.domino.ai/cloud/platform-capabilities/features/development/track-monitor
 
 ## Setting Up an Experiment
 
@@ -39,9 +39,12 @@ def log_domino_context():
         "domino.user": os.environ.get('DOMINO_STARTING_USERNAME', 'unknown'),
         "domino.project": os.environ.get('DOMINO_PROJECT_NAME', 'unknown'),
         "domino.run_id": os.environ.get('DOMINO_RUN_ID', 'unknown'),
-        "domino.hardware_tier": os.environ.get('DOMINO_HARDWARE_TIER_NAME', 'unknown'),
+        "domino.run_number": os.environ.get('DOMINO_RUN_NUMBER', 'unknown'),
+        "domino.hardware_tier": os.environ.get('DOMINO_HARDWARE_TIER_ID', 'unknown'),
     })
 ```
+
+Domino injects `DOMINO_HARDWARE_TIER_ID` (the tier id); there is no `DOMINO_HARDWARE_TIER_NAME` variable. Full list: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environments/manage-compute-environments/manage-environment-variables/5-glossary-default-variables
 
 ## Auto-Logging
 
@@ -220,14 +223,15 @@ with mlflow.start_run():
 
 ## Large Artifact Upload
 
-For large files (LLMs, deep learning models), enable multipart upload:
+For large files (LLMs, deep learning models), enable multipart upload straight to blob storage (supported on AWS and GCP deployments):
 
 ```python
 import os
 
 # Enable multipart upload for large files
 os.environ['MLFLOW_ENABLE_PROXY_MULTIPART_UPLOAD'] = "true"
-os.environ['MLFLOW_MULTIPART_UPLOAD_CHUNK_SIZE'] = "104857600"  # 100MB chunks
+os.environ['MLFLOW_MULTIPART_UPLOAD_CHUNK_SIZE'] = "104857600"  # optional, 100MB chunks; a file splits into at most 1000 chunks
+# optional: MLFLOW_MULTIPART_UPLOAD_MINIMUM_FILE_SIZE
 
 with mlflow.start_run():
     mlflow.log_artifact("large_model.bin")

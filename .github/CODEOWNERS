@@ -43,7 +43,8 @@
 # ---------------------------------------------------------------------------------------------
 
 # Agents, coding assistants, LLMs  (docs: features/agents, features/coding-assistants, features/llms)
-/skills/domino-ai-gateway/                     @DDL-Theo-Linnemann @etanlightstone-domino @ddl-subir-m
+/skills/domino-llm-access/                     @DDL-Theo-Linnemann @etanlightstone-domino @ddl-subir-m
+/skills/domino-llm-gateway/                    @DDL-Theo-Linnemann @etanlightstone-domino @ddl-subir-m
 /skills/domino-genai-tracing/                  @DDL-Theo-Linnemann @etanlightstone-domino @ddl-subir-m
 /skills/domino-trace-setup/             @DDL-Theo-Linnemann @etanlightstone-domino @ddl-subir-m
 /skills/domino-modeling-assistant/             @DDL-Theo-Linnemann @etanlightstone-domino @ddl-subir-m
@@ -62,6 +63,7 @@
 /skills/domino-environments/                   @DDL-Theo-Linnemann @ddl-matthew-bonyak @ddl-s-rodriguez
 /skills/domino-jobs/                           @DDL-Theo-Linnemann @ddl-matthew-bonyak @ddl-s-rodriguez
 /skills/domino-distributed-computing/          @DDL-Theo-Linnemann @ddl-matthew-bonyak @ddl-s-rodriguez
+/skills/domino-airflow-kubeflow/        @DDL-Theo-Linnemann @ddl-matthew-bonyak @ddl-s-rodriguez
 
 # Data  (docs: core-concepts/data, admin/data-administration)
 /skills/domino-datasets/                       @DDL-Theo-Linnemann @ddl-giuliocapolino
@@ -83,11 +85,13 @@
 /skills/domino-model-endpoints/                @DDL-Theo-Linnemann @ddl-matthew-bonyak @ddl-rodrigo-fernandez
 /skills/domino-model-serving/           @DDL-Theo-Linnemann @ddl-matthew-bonyak @ddl-rodrigo-fernandez @ddl-bira-ignacio
 /skills/domino-model-monitoring/               @DDL-Theo-Linnemann @ddl-matthew-bonyak @ddl-rodrigo-fernandez
+/skills/domino-model-delivery/          @DDL-Theo-Linnemann @ddl-matthew-bonyak @ddl-rodrigo-fernandez
 
 # Governance  (docs: features/governance)
 /skills/domino-governance/              @DDL-Theo-Linnemann @ddl-dkelkhoff @ddl-giuliocapolino @ddl-bira-ignacio
 
-# API, SDK and MCP server  (docs: reference/api, reference/python-sdk)
+# API, SDK, CLI and MCP server  (docs: reference/api, reference/python-sdk, reference/cli, reference/r-package)
 /skills/domino-api-intro/               @DDL-Theo-Linnemann @ddl-ebrown @ddl-bira-ignacio
 /skills/domino-python-sdk/                     @DDL-Theo-Linnemann @ddl-ebrown @ddl-bira-ignacio
+/skills/domino-cli/                     @DDL-Theo-Linnemann @ddl-ebrown @ddl-bira-ignacio
 /mcp-servers/                           @DDL-Theo-Linnemann @ddl-ebrown @ddl-bira-ignacio

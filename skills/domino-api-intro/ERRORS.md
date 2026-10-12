@@ -1,75 +1,87 @@
 # Errors and retries (agents)
 
-How to interpret Domino API failures, when to retry, and when to change approach. Pagination caps and list quirks live in [LIMITS.md](./LIMITS.md). Auth mistakes look like 401/403; fix mode per https://docs.domino.ai/cloud/reference/api/domino-api-authentication .
+How to interpret Domino API failures, when to retry, and when to change approach.
+Pagination lives in [LIMITS.md](./LIMITS.md). Auth mistakes look like 401/403; fix the
+mode per [SKILL.md](./SKILL.md#authentication) before retrying.
 
-Broader API discovery: https://docs.domino.ai/llms-full.txt
+## Error bodies
 
-## Structured error bodies
-
-Many platform routes return a JSON error envelope (API Standard):
+The Public API spec declares two error shapes:
 
 ```json
-{
-  "message": "Human-readable summary",
-  "errors": [
-    {"code": "...", "message": "...", "details": [{"field": "...", "message": "..."}]}
-  ]
-}
+{"errors": ["human-readable message", "..."], "requestId": "..."}
 ```
 
-On 4xx, read `errors[].code` and `errors[].message` before retrying. On opaque 500 with HTML or empty body, treat as infrastructure or bug, not a validation fix.
+for Nucleus `/api/...` routes (schema `Error`), and
+
+```json
+{"message": "human-readable message"}
+```
+
+for the taxonomy (`/api/taxonomy/v1`) and NetApp (`/remotefs/v1`) services. Some V1
+schemas return `{"code": "...", "message": "..."}` (`ErrorV1`). Read the message before
+retrying. An HTML or empty body on a 5xx is an infrastructure failure, not a validation
+problem.
 
 ## HTTP status: retry or not
 
 | Code | Agent action |
 |------|----------------|
-| **400** | Fix request body, path, or query. Do not blind retry. |
-| **401** | Wrong or expired token, or missing proxy/auth mode. Fix auth per https://docs.domino.ai/cloud/reference/api/domino-api-authentication before retrying. |
-| **403** | RBAC or policy block. Retrying the same call will not help; change role, project, or resource. |
-| **404** | Wrong id, wrong API base (sidecar vs public URL vs data-plane host), or route not on this gateway. Fix host/path; see domain skills (WebVFS, governance external URL, inference vanity URL). |
-| **409** | Conflict (duplicate name, state). Back off or fetch current state and reconcile. |
-| **502 / 504 / timeout** | Often payload too large or upstream overload. Shrink request, paginate, or use a tier-2 API (see datasource audit below). Limited retries with backoff only if the operation is idempotent and size is already reduced. |
-| **500** | May be transient or a known backend bug. Retry once with backoff only if the operation is idempotent and docs do not mark the route as broken. Otherwise stop and surface the error. |
-
-## Scale and list failures
-
-Large list or export calls that build one huge response often fail with **502** or timeout. Prefer paginated endpoints (`offset`/`limit`, `pageToken`, or domain-specific event APIs) over "download everything" routes.
-
-If a list returns fewer rows than `totalCount` or ignores filters, assume truncation or ignored query params; do not treat the first page as complete. Details: [LIMITS.md](./LIMITS.md).
+| **400** | Fix the body, path or query against the spec. Do not retry blindly. |
+| **401** | Missing or expired token, or wrong auth mode for where the code runs. Fix auth per [SKILL.md](./SKILL.md#authentication). |
+| **403** | Permission. Retrying will not help; change the role, project or resource, or ask an admin. |
+| **404** | Wrong id, wrong base URL, or the route is not served where you called it. Check the id, then the base URL per [HOSTS.md](./HOSTS.md). |
+| **409** | Conflict (duplicate name, state). Fetch the current state and reconcile. |
+| **502 / 504 / timeout** | Response too large or upstream overloaded. Reduce page size, paginate, then retry with backoff only if the call is idempotent. |
+| **500** | Retry once with backoff if idempotent; otherwise stop and surface the error with its `requestId`. |
 
 ## Jobs and execution status
 
-Job poll responses may expose status under different fields (`status`, `statusName`, nested `statuses.executionStatus`). Normalize before comparing to terminal values (`Succeeded`, `Failed`, `Stopped`, `Error`, `Cancelled` / `Canceled`).
+`GET /api/jobs/beta/jobs/{jobId}` returns `{"job": {...}, "metadata": {...}}`. Status is the
+object `job.status` with `executionStatus` (string), `isCompleted`, `isArchived` and
+`isScheduled`. Treat `isCompleted: true` as terminal and read `executionStatus` for the
+outcome. Terminal values per
+https://docs.domino.ai/cloud/platform-capabilities/core-concepts/jobs/job-states:
+`Succeeded`, `Stopped` (manually stopped), `Failed` (a problem with your code) and
+`Error` (a problem outside your code); in-flight values include `Queued`, `Scheduled`,
+`Pending`, `Preparing`, `Building`, `Pulling`, `Running`, `Finishing`, `StopRequested`,
+`Stopping`. Only `Succeeded` is success.
 
-Missing or stale status while a run is still active: keep polling with backoff; do not assume failure from an empty status field alone.
+`GET /api/jobs/beta/jobs?projectId=...` filters with `statusFilter` =
+`all | queued | running | completed | archived | active`.
 
-Async job start returns the run id in the **response body**, not only a `Location` header. Poll the job status route documented for your start API on https://docs.domino.ai/llms-full.txt .
+A missing or stale status while a job is still active is not a failure: keep polling with
+backoff. See [API-JOBS.md](../domino-python-sdk/API-JOBS.md) and [domino-jobs](../domino-jobs/SKILL.md).
 
-See [jobs](../domino-jobs/SKILL.md) and [API-JOBS](../domino-python-sdk/API-JOBS.md).
+## Large audit and export reads
 
-## Datasource audit and legacy DataSet projects
+Prefer the paginated routes over one-shot dumps:
 
-**Do not retry** datasource automation that hits **500** on legacy DataSet project paths when listing or bulk audit download. That pattern is a known backend limitation, not a transient glitch.
+- Platform audit: `GET /api/audittrail/v1/auditevents` with `limit`/`offset` and
+  `startTimestamp`/`endTimestamp` (epoch milliseconds), or `POST /api/audittrail/v1/search`
+  (`limit` <= 1000). Details: [API-ADMIN.md](../domino-python-sdk/API-ADMIN.md#audit-trail).
+- Data source audit: `GET /api/datasource/v1/audit` with `startTime`/`endTime`
+  (ISO 8601), `dataSourceNames` and `eventKinds` filters. Documented at
+  https://docs.domino.ai/cloud/admin/operations/audit-logs/monitor-data-source-logs.
+- Governance: `GET /api/governance/v1/results?bundleID=...` filters by `policyID`,
+  `policyVersionID`, `artifactID` and `createdBy.id` (no offset/limit); narrow by filter
+  rather than reading everything at once (see [domino-governance](../domino-governance/SKILL.md)).
 
-Workarounds:
+## Wrong-surface symptoms
 
-- List datasources: `GET /api/datasource/v1/datasources` (filter client-side by project if needed).
-- Audit at scale: paginated `GET /v4/datasource/audit/events` (not a single bulk dump that loads the full audit in one response).
+These look like 404 or connection errors rather than a JSON error body:
 
-See [data-connectivity](../domino-data-connectivity/SKILL.md).
+- Predictions sent to `$DOMINO_API_HOST/api/modelServing/...`: invoke the `url` shown on
+  the Model API's page instead, with the endpoint's own access token (sync endpoints use
+  HTTP Basic with the token as both username and password; async endpoints use
+  `Authorization: Bearer`). See [HOSTS.md](./HOSTS.md#model-api-invocation).
+- Governance 404 on the in-run base: the governance skill falls back to the deployment
+  URL with a PAT or service account token. See [HOSTS.md](./HOSTS.md#governance).
 
-## Wrong surface symptoms
+## Safe 4xx handling
 
-These often look like 404 or connection errors, not JSON `ErrorResponse`:
-
-- WebVFS file ops through `DOMINO_API_HOST` only (need data-plane `/webvfs/...` host).
-- Governance on run sidecar when gateway is off (need public URL + Bearer).
-- Inference or GenAI predict on management API base (use `url` / vanity from the management response).
-
-Fix the base URL and auth mode before retrying.
-
-## Safe 4xx handling for agents
-
-- Do not escalate 403 into legacy API keys; use https://docs.domino.ai/cloud/reference/api/domino-api-authentication .
-- Do not retry POST creates on 400 hoping the server accepts a second shape; read the error body and fix fields.
-- After a failed deploy/start (apps, model APIs, jobs), GET the resource state before issuing the same POST again.
+- Never escalate a 401/403 into a legacy API key.
+- Do not re-POST a create on 400 hoping the server accepts a second shape; read the
+  error and fix the fields against the spec.
+- After a failed start (job, app, model API), GET the resource before issuing the same
+  POST again.

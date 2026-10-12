@@ -1,376 +1,207 @@
 # Domino Jobs API
 
-## Overview
-The Jobs API allows you to start, monitor, and manage batch job executions in Domino.
-
-**Command field names differ by route** (confirm in [API-SPECS.md](../domino-api-intro/API-SPECS.md)):
-
-| Route | Body field | Notes |
-|-------|------------|-------|
-| `POST /api/jobs/v1/jobs` (public catalog, `NewJobV1`) | `runCommand` | One-off job start |
-| `POST /v4/projects/{projectId}/scheduledjobs` (`NewScheduledJobDto`) | `command` | Scheduled job create |
-| `POST /v4/jobs/{projectId}/resolveJobDefaults` | `commandToRun` | Prefetch defaults before scheduled-job create |
-
-Match the body schema for the exact path in [API-SPECS.md](../domino-api-intro/API-SPECS.md).
+Start, list, inspect and poll Jobs with the Public API. Every route and field below is in
+both published specs (https://docs.domino.ai/api-specs/6.3/public-api.json and
+https://docs.domino.ai/api-specs/cloud/public-api.json) unless marked otherwise. Product
+docs: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/jobs/monitor-jobs.
 
 ## Authentication
 
-See [SKILL.md](SKILL.md#authentication).
+Use the shared setup block (`base_url`, `headers`) from
+[domino-api-intro](../domino-api-intro/SKILL.md#authentication). Inside a run,
+`DOMINO_PROJECT_ID` is already set.
 
-```python
-import os
-import requests
+## Start a job
 
-if os.environ.get("DOMINO_API_PROXY"):
-    base_url = os.environ["DOMINO_API_PROXY"].rstrip("/")
-    headers = {}
-else:
-    base_url = (os.environ.get("DOMINO_USER_HOST") or os.environ.get("DOMINO_API_HOST") or "").rstrip("/")
-    token = requests.get("http://localhost:8899/access-token").text.strip()
-    headers = {"Authorization": f"Bearer {token}"}
-```
-
----
-
-## Endpoints
-
-### List Jobs
-```
-GET /api/jobs/beta/jobs
-```
-
-Get jobs for a project.
-
-**Query Parameters:**
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `projectId` | string | **Required** - Filter by project |
-| `offset` | int | Pagination offset |
-| `limit` | int | Results per page |
-| `status` | string | Filter by status |
-
-**Status Values:**
-- `Pending`
-- `Running`
-- `Succeeded`
-- `Failed`
-- `Stopped`
-
-**Example:**
-```python
-response = requests.get(
-    f"{base_url}/api/jobs/beta/jobs",
-    headers=headers,
-    params={
-        "projectId": "project-123",
-        "status": "Running",
-        "limit": 50
-    }
-)
-jobs = response.json()
-```
-
-**Response:**
-```json
-{
-  "data": [
-    {
-      "id": "job-456",
-      "projectId": "project-123",
-      "status": "Running",
-      "command": "python train.py",
-      "startedAt": "2024-01-15T10:00:00Z",
-      "hardwareTierId": "medium",
-      "environmentId": "env-789"
-    }
-  ],
-  "offset": 0,
-  "limit": 50,
-  "totalCount": 1
-}
-```
-
----
-
-### Get Job Details
-```
-GET /api/jobs/beta/jobs/{jobId}
-```
-
-Get detailed information about a specific job.
-
-**Example:**
-```python
-job_id = "job-456"
-response = requests.get(
-    f"{base_url}/api/jobs/beta/jobs/{job_id}",
-    headers=headers
-)
-job = response.json()
-
-print(f"Status: {job['status']}")
-print(f"Started: {job['startedAt']}")
-print(f"Command: {job['command']}")
-```
-
-**Response:**
-```json
-{
-  "id": "job-456",
-  "projectId": "project-123",
-  "status": "Succeeded",
-  "command": "python train.py --epochs 100",
-  "hardwareTierId": "gpu-small",
-  "environmentId": "env-789",
-  "startedAt": "2024-01-15T10:00:00Z",
-  "endedAt": "2024-01-15T12:30:00Z",
-  "commitId": "abc123def456",
-  "outputCommitId": "def456abc789"
-}
-```
-
----
-
-### Get Job Logs
-```
-GET /api/jobs/beta/jobs/{jobId}/logs
-```
-
-Retrieve execution logs for a job.
-
-**Example:**
-```python
-job_id = "job-456"
-response = requests.get(
-    f"{base_url}/api/jobs/beta/jobs/{job_id}/logs",
-    headers=headers
-)
-logs = response.text
-print(logs)
-```
-
----
-
-### Start Job
 ```
 POST /api/jobs/v1/jobs
 ```
 
-Start a new job execution.
+Request body (`projectId` and `runCommand` are the only required fields):
 
-**Request Body:**
-```json
-{
-  "projectId": "project-123",
-  "runCommand": "python train.py --epochs 100",
-  "hardwareTierId": "gpu-small",
-  "environmentId": "env-789",
-  "commitId": "abc123",
-  "title": "Training Run",
-  "isDirectHardwareTierId": false
-}
-```
+| Field | Type | Notes |
+|-------|------|-------|
+| `projectId` | string | **Required** |
+| `runCommand` | string | **Required**. The command, for example `python train.py --epochs 100` |
+| `title` | string | Name of the job as shown in the Jobs list |
+| `hardwareTier` | string | Hardware tier **id** (for example `small-k8s`); project default when omitted. List ids with `GET /api/hardwaretiers/v1/hardwaretiers` (needs the ViewHardwareTiers permission) or python-domino `hardware_tiers_list()` (tiers usable by the project) |
+| `environmentId` | string | Environment id; project default when omitted |
+| `environmentRevisionSpec` | string | `ActiveRevision`, `LatestRevision` or `SomeRevision(<revisionId>)` |
+| `commitId` | string | DFS commit to run against; defaults to the project's head. Applies only to the project's internal DFS history: it cannot pin a commit on a Git-based project's main repository (use `mainRepoGitRef` with `commitId` for that) |
+| `mainRepoGitRef` | object | `{"refType": "head" | "branches" | "tags" | "commitId", "value": "..."}` (`refType` required; `value` for all but `head`). These are the spec's values for jobs; the project-repository `defaultRef` uses a different set. Live check (Domino Cloud 6.4.0): `branches` runs on the branch; `branch` is accepted with 200 and the job then fails with `Unknown reference type` |
+| `externalVolumeMountIds` | string[] | External data volume ids |
+| `netAppVolumeIds` | string[] | NetApp volume ids; see [netapp-volumes](../netapp-volumes/API-NETAPP-VOLUMES.md) |
+| `snapshotDatasetsOnCompletion`, `snapshotNetAppVolumesOnCompletion` | boolean | Snapshot mounted datasets / volumes when the job ends |
+| `computeCluster` | object | `clusterType` (`dask`, `mpi`, `ray`, `slurm`, `spark`), `computeEnvironmentId`, `workerCount`, `workerHardwareTier` required; optional `masterHardwareTierId`, `maxWorkerCount`, `workerStorageMB`, `computeEnvironmentRevisionSpec` |
+| `capacityType` | string | |
 
-**Parameters:**
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `projectId` | string | Yes | Project to run in |
-| `runCommand` | string | Yes | Command to execute |
-| `hardwareTierId` | string | Yes | Hardware tier ID or name |
-| `environmentId` | string | No | Environment ID |
-| `commitId` | string | No | Git commit to use |
-| `title` | string | No | Job title |
+There is no `hardwareTierId`, `isDirectHardwareTierId` or `commandToRun` field. The
+server does not reject unknown fields or unknown tier ids: on Domino Cloud 6.4.0,
+`"hardwareTierId": "medium-k8s"` and `"hardwareTier": "no-such-tier-k8s"` both returned
+200 and the job ran on the project default tier. The Public job object does not report
+the tier it ran on; to confirm it, read `GET /v4/jobs/{jobId}/runtimeExecutionDetails`
+(`hardwareTier.id`, `environment.environmentId`; internal API, may change between Domino
+versions) or check the Jobs page.
 
-**Example:**
 ```python
 response = requests.post(
     f"{base_url}/api/jobs/v1/jobs",
     headers=headers,
     json={
-        "projectId": "project-123",
+        "projectId": os.environ["DOMINO_PROJECT_ID"],
         "runCommand": "python train.py --epochs 100 --lr 0.001",
-        "hardwareTierId": "gpu-small",
-        "environmentId": "env-789",
-        "title": "Hyperparameter Experiment"
-    }
+        "title": "Hyperparameter experiment",
+        "hardwareTier": "small-k8s",
+    },
 )
-job = response.json()
-print(f"Started job: {job['id']}")
+response.raise_for_status()
+job = response.json()["job"]
+print(job["id"], job["number"], job["status"]["executionStatus"])
 ```
 
-**Response:**
-```json
-{
-  "id": "job-789",
-  "status": "Pending",
-  "projectId": "project-123",
-  "command": "python train.py --epochs 100 --lr 0.001"
-}
+Response (`200`): `{"job": {...}, "metadata": {"requestId", "notices"}}`. The job object
+has `id`, `number`, `title`, `runCommand`, `status` (`executionStatus`, `isCompleted`,
+`isArchived`, `isScheduled`), `stageTimes`, `commitDetails` (`inputCommitId`,
+`outputCommitId`), `datasetMounts`, `externalVolumeMounts`, `netAppVolumeMounts`,
+`gitRepos`, `projects`, `dominoStats`, `tags`, `goalIds`, `startedById`,
+`computeCluster`, `usage`.
+
+## List jobs
+
+```
+GET /api/jobs/beta/jobs?projectId=<id>
 ```
 
----
-
-### Stop Job
-To stop a running job, use the python-domino library:
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `projectId` | string | **Required** |
+| `offset`, `limit` | integer | Pagination |
+| `statusFilter` | string | `all`, `queued`, `running`, `completed`, `archived`, `active` |
+| `sortBy` | string | `number`, `title`, `command`, `startedTime`, `duration`, `status`, `user`, `commentCount`, `dominoStatsField` |
+| `ascending`, `showArchived` | boolean | |
+| `tagFilter`, `dominoStatsSortFieldName` | string | |
 
 ```python
-from domino import Domino
-
-domino = Domino("owner/project")
-domino.runs_stop(run_id="job-789")
-```
-
----
-
-## Job Tags
-
-### Add Tag to Job
-```
-POST /api/jobs/v1/jobs/{jobId}/tags
-```
-
-**Request Body:**
-```json
-{
-  "name": "production"
-}
-```
-
-**Example:**
-```python
-response = requests.post(
-    f"{base_url}/api/jobs/v1/jobs/{job_id}/tags",
+response = requests.get(
+    f"{base_url}/api/jobs/beta/jobs",
     headers=headers,
-    json={"name": "best-model"}
+    params={"projectId": os.environ["DOMINO_PROJECT_ID"], "statusFilter": "running", "limit": 50},
 )
+for job in response.json()["jobs"]:
+    print(job["id"], job["status"]["executionStatus"], job["runCommand"])
 ```
 
-### Remove Tag from Job
-```
-DELETE /api/jobs/v1/jobs/{jobId}/tags/{tagId}
-```
+Response: `{"jobs": [...], "metadata": {"requestId", "notices", "offset", "limit", "totalCount"}}`.
+The `notices` array carries `"Beta endpoint with known limitations"`.
 
----
+## Get job details
 
-## Job Goals
-
-### List Linked Goals
 ```
-GET /api/jobs/v1/goals
+GET /api/jobs/beta/jobs/{jobId}
 ```
 
-Get goals linked to jobs.
+Returns `{"job": {...}, "metadata": {...}}` with the same job object as above.
 
-### Link Goal to Job
-```
-POST /api/jobs/v1/goals
-```
+## Get job logs
 
-**Request Body:**
-```json
-{
-  "jobId": "job-456",
-  "goalId": "goal-123"
-}
+```
+GET /api/jobs/beta/jobs/{jobId}/logs
 ```
 
-### Unlink Goal
-```
-DELETE /api/jobs/v1/goals/{goalId}
-```
+| Parameter | Notes |
+|-----------|-------|
+| `logType` | `stdOut`, `stdErr`, `prepareOutput` or `complete` (case-insensitive) |
+| `limit` | Max log lines; never more than 10,000 per call |
+| `latestTimeNano` | Epoch nanoseconds to start from; take it from `metadata.pagination.latestTimeNano` of the previous page |
 
----
-
-## Python SDK Examples
-
-### Start and Monitor Job
 ```python
-from domino import Domino
-
-domino = Domino("owner/project-name")
-
-# Start a job
-run = domino.runs_start(
-    command="python train.py --epochs 100",
-    hardware_tier_name="gpu-small",
-    environment_id="env-789"
-)
-print(f"Started run: {run['runId']}")
-
-# Check status
-status = domino.runs_status(run['runId'])
-print(f"Status: {status['status']}")
-
-# Wait for completion
-result = domino.runs_wait(run['runId'])
-print(f"Final status: {result['status']}")
-
-# Get logs
-logs = domino.runs_get_logs(run['runId'])
-print(logs)
+logs = requests.get(f"{base_url}/api/jobs/beta/jobs/{job_id}/logs",
+                    headers=headers, params={"logType": "stdOut", "limit": 500}).json()
+for entry in logs["logs"]["logContent"]:          # each entry: {"timestamp", "logType", "log", "size"}
+    print(entry["log"])
+print("complete:", logs["logs"]["isComplete"])
 ```
 
-### Run Multiple Jobs
-```python
-from domino import Domino
+Observed on Domino Cloud 6.4.0: `timestamp` is an ISO string and the `logType` inside
+each entry is capitalized (`StdOut`), unlike the lowercase query parameter.
 
-domino = Domino("owner/project-name")
-
-# Parameter sweep
-learning_rates = [0.01, 0.001, 0.0001]
-jobs = []
-
-for lr in learning_rates:
-    run = domino.runs_start(
-        command=f"python train.py --lr {lr}",
-        hardware_tier_name="gpu-small"
-    )
-    jobs.append(run['runId'])
-    print(f"Started job for lr={lr}: {run['runId']}")
-
-# Wait for all jobs
-for job_id in jobs:
-    result = domino.runs_wait(job_id)
-    print(f"Job {job_id}: {result['status']}")
-```
-
-### Start Job with Specific Commit
-```python
-run = domino.runs_start(
-    command="python train.py",
-    hardware_tier_name="medium",
-    commit_id="abc123def456"  # Use specific code version
-)
-```
-
----
-
-## Polling for Job Completion
+## Poll for completion
 
 ```python
 import time
 
 def wait_for_job(job_id, timeout=3600, poll_interval=30):
-    """Wait for job to complete with timeout."""
-    start_time = time.time()
-
-    while time.time() - start_time < timeout:
-        response = requests.get(
-            f"{base_url}/api/jobs/beta/jobs/{job_id}",
-            headers=headers
-        )
-        job = response.json()
-        status = job['status']
-
-        if status in ['Succeeded', 'Failed', 'Stopped']:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = requests.get(f"{base_url}/api/jobs/beta/jobs/{job_id}", headers=headers).json()["job"]
+        if job["status"]["isCompleted"]:
             return job
-
-        print(f"Job {job_id}: {status}")
+        print(job_id, job["status"]["executionStatus"])
         time.sleep(poll_interval)
-
     raise TimeoutError(f"Job {job_id} did not complete within {timeout}s")
 
-# Usage
-job = wait_for_job("job-456")
-print(f"Job completed: {job['status']}")
+job = wait_for_job(job["id"])
+print("final:", job["status"]["executionStatus"])   # Succeeded, Failed, Stopped or Error
 ```
+
+Terminal outcomes per https://docs.domino.ai/cloud/platform-capabilities/core-concepts/jobs/job-states:
+`Succeeded`, `Stopped` (manually stopped), `Failed` (a problem with your code) and
+`Error` (a problem outside your code). Treat anything other than `Succeeded` as a
+failure in automation.
+
+## Stop a job
+
+The Public API has no stop route. Options:
+
+- python-domino `domino.job_stop(job_id, commit_results=True)`; it calls
+  `POST /v4/jobs/stop` with `{"jobId", "commitResults"}` (internal API, may change
+  between Domino versions; verified on Domino Cloud 6.4.0: the job reports `Stopped`
+  with `isCompleted: true` within seconds). See [SDK-EXAMPLES.md](./SDK-EXAMPLES.md#jobs).
+- The Jobs page in the Domino UI.
+
+## Job tags
+
+```
+POST   /api/jobs/v1/jobs/{jobId}/tags                          body: {"tagName": "best-model", "projectId": "<project-id>"}
+DELETE /api/jobs/v1/jobs/{jobId}/tags/{tagId}?projectId=<project-id>
+```
+
+`tagName` and `projectId` are required on create; `projectId` is a required query
+parameter on delete. The create response is `{"tag": {"id", "name", "createdAt", "creatorId"}, "metadata"}`.
+
+## Job goals
+
+```
+GET    /api/jobs/v1/goals?jobId=<jobId>                  goals linked to a job
+POST   /api/jobs/v1/goals?jobId=<jobId>                  body: {"goalId": "<goal-id>"}
+DELETE /api/jobs/v1/goals/{goalId}?jobId=<jobId>
+```
+
+`jobId` is a query parameter on all three. Project goals themselves are managed in
+[API-PROJECTS.md](./API-PROJECTS.md#project-goals).
+
+## Job defaults (Domino Cloud only)
+
+```
+POST /api/jobs/v1/projects/{projectId}/job-defaults
+```
+
+Present in the Cloud spec only (6.4.0 and later). Send the fields you intend to post to
+`POST /api/jobs/v1/jobs` (all optional) and receive `jobDefaults` with the resolved
+hardware tier, environment, commit, dataset and NetApp snapshot pins. On Domino 6.3 there
+is no public equivalent; the UI resolves defaults.
+
+## Scheduled jobs
+
+Neither published spec has a scheduled-jobs route. Create and edit schedules in the UI:
+https://docs.domino.ai/cloud/platform-capabilities/core-concepts/jobs/schedule-a-job.
+The internal route the UI uses (`/v4/projects/{projectId}/scheduledjobs`) is Domino
+Internal API, may change between Domino versions, and takes `command`, not `runCommand`;
+confirm its body in your deployment's `/docs/openapi/openapi-internal.json` before using it.
+
+## python-domino
+
+`job_start`, `job_status`, `job_stop`, `jobs_list` and `job_start_blocking` wrap the
+internal `/v4/jobs` routes with Python-side validation. Signatures and examples:
+[SDK-EXAMPLES.md](./SDK-EXAMPLES.md#jobs). The SDK takes `hardware_tier_id` and
+`command`; the Public API takes `hardwareTier` and `runCommand`.

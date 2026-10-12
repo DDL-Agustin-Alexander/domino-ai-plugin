@@ -1,233 +1,142 @@
 # Property definitions
 
-Properties are **typed metadata fields** you attach to Domino entities — a
-project can carry a `Budget` number, a `Review Date`, an `Owner` user, and a
-`Status` single-select, all independent of its tags. This file covers the
-property *definitions* (the schema). For assigning values to entities see
-[PROPERTY-VALUES.md](./PROPERTY-VALUES.md).
+Properties are typed metadata fields on Domino entities: a `Budget` number, a
+`Review Date`, an `Owner` user, a `Status` select. This file covers definitions (the
+schema); values are in [PROPERTY-VALUES.md](./PROPERTY-VALUES.md). Docs:
+https://docs.domino.ai/cloud/platform-capabilities/core-concepts/knowledge-management/properties.
 
-All examples assume the configuration block from
-[SKILL.md](./SKILL.md#configuration):
+All examples assume `BASE` and `H` from [SKILL.md](./SKILL.md#configuration).
 
-```bash
-TOKEN=$(curl -s http://localhost:8899/access-token)
-BASE="$DOMINO_API_HOST/api/taxonomy/v1"
-H="Authorization: Bearer $TOKEN"
-```
-
-## Tags vs. properties
+## Tags vs properties
 
 | | Tag | Property |
 |---|---|---|
-| Shape | A label, optionally nested under a namespace | A typed field (`text`, `number`, `select`, …) |
-| Value | Presence/absence — an entity either has the tag or not | A typed value per entity (`42`, `2026-01-31`, `"Oncology"`) |
+| Shape | Label in a namespace, optionally nested | Typed field |
+| Value per entity | Present or absent | One typed value (`42`, `2026-01-31`, `"Oncology"`) |
 | Grouping | Namespace | `groupName` (free-form string) |
-| Entity scope | `allowedEntities` is implicit (any taggable type) | `allowedEntities` is declared per property |
-| Managed by | `/tags`, `/namespaces` | `/properties`, `/property-values` |
+| Entity scope | Any taggable type | Declared per property in `allowedEntities` |
+| Routes | `/tags`, `/namespaces`, `/rpc/tag-entity` | `/properties`, `/property-values` |
 
 ## Property types
 
-Set `type` at creation — it is **immutable** afterward (`PUT` cannot change it;
-to change type, delete and recreate).
+`type` is set at creation and is not a field on `PUT`; to change it, create a new
+property.
 
-| Type | Value format | Notes |
-|------|--------------|-------|
-| `text` | any string (≤ 1000 chars) | |
-| `number` | parseable float (`"42"`, `"3.14"`, `"-1e3"`) | |
-| `date` | ISO-8601 date `YYYY-MM-DD` | |
-| `boolean` | `"true"` or `"false"` | |
-| `url` | http(s) URL with a host | |
-| `user` | a user identifier string | no format check beyond non-empty |
-| `organization` | an org identifier string | no format check beyond non-empty |
-| `user_or_org` | a user or org identifier string | no format check beyond non-empty |
-| `select` | one of `allowedValues` | single choice |
-| `multi_select` | subset of `allowedValues` | value carried in a `values[]` array |
+| Type | Value format |
+|------|--------------|
+| `text` | string |
+| `number` | numeric string (`"42"`, `"3.14"`) |
+| `date` | `YYYY-MM-DD` |
+| `boolean` | `"true"` or `"false"` |
+| `url` | http(s) URL |
+| `user` | a Domino user id |
+| `organization` | a Domino organization id |
+| `user_or_org` | a user or organization id |
+| `select` | one of `allowedValues` |
+| `multi_select` | a subset of `allowedValues`, sent as `values[]` |
 
-`select` and `multi_select` **require** a non-empty `allowedValues` list; all
-other types **reject** `allowedValues`.
+`select` and `multi_select` need a non-empty `allowedValues`; each item is
+`{"value": "...", "subfield": "..."}` with `subfield` optional. Limits from `GET /config`:
+`maxSelectAllowedValuesCount` options, each at most `maxSelectAllowedValueLength`.
 
 ## Allowed entities
 
-`allowedEntities` declares which entity types a property applies to. Valid
-values:
+`allowedEntities` (at least one) lists the entity types the property applies to. Values
+are the target's entity-type list ([SKILL.md](./SKILL.md#which-path-applies)); per the
+docs, properties apply to Apps, Projects, Project Templates, Datasets, NetApp Volumes,
+Models and Environments (plus Policies and Policy Versions on Cloud), with Apps, Models
+and Policies also carrying independent per-version values (`app_version`,
+`model_version`, `policy_version`). A Project Template's values are carried into new
+projects according to the copy policy ([PROPERTY-VALUES.md](./PROPERTY-VALUES.md#copy-policy-templates)).
 
-```
-dataset | project | model | app | netapp_volume | model_version | app_version
-```
+## Labels and groups
 
-- At least one is required.
-- `project_template` is **rejected** in `allowedEntities` (400
-  `invalid entity type`). Templates inherit the `project` schema — define the
-  property with `project` in `allowedEntities` and it applies to project
-  templates automatically. See [PROPERTY-VALUES.md](./PROPERTY-VALUES.md#copy-policy-templates)
-  for the template copy-policy behavior.
-
-## Labels, groups, and limits
-
-- **Label** — required. Allowed characters: letters, digits, spaces, hyphens,
-  underscores (`^[a-zA-Z0-9 _-]+$`). Trimmed; max length = `maxLabelLength`
-  from `GET /config` (128 default). Labels are unique — a duplicate returns
-  `409 property with this label already exists`.
-- **groupName** — optional, same character/length rules as the label. A blank
-  or whitespace-only group collapses to "no group"; ungrouped properties are
-  bucketed under `Miscellaneous` in the values view.
-- **allowedValues** (select types) — each item is `{"value": "...",
-  "subfield": "..."}` (`subfield` optional). Stored verbatim in submission
-  order. Limits from `GET /config`: at most `maxSelectAllowedValuesCount`
-  (100 default) options, each ≤ `maxSelectAllowedValueLength` (2048 default).
+- `label` is required and unique; at most `maxLabelLength` characters.
+- `groupName` is optional; ungrouped properties appear under `Miscellaneous` in the
+  values view.
 
 ## Endpoints
 
-| Endpoint | Method | Purpose | Auth |
-|----------|--------|---------|------|
-| `/properties` | POST | Create a property | Librarian / Admin |
-| `/properties` | GET | List properties | any authenticated user |
-| `/properties/{propertyId}` | GET | Get one property | any authenticated user |
-| `/properties/{propertyId}` | PUT | Update a property | Librarian / Admin |
-| `/properties/{propertyId}` | DELETE | Soft-delete a property | Librarian / Admin |
-| `/property-groups` | GET | List distinct group names | any authenticated user |
+| Endpoint | Method | Purpose | Who |
+|----------|--------|---------|-----|
+| `/properties` | POST | Create | Librarian or admin |
+| `/properties` | GET | List (`entityType`, `search`, `sort`, `order`, `limit`, `offset`) | any user |
+| `/properties/{propertyId}` | GET | Get one | any user |
+| `/properties/{propertyId}` | PUT | Update | Librarian or admin |
+| `/properties/{propertyId}` | DELETE | Delete | Librarian or admin |
+| `/property-groups` | GET | Distinct group names | any user |
 
-## Create a property
+## Create
 
-Label, `type`, and at least one `allowedEntities` are required.
+`label`, `type` and `allowedEntities` are required; `description`, `groupName` and
+`allowedValues` are optional.
 
 ```bash
-# A simple number property on projects
 curl -s -X POST -H "$H" -H "Content-Type: application/json" \
-  -d '{
-        "label":"Budget",
-        "groupName":"Finance",
-        "description":"Approved budget in USD",
-        "type":"number",
-        "allowedEntities":["project"]
-      }' \
+  -d '{"label":"Budget","groupName":"Finance","description":"Approved budget in USD","type":"number","allowedEntities":["project"]}' \
   "$BASE/properties"
-# 201 → full Property incl. id, status:"active", createdBy, timestamps
-```
+# 201 -> {"id","label","description","type","groupName","allowedEntities","allowedValues","status":"active",...}
 
-```bash
-# A single-select property with options
 curl -s -X POST -H "$H" -H "Content-Type: application/json" \
-  -d '{
-        "label":"Review Status",
-        "type":"select",
-        "allowedEntities":["project","model"],
-        "allowedValues":[{"value":"Draft"},{"value":"In Review"},{"value":"Approved"}]
-      }' \
+  -d '{"label":"Review Status","type":"select","allowedEntities":["project","model"],
+       "allowedValues":[{"value":"Draft"},{"value":"In Review"},{"value":"Approved"}]}' \
   "$BASE/properties"
 ```
 
-## Get / list
+## Get and list
 
 ```bash
-# Get one — includes allowedValues, allowedEntities, status, audit fields
-curl -s -H "$H" "$BASE/properties/<id>" | python3 -m json.tool
-
-# List with filters, sorting, pagination
+curl -s -H "$H" "$BASE/properties/<id>"
 curl -s -H "$H" "$BASE/properties?entityType=project&search=budget&sort=label&order=asc&limit=50&offset=0"
+# {"data":[{"id","label","type","groupName","allowedEntities","allowedValues","status"}],
+#  "meta":{"pagination":{"total","limit","offset"},"search","filters","sort"}}
 ```
 
-`GET /properties` query params:
+## Update
 
-| Param | Values | Default |
-|-------|--------|---------|
-| `entityType` | filters to properties whose `allowedEntities` contains this type | — |
-| `search` | matches label or description | — |
-| `sort` | `label`, `groupName`, `createdAt` | `label` |
-| `order` | `asc`, `desc` | `asc` |
-| `limit` | page size | 50 |
-| `offset` | page offset | 0 |
-
-Response is `{"data":[PropertyListItem,...],"meta":{"pagination":{total,limit,offset},"search","filters","sort"}}`.
-
-## Update a property
-
-`label` and `allowedEntities` are required in the body. `type` is **not** a
-field — it cannot change. You may add or remove `allowedValues` options;
-removing an in-use option is allowed (stored values are not retroactively
-re-validated).
+`label` and `allowedEntities` are required; `description`, `groupName` and
+`allowedValues` are optional; `type` cannot be sent.
 
 ```bash
 curl -s -X PUT -H "$H" -H "Content-Type: application/json" \
-  -d '{
-        "label":"Budget (USD)",
-        "groupName":"Finance",
-        "description":"Approved annual budget",
-        "allowedEntities":["project","app"],
-        "allowedValues":[]
-      }' \
+  -d '{"label":"Budget (USD)","description":"Approved annual budget","groupName":"Finance","allowedEntities":["project","app"]}' \
   "$BASE/properties/<id>"
-# 200 → updated Property
+# 200 -> updated property
 ```
 
-## Delete a property
-
-Deletion is a **soft delete**: the property's status flips to `deleted`, it
-stops appearing in lists and value views, but existing stored values are
-retained (so a later recreate/undelete workflow can recover them). There is no
-cascade prompt.
+## Delete
 
 ```bash
 curl -s -X DELETE -H "$H" "$BASE/properties/<id>"
-# 204 No Content
+# 204
 ```
 
-## List property groups
+Deletion is a soft delete: the property's `status` enum is `active` or `deleted`, and
+deleted properties stop appearing in lists and value views. Whether stored values are
+retained is not stated in the spec; treat deletion as final.
 
-Returns the distinct, non-empty `groupName` values across active properties —
-useful for rendering a grouped property editor.
+## Property groups
 
 ```bash
 curl -s -H "$H" "$BASE/property-groups"
-# 200 → {"groups":["Finance","Governance"]}
+# {"groups":["Finance","Governance"]}
 ```
 
-This lists only real group names. The `Miscellaneous` bucket that ungrouped
-properties fall under in the values view (see
-[PROPERTY-VALUES.md](./PROPERTY-VALUES.md#get-property-values)) is synthetic and
-is **not** returned here.
+Only real group names are returned; `Miscellaneous` is synthetic.
 
 ## Troubleshooting
 
-### `403 insufficient permissions: requires Librarian or Admin role`
+- **403 on create, update or delete**: the caller lacks the Librarian or admin role.
+  Reading definitions and setting values do not need it.
+- **400 invalid entity type**: every `allowedEntities` entry must be in the target's
+  enum ([SKILL.md](./SKILL.md#which-path-applies)); `policy`, `policy_version` and
+  `data_source` exist only on Cloud.
+- **400 on `allowedValues`**: send it only for `select` and `multi_select`, and send at
+  least one value for those.
+- **409 on create**: labels are unique; update the existing property instead.
+- **Wrong type**: `type` is immutable; create a new property and migrate values.
 
-Creating, updating, and deleting property *definitions* requires the Librarian,
-SysAdmin, or CloudAdmin role. Reading definitions and setting *values* do not —
-see [PROPERTY-VALUES.md](./PROPERTY-VALUES.md#permissions).
+## Spec
 
-### `400 invalid entity type` on create/update
-
-Every entry in `allowedEntities` must be one of
-`dataset | project | model | app | netapp_volume | model_version | app_version`.
-`project_template` is rejected here — use `project` and it applies to templates
-too.
-
-### `400 allowed values are only valid for select and multi_select properties`
-
-You sent `allowedValues` on a non-select type. Omit it. Conversely,
-`select`/`multi_select` require at least one allowed value
-(`400 at least one allowed value is required...`).
-
-### `409 property with this label already exists`
-
-Labels are unique. Pick a different label or update the existing property.
-
-### The property type is wrong and PUT won't fix it
-
-`type` is immutable. Delete the property and create a new one with the correct
-type. (Soft-delete retains old values, but they will not surface under the new
-property, which has a new ID.)
-
-## Documentation Reference
-
-Before writing or verifying any API call, confirm current endpoint paths and
-field names against the cluster swagger (see
-[SKILL.md](./SKILL.md#documentation-reference)):
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \
-  "$DOMINO_API_HOST/api/taxonomy/swagger/doc.json"
-```
-
-- [SKILL.md](./SKILL.md) — skill overview, tags, namespaces, entity tagging
-- [PROPERTY-VALUES.md](./PROPERTY-VALUES.md) — assigning values to entities
+Per-deployment service document: `https://<domino-domain>/docs/openapi/data_taxonomy_service-swagger.json`
+([API-SPECS.md](../domino-api-intro/API-SPECS.md)).

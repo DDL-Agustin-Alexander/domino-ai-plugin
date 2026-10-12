@@ -1,340 +1,77 @@
 ---
 name: domino-projects
-description: Work with Domino Projects including Git integration, DFS vs Git-based projects, collaboration, and version control. Covers project creation, Git provider setup (GitHub, GitLab, Bitbucket), branch management, collaborator permissions, and project settings. Use when creating projects, setting up Git repos, or managing team collaboration.
+description: Work with Domino Projects, covering Git-based vs Domino File System (DFS) projects, creating projects (UI and API), Git credentials and repositories, file paths in runs, syncing and branches, collaborator roles and visibility, project settings (default environment, hardware tier, environment variables), copying, importing, archiving, goals and status. Use when creating or configuring a project, connecting a Git repository, adding collaborators, finding where code, data and artifacts are mounted, or automating project operations over REST or python-domino.
+compatibility: Domino 6.3 and Domino Cloud. API calls need DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token. Public visibility and project forking exist on Domino 6.3 only; Domino Cloud is Private or Searchable and uses copies instead of forks.
 ---
 
-# Domino Projects and Git Skill
+# Domino projects
 
-## Description
-This skill helps users work with Domino Projects - including project creation, Git integration, version control, and collaboration features.
+Applies to Domino 6.3 and Domino Cloud.
 
-## Activation
-Activate this skill when users want to:
-- Create or configure a Domino project
-- Set up Git integration
-- Understand DFS vs Git-based projects
-- Collaborate with team members
-- Manage project settings and permissions
+A project holds the code, data links, artifacts and people for one piece of work; Apps, endpoints, Launchers and scheduled Jobs publish from it. REST and SDK details with verified bodies: [PROJECTS-API.md](./PROJECTS-API.md); the python-sdk catalog: [API-PROJECTS.md](../domino-python-sdk/API-PROJECTS.md).
 
-## Project Types
+## Project types
 
-### Git-Based Projects
-- Code stored in external Git provider (GitHub, GitLab, Bitbucket)
-- Full Git workflow support
-- Better for teams familiar with Git
-- Access to Git provider features (PRs, issues)
+| | Git-based (recommended) | DFS |
+|---|---|---|
+| Code lives | Your Git provider (GitHub, GitLab, Bitbucket, others over HTTPS or SSH) | Domino's internal repository, auto-versioned on sync |
+| Code path in a run | `/mnt/code` | `/mnt` (`$DOMINO_WORKING_DIR`; becomes `/mnt/<owner>/<project>` once this project imports another project) |
+| Artifacts | `/mnt/artifacts` (stored in DFS, separate from Git) | Alongside the code in the working directory |
+| Project Datasets | `/mnt/data/<dataset>` | `/domino/datasets/local/<dataset>` |
+| Imported Git repositories | `/mnt/imported/code/<repo>` | `/repos/<repo>` |
+| Sync | You push code; Domino auto-syncs only artifacts after a Job | **Sync to Domino** records a new revision |
+| Copy | Deep copy (new repository) or reference copy (shared repository, API only) | Copy from the overview page |
 
-### Domino File System (DFS) Projects
-- Code stored in Domino's internal file system
-- Automatic versioning (Git under the hood)
-- Simpler for users unfamiliar with Git
-- Good for research and experimentation
+Git LFS is not supported; files over 2 GB in a repository can break Workspace setup. Keep bulk data in Datasets, not in code or artifacts (projects hold at most 10,000 files by default).
 
-## Creating a Project
+## Create a project
 
-### Via Domino UI
-1. Click **New Project**
-2. Enter project name
-3. Select project type:
-   - **Git-based**: Connect to Git repository
-   - **DFS**: Use Domino File System
-4. Configure settings
-5. Click **Create**
+UI: **Develop** > **Projects** > **Create Project**: name, template or none, **Visibility**, then the Git provider (credentials, an existing repository URL, or a repository Domino creates) or **Domino (local hosting)** for DFS. Private repositories, pushes and SSH need Git credentials under **Account Settings** > **Git Credentials** (SSH key, personal access token, or username and password; Bitbucket Data Center needs username plus token; Bitbucket Cloud an app password).
 
-### Via Python SDK
-```python
-from domino import Domino
-
-domino = Domino()
-
-# Create DFS project
-project = domino.project_create(
-    project_name="my-project",
-    owner_name="your-username"
-)
-
-print(f"Project ID: {project['id']}")
-```
-
-## Git-Based Projects
-
-### Connecting to Git Repository
-1. Create project as Git-based
-2. Enter repository URL
-3. Configure authentication:
-   - **SSH Key**: Add SSH public key to Git provider
-   - **HTTPS**: Use personal access token
-
-### Git Credentials
-```bash
-# Add SSH key to Domino account
-# Go to Account Settings > Git Credentials
-
-# Or use HTTPS with token
-https://username:token@github.com/org/repo.git
-```
-
-### Working with Git in Workspaces
-
-#### Sync Changes
-Click **Sync** in workspace to push changes:
-1. Domino commits changes
-2. Pushes to configured branch
-3. Updates project state
-
-#### Manual Git Commands
-```bash
-# Check status
-git status
-
-# Add and commit
-git add .
-git commit -m "Update model training"
-
-# Push to remote
-git push origin main
-
-# Pull latest
-git pull origin main
-```
-
-#### IDE Git Integration
-- VS Code: Use Source Control panel
-- JupyterLab: Use Git extension
-- RStudio: Use Git pane
-
-### Branch Management
-```bash
-# Create feature branch
-git checkout -b feature/new-model
-
-# Work on branch
-git add .
-git commit -m "Add new model"
-git push origin feature/new-model
-
-# Switch branches
-git checkout main
-```
-
-### Multi-Repository Support
-Domino supports multiple Git repositories per project:
-
-1. Go to Project Settings > **Repositories**
-2. Add additional repositories
-3. Configure mount paths
-4. Enable/disable per execution
-
-```python
-# Access code from multiple repos
-# Repo 1: /mnt/code/main-repo/
-# Repo 2: /mnt/code/shared-lib/
-from shared_lib import utils
-```
-
-## DFS Projects
-
-### How DFS Works
-- Files stored in Domino-managed Git
-- Automatic commits on sync
-- Version history tracked
-- Simplified workflow
-
-### Sync Files
-1. Work in workspace
-2. Click **Sync** when ready
-3. Enter commit message
-4. Files pushed to Domino
-
-### View History
-1. Go to **Files** in project
-2. Click **History**
-3. View all commits
-4. Restore previous versions
-
-## Project Structure
-
-### Recommended Structure
-```
-project/
-├── README.md           # Project documentation
-├── requirements.txt    # Python dependencies
-├── data/               # Local data (small files)
-├── src/                # Source code
-│   ├── train.py
-│   ├── evaluate.py
-│   └── utils.py
-├── notebooks/          # Jupyter notebooks
-│   └── exploration.ipynb
-└── tests/              # Unit tests
-    └── test_model.py
-```
-
-### Special Paths
-- `/mnt/code/`: Project files
-- `/mnt/data/`: Domino Datasets
-- `/mnt/artifacts/`: Output artifacts
-- `/mnt/imported/`: Imported project files
+API: `POST /api/projects/v2/projects` (6.3 and Cloud) with `name`, `description`, `visibility` (`private`, `searchable`; `public` on 6.3 only) and optional `mainRepository{uri, serviceProvider, gitCredentialId, defaultRef}`, `repoToCreate`, `templateDetails`, `ownerId`, `billingTag`, `isRestricted`. Examples in [PROJECTS-API.md](./PROJECTS-API.md).
 
 ## Collaboration
 
-### Project Roles
+Project roles are independent of a user's Domino role. There is no "Admin" project role.
 
-| Role | Permissions |
-|------|-------------|
-| **Owner** | Full control, delete project |
-| **Admin** | Manage members, settings |
-| **Contributor** | Edit files, run executions |
-| **Launcher User** | Run launchers only |
-| **Results Consumer** | View results only |
+| Role | Can |
+|------|-----|
+| Owner | Everything below, plus rename, transfer, archive, change visibility, change collaborator roles |
+| Contributor | Read and write files, start runs and Workspaces, set environment variables, invite collaborators, change the default environment and tier, publish endpoints and Apps, create Launchers |
+| Results Consumer | Read files, view completed runs and Workspaces, use published Apps |
+| Launcher User | Run Launchers and see their results; no file access |
+| Project Importer | Import the project's exported files or variables; nothing else |
 
-### Adding Collaborators
-1. Go to Project Settings > **Access**
-2. Click **Add Collaborator**
-3. Search for user
-4. Assign role
-5. Click **Add**
+Add collaborators under **Settings** > **Access & Sharing** (username, email or organization, role, notification preference). API: `POST /api/projects/v1/projects/{projectId}/collaborators` with `{"id": "<user or organization id>", "role": "contributor|resultsConsumer|launcherUser|projectImporter"}`; remove with `DELETE .../collaborators/{collaboratorId}`.
 
-### Sharing Projects
-- **Private**: Only invited users
-- **Organization**: All org members can view
-- **Public**: Anyone in Domino instance
+Visibility (**Settings** > **Access & Sharing**): **Private** (collaborators only) or **Searchable** (name and description in search; contents for collaborators). **Public** (anyone with the URL, even without an account) exists on Domino 6.3 only.
 
-## Project Settings
+## Settings
 
-### Environment
-Set default compute environment:
-1. Go to Project Settings > **Environment**
-2. Select default environment
-3. Optionally allow overrides
+- **Hardware & Environment**: default hardware tier, default environment and volume size (default 10 GiB) for every Workspace and Job; contributors can change them. Environment details: `domino-environments`.
+- **Environment variables**: project-level key/value pairs injected into runs (values up to 64 K), visible to all collaborators, for credentials that must stay out of code. Endpoints do not inherit them.
+- Default Git branch (Git-based): owners set it in settings; by API, `PUT .../repositories/{repositoryId}/default-ref` (Domino Cloud only; `_` for the main repository).
+- **Results**: save run results on the main line or in isolated branches. **Exports**: let other projects import files, environment variables or a code package.
 
-### Hardware Tier
-Set default resources:
-1. Go to Project Settings > **Hardware Tier**
-2. Select default tier
-3. Set GPU preferences
+## Lifecycle
 
-### Environment Variables
-Add project-level variables:
-```
-API_KEY=your-api-key
-MODEL_VERSION=v2.0
-DEBUG=false
-```
+- **Rename** (owner, **Settings** > **Access & Sharing**): endpoints are unpublished and get new URLs; local CLI copies must be re-cloned.
+- **Copy**: DFS from the overview copy icon; Git-based with **Copy** (deep copy) or `POST /api/projects/v1/projects/{projectId}/copy-project` with `deepCopy` or `referenceCopy`. Collaborators, run history and published assets are not copied; `copyDatasets: true` copies Datasets (API only).
+- **Fork**: 6.3 DFS projects only (**Fork** on the overview). Domino Cloud has no forks; copy instead, or use Git branches.
+- **Import** another project's exports: **Code** > **Other Projects** > **Import a Project** (`<username>/<project>`), mounted read-only at `/mnt/<username>/<project>`.
+- **Transfer ownership** (**Settings** > **Archive Project or Transfer Ownership**): endpoints stop serving until the new owner re-publishes them.
+- **Archive**: stops scheduled and running executions, blocks CLI transfers, removes discoverable Apps. API: `DELETE /api/projects/beta/projects/{projectId}`. Unarchiving needs Domino support.
+- **Status and goals**: `PUT .../status` (`active` or `complete`, `isBlocked`, `blockedReason`), `GET` and `POST .../goals`.
 
-Access in code:
-```python
-import os
-api_key = os.environ.get('API_KEY')
-```
+## Which path applies
 
-## Importing/Exporting Projects
-
-### Import Project
-1. Click **New Project**
-2. Select **Import**
-3. Choose source:
-   - Git repository
-   - ZIP file
-   - Another Domino project
-
-### Export Project
 ```bash
-# Download project files
-domino download project-owner/project-name
+curl -s "$DOMINO_API_HOST/version"   # "version": "6.3.x" self-managed; "6.4.x" or later on Domino Cloud
 ```
 
-### Fork Project
-1. Go to project page
-2. Click **Fork**
-3. Creates copy in your account
+6.3: `public` visibility and DFS forks exist. Cloud: visibility is `private` or `searchable`, there are no forks, and the extra routes `.../repositories/{repositoryId}/default-ref`, `/readme`, `/file-metadata` and `/rendered-file` are available.
 
-## Reproducibility
+## Documentation
 
-### Execution Records
-Every execution tracked:
-- Exact code version
-- Environment used
-- Hardware tier
-- Inputs/outputs
-- Start/end times
-
-### Reproduce Past Execution
-1. Go to Jobs or Workspaces
-2. Find execution to reproduce
-3. Click **Reproduce**
-4. Creates workspace with same settings
-
-### Environment Locking
-Lock environment to specific revision:
-```python
-# In project settings or via SDK
-domino.project_update(
-    project_name="my-project",
-    environment_id="env-specific-revision"
-)
-```
-
-## Best Practices
-
-### 1. Use Git for Code
-Keep code in version control for:
-- Change tracking
-- Code reviews
-- Collaboration
-- Rollback capability
-
-### 2. Separate Code and Data
-- Code: Git repository
-- Large data: Domino Datasets
-- Artifacts: `/mnt/artifacts/`
-
-### 3. Document Projects
-Include README with:
-- Project purpose
-- Setup instructions
-- How to run
-- Dependencies
-
-### 4. Use Environments
-Don't install packages ad-hoc; use:
-- Dockerfile instructions
-- requirements.txt
-- Environment configuration
-
-### 5. Regular Commits
-```bash
-# Commit frequently with meaningful messages
-git commit -m "Add data preprocessing step"
-git commit -m "Fix model evaluation bug"
-```
-
-## Troubleshooting
-
-### Git Authentication Failed
-- Verify credentials in Domino account settings
-- Check token hasn't expired
-- Ensure repository access permissions
-
-### Sync Conflicts
-```bash
-# Pull latest first
-git pull origin main
-
-# Resolve conflicts
-git status
-# Edit conflicting files
-git add .
-git commit -m "Resolve conflicts"
-```
-
-### Files Not Appearing
-- Check file is in correct path
-- Verify sync completed
-- Refresh browser
-
-## Documentation Reference
-- [Version control and Git](https://docs.dominodatalab.com/en/latest/user_guide/bd26e2/version-control-and-git/)
-- [Git-based Projects](https://docs.dominodatalab.com/en/latest/user_guide/910370/git-based-projects/)
-- [Use Git in your Workspace](https://docs.dominodatalab.com/en/cloud/user_guide/0d2247/use-git-in-your-workspace/)
-- [Projects overview](https://docs.dominodatalab.com/en/cloud/user_guide/5b332c/projects-overview/)
+- https://docs.domino.ai/cloud/platform-capabilities/core-concepts/projects/index (create, manage, settings, Git-based, DFS, files, collaborate)
+- 6.3: https://docs.domino.ai/6.3/platform-capabilities/core-concepts/projects/index
