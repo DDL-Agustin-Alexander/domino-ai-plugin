@@ -11,6 +11,47 @@ import re
 import webbrowser
 import urllib.parse
 
+# A host that cannot resolve a ${...} placeholder in its MCP config may pass it through as
+# literal text (Cursor does for an unset ${env:NAME}). Treat such values as unset so the
+# .env fallback and the "not set" errors below still apply.
+for _name in [k for k, v in os.environ.items() if v.startswith("${")]:
+    del os.environ[_name]
+
+# Some hosts start stdio MCP servers with a minimal environment and give a plugin no way to
+# forward more: Codex passes only HOME, LANG, LC_ALL, LOGNAME, PATH, SHELL and USER, and drops a
+# plugin server that declares env_vars. Inside a Domino Workspace or Job the Domino variables are
+# still set on the process that started the agent, so copy the ones this server reads from the
+# nearest ancestor that has them. Linux only; the kernel allows reading the environment of
+# processes owned by the same user.
+_DOMINO_VARS = ("DOMINO_API_HOST", "DOMINO_API_PROXY", "DOMINO_PROJECT_ID", "DOMINO_PROJECT_NAME",
+                "DOMINO_PROJECT_OWNER", "VSCODE_PROXY_URI")
+
+
+def _recover_domino_env(max_depth: int = 8) -> None:
+    if os.environ.get("DOMINO_API_HOST") or not os.path.isdir("/proc"):
+        return
+    pid = os.getppid()
+    for _ in range(max_depth):
+        if pid <= 1:
+            return
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as f:
+                env = dict(kv.split(b"=", 1) for kv in f.read().split(b"\0") if b"=" in kv)
+            with open(f"/proc/{pid}/stat") as f:
+                stat = f.read()
+        except OSError:
+            return
+        if b"DOMINO_API_HOST" in env:
+            for name in _DOMINO_VARS:
+                value = env.get(name.encode())
+                if value is not None and name not in os.environ:
+                    os.environ[name] = value.decode("utf-8", "replace")
+            return
+        # /proc/<pid>/stat is "pid (comm) state ppid ..."; comm may contain spaces.
+        pid = int(stat.rsplit(")", 1)[1].split()[1])
+
+
+_recover_domino_env()
 load_dotenv()
 
 
@@ -97,8 +138,32 @@ def _get_workspace_project_info() -> dict | None:
         return {"user_name": owner, "project_name": name}
     return None
 
+def _plugin_instructions() -> str | None:
+    """The lead section of the plugin's always-on rules file, sent as MCP server instructions.
+
+    rules/domino.md is the single source for the plugin's always-on guidance. Hosts that load it
+    directly (a session-start hook, a context file, an always-on rule) get the whole file; hosts
+    that only surface MCP server instructions, such as Codex, get its lead section: everything
+    before the first "## " heading, without frontmatter, capped at 900 bytes.
+    """
+    from pathlib import Path
+    rules = Path(__file__).resolve().parents[2] / "rules" / "domino.md"
+    try:
+        text = rules.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    import re
+    text = text.replace("\r\n", "\n")
+    # Same front-matter rule as scripts/lint-skills.py: exact "---" delimiter lines.
+    match = re.match(r"\A---\n.*?\n---\n(.*)\Z", text, re.S)
+    if match:
+        text = match.group(1)
+    lead = text.split("\n## ", 1)[0].strip()
+    return lead.encode("utf-8")[:900].decode("utf-8", "ignore") or None
+
+
 # Initialize the Fast MCP server
-mcp = FastMCP("domino_server")
+mcp = FastMCP("domino_server", instructions=_plugin_instructions())
 
 def _validate_url_parameter(param_value: str, param_name: str) -> str:
     """

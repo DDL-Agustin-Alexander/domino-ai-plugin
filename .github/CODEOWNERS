@@ -20,7 +20,10 @@
 /.github/                               @DDL-Theo-Linnemann
 /scripts/                               @DDL-Theo-Linnemann
 /.claude-plugin/                        @DDL-Theo-Linnemann
+/.cursor-plugin/                        @DDL-Theo-Linnemann
 /.mcp.json                              @DDL-Theo-Linnemann
+/mcp_config.json                         @DDL-Theo-Linnemann
+/rules/                                 @DDL-Theo-Linnemann
 /evals/                                 @DDL-Theo-Linnemann
 /AGENTS.md                              @DDL-Theo-Linnemann
 /CONTRIBUTING.md                        @DDL-Theo-Linnemann
