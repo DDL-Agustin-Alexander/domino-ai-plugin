@@ -20,7 +20,7 @@ https://docs.domino.ai/cloud/reference/api/domino-api-authentication. Legacy API
 | In a run, no proxy | `$DOMINO_API_HOST` | `Bearer` from `http://localhost:8899/access-token` |
 | Outside Domino | deployment URL | `Bearer` PAT or service-account token |
 
-Smoke test: `GET /api/modelServing/v1/modelApis?limit=1` returns 200 with `items` and `metadata.totalCount`.
+Smoke test: `GET /api/modelServing/v1/modelApis?limit=1` returns 200.
 
 ## Three surfaces (do not mix them)
 
@@ -30,7 +30,7 @@ Smoke test: `GET /api/modelServing/v1/modelApis?limit=1` returns 200 with `items
 | Registered models | `/api/registeredmodels/v2` (list, register); `/api/registeredmodels/v1/{modelName}` (get, patch, versions) | Registry records; `modelName` is the name, not an id |
 | MLflow tracking | `MLFLOW_TRACKING_URI` in a run; `/api/2.0/mlflow/...` on the deployment URL with a bearer token | Experiments, runs, artifacts, the MLflow registry client |
 
-Logging a run or registering a model in MLflow deploys nothing; deployment is a Model Serving call.
+MLflow logging or registration deploys nothing; deployment is a Model Serving call.
 
 ## Management URL vs prediction URL
 
@@ -40,11 +40,11 @@ Management calls go to the base above under `/api/...`. Predictions go to the de
 
 1. Train and, optionally, register (`POST /api/registeredmodels/v2`, or the MLflow client).
 2. `POST /api/modelServing/v1/modelApis` with `name`, `description`, `environmentId`, `isAsync`, `strictNodeAntiAffinity`, `environmentVariables`, `version{projectId, source, logHttpRequestResponse, monitoringEnabled}`; `source.type` is `File` (`file`, `function`) or `Registry` (`registeredModelName`, `registeredModelVersion`). Optional `hardwareTierId`, `replicas`.
-3. Poll the version: `GET .../modelApis/{modelApiId}/versions/{modelApiVersionId}` until `deployment.status` is `Running` and `isPending` is false (`deployment` is absent before the first deployment; treat absence as pending), then confirm `activeVersion.id` on the Model API.
-4. New code: `POST .../modelApis/{modelApiId}/versions` (same `version` fields plus `shouldDeploy: true`; optional `environmentId`, `commitId`). Poll that version, not the Model API: the old version stays active until the new one runs.
+3. Poll the version: `GET .../modelApis/{modelApiId}/versions/{modelApiVersionId}` until `deployment.status` is `Running` and `isPending` is false (`deployment` is absent before the first deployment; treat absence as pending), then confirm `activeVersion.id` on the Model API. `Running` is not health: check `.../instanceLogs` for `Traceback` or `no app loaded` and make one test prediction. Sync or commit the files before step 2; the build uses the Project's commit.
+4. New code: `POST .../modelApis/{modelApiId}/versions` (same `version` fields plus `shouldDeploy: true`). Poll that version, not the Model API; the old one stays active until the new one runs.
 5. Change replicas, hardware tier, name or environment: `PUT .../modelApis/{modelApiId}` (`name`, `description`, `replicas`, `environmentId` required; send the current values back, including `resourceQuotaId`). Scale changes take effect after a restart of the endpoint, which has no public route (UI).
-6. Retire: stop the running version first (UI **Versions** > **Actions**, or the internal route `POST /v4/models/{modelApiId}/{versionId}/stopModelDeployment` with `{}`; internal API, may change between Domino versions), then `DELETE .../modelApis/{modelApiId}`. The spec calls this an archive, but on Domino Cloud 6.4 a `DELETE` on a running endpoint returns 500, and after a successful one `GET` returns 404 and the endpoint leaves all lists.
-7. Verify every mutation with a `GET`; a 2xx means the request was accepted, not that the pods have changed.
+6. Retire: stop the running version first (UI **Versions** > **Actions**, or internal `POST /v4/models/{modelApiId}/{versionId}/stopModelDeployment` with `{}`; internal API, may change between Domino versions), then `DELETE .../modelApis/{modelApiId}`: 500 while a version runs; after success `GET` is 404 and the endpoint leaves all lists (the spec calls it an archive).
+7. Verify every mutation with a `GET`; a 2xx means accepted, not that the pods have changed.
 
 Logs: `GET .../versions/{modelApiVersionId}/buildLogs`, `exportLogs`, `instanceLogs`.
 

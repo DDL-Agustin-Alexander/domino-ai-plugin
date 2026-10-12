@@ -728,6 +728,7 @@ def test_smart_sync_detects_remote_change_since_download(server, laptop, http, r
     assert result["your_base_key"] == hashlib.sha1(b"v1\n").hexdigest()
     assert result["remote_key"] == hashlib.sha1(b"someone else\n").hexdigest()
     assert result["original_content"] == "v1\n" and result["remote_content"] == "someone else\n"
+    assert result["remote_size"] == len(b"someone else\n")
     assert not _puts(http)
 
 
@@ -754,9 +755,12 @@ def test_tool_names_schemas_and_instructions(server, run):
         "sync_local_file_to_domino", "smart_sync_file",
     }
     # the thread wrapper keeps the real signature, so the schema has the real parameters
-    assert set(tools["smart_sync_file"].inputSchema["properties"]) == {"user_name", "project_name", "file_path", "content", "force_overwrite"}
-    assert tools["smart_sync_file"].inputSchema["required"] == ["user_name", "project_name", "file_path", "content"]
-    assert set(tools["run_domino_job"].inputSchema["properties"]) == {"user_name", "project_name", "run_command", "title", "git_branch"}
+    assert set(tools["run_domino_job"].inputSchema["properties"]) == {
+        "user_name", "project_name", "run_command", "title", "git_branch", "hardware_tier", "environment_id", "wait_seconds"}
+    assert set(tools["smart_sync_file"].inputSchema["properties"]) >= {"content", "content_base64"}
+    assert tools["smart_sync_file"].inputSchema["required"] == ["user_name", "project_name", "file_path"]
+    assert "wait_seconds" in tools["check_domino_job_run_status"].inputSchema["properties"]
+    assert "wait_seconds=300" in tools["check_domino_job_run_status"].description
     assert "conflict detection" in tools["smart_sync_file"].description
     instructions = server._plugin_instructions()
     rules = (Path(server.__file__).resolve().parents[2] / "rules" / "domino.md").read_text(encoding="utf-8")
@@ -906,3 +910,208 @@ def test_reads_do_not_wait_without_a_recent_own_write(server, laptop, http, run,
     served = _add_read_sequence(http, "a.py", [b"v1\n"])
     run(server.download_file_from_domino_project(OWNER, PROJECT, "a.py"))
     assert len(served) == 1 and clock.sleeps == []
+
+
+# ---------------------------------------------------------------------------------------------
+# Waiting for a Job on the server (hosts block `sleep`)
+# ---------------------------------------------------------------------------------------------
+
+def _job_status_sequence(http, job_id, statuses):
+    served = []
+
+    def handler(kw):
+        status = statuses[min(len(served), len(statuses) - 1)]
+        served.append(status)
+        return FakeResponse(200, {"job": {"id": job_id, "number": 5, "runCommand": "python x.py",
+                                          "status": {"executionStatus": status, "isCompleted": status in ("Succeeded", "Failed", "Stopped")}}})
+    http.add("GET", f"/api/jobs/beta/jobs/{job_id}", handler)
+    return served
+
+
+def test_check_status_waits_with_backoff_until_completed(server, laptop, http, run, clock):
+    served = _job_status_sequence(http, "job1", ["Pending", "Preparing", "Running", "Running", "Succeeded"])
+    result = run(server.check_domino_job_run_status("job1", wait_seconds=300))
+    assert result["status"] == "Succeeded" and result["is_completed"] is True
+    assert served == ["Pending", "Preparing", "Running", "Running", "Succeeded"]
+    assert clock.sleeps == [3.0, 5.0, 7.0, 9.0] and result["waited_seconds"] == 24
+    assert "message" not in result
+
+
+def test_check_status_returns_partial_result_at_the_deadline(server, laptop, http, run, clock):
+    served = _job_status_sequence(http, "job1", ["Pending"])
+    result = run(server.check_domino_job_run_status("job1", wait_seconds=20))
+    assert result["status"] == "Pending" and result["is_completed"] is False
+    assert result["waited_seconds"] == 20 and sum(clock.sleeps) == 20
+    assert "check_domino_job_run_status again" in result["message"] and "wait_seconds" in result["message"]
+    assert "do not use shell sleep" in result["message"]
+    assert len(served) == len(clock.sleeps) + 1
+
+
+def test_check_status_without_wait_returns_at_once(server, laptop, http, run, clock):
+    served = _job_status_sequence(http, "job1", ["Pending"])
+    result = run(server.check_domino_job_run_status("job1"))
+    assert result["status"] == "Pending" and result["waited_seconds"] == 0
+    assert len(served) == 1 and clock.sleeps == [] and "message" in result
+
+
+def test_wait_is_capped_per_host(server, laptop, http, run, clock, monkeypatch):
+    _job_status_sequence(http, "job1", ["Running"])
+    run(server.check_domino_job_run_status("job1", wait_seconds=100000))
+    assert sum(clock.sleeps) == server._WAIT_CAP
+    clock.sleeps.clear()
+    monkeypatch.setattr(server, "_CLIENT_NAME", "codex (codex-cli)")
+    result = run(server.check_domino_job_run_status("job1", wait_seconds=300))
+    assert sum(clock.sleeps) == server._WAIT_CAP_CODEX and "up to 50 per call" in result["message"]
+
+
+def test_run_domino_job_with_wait_returns_final_status_and_stdout_tail(server, laptop, http, run, clock):
+    _add_project_lookup(http)
+    http.add("POST", "/api/jobs/v1/jobs", FakeResponse(200, {"job": {"id": "job9", "number": 9, "status": {"executionStatus": "Queued", "isCompleted": False}}}))
+    _job_status_sequence(http, "job9", ["Queued", "Running", "Succeeded"])
+    lines = [{"log": "### Starting user code ###"}] + [{"log": f"line {i}"} for i in range(150)] + [{"log": "42"}]
+    http.add("GET", "/api/jobs/beta/jobs/job9/logs", FakeResponse(200, {"logs": {"logContent": lines, "isComplete": True}, "metadata": {}}))
+    result = run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t", wait_seconds=300))
+    assert result["job_id"] == "job9" and result["status"] == "Succeeded" and result["is_completed"] is True
+    assert result["waited_seconds"] == 8 and clock.sleeps == [3.0, 5.0]
+    assert result["results"].endswith("line 149\n42") and result["results_truncated"] is True
+    assert "line 0\n" not in result["results"] and "check_domino_job_run_results" in result["results_note"]
+    assert "finished with status Succeeded" in result["message"]
+
+
+def test_run_domino_job_with_wait_not_finished_says_how_to_continue(server, laptop, http, run, clock):
+    _add_project_lookup(http)
+    http.add("POST", "/api/jobs/v1/jobs", FakeResponse(200, {"job": {"id": "job9", "number": 9, "status": {"executionStatus": "Queued", "isCompleted": False}}}))
+    _job_status_sequence(http, "job9", ["Queued"])
+    result = run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t", wait_seconds=10))
+    assert result["is_completed"] is False and result["waited_seconds"] == 10 and "results" not in result
+    assert "run_id=job9" in result["message"] and "wait_seconds" in result["message"]
+
+
+def test_run_domino_job_without_wait_points_at_wait_seconds(server, laptop, http, run):
+    _add_project_lookup(http)
+    http.add("POST", "/api/jobs/v1/jobs", FakeResponse(200, {"job": {"id": "j", "status": {}}}))
+    result = run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t"))
+    assert "wait_seconds=300" in result["message"] and "waited_seconds" not in result
+
+
+# ---------------------------------------------------------------------------------------------
+# Hardware tier and environment
+# ---------------------------------------------------------------------------------------------
+
+TIERS = [{"id": "small-k8s", "name": "Small", "flags": {"isDefault": True, "isArchived": False}},
+         {"id": "gpu-k8s", "name": "GPU Large", "flags": {"isDefault": False, "isArchived": False}},
+         {"id": "old-k8s", "name": "Old", "flags": {"isDefault": False, "isArchived": True}}]
+
+
+def _add_tiers(http):
+    http.add("GET", "/api/hardwaretiers/v1/hardwaretiers",
+             lambda kw: FakeResponse(200, {"hardwareTiers": TIERS if kw["params"]["offset"] == 0 else [],
+                                           "metadata": {"totalCount": len(TIERS)}}))
+
+
+def test_run_domino_job_passes_a_validated_hardware_tier(server, laptop, http, run):
+    _add_project_lookup(http)
+    _add_tiers(http)
+    http.add("POST", "/api/jobs/v1/jobs", FakeResponse(200, {"job": {"id": "j", "status": {}}}))
+    result = run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t", hardware_tier="small-k8s"))
+    assert http.calls[-1][2]["json"]["hardwareTier"] == "small-k8s" and result["hardware_tier"] == "small-k8s"
+    result = run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t", hardware_tier="gpu large"))   # by name
+    assert http.calls[-1][2]["json"]["hardwareTier"] == "gpu-k8s"
+    assert sum(1 for c in http.calls if c[1] == "/api/hardwaretiers/v1/hardwaretiers") == 1   # cached
+    with pytest.raises(server.DominoError) as err:
+        run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t", hardware_tier="huge-k8s"))
+    assert "not found" in str(err.value) and "small-k8s (Small)" in str(err.value) and "old-k8s" not in str(err.value)
+    with pytest.raises(server.DominoError):
+        run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t", hardware_tier="old-k8s"))   # archived
+    assert sum(1 for c in http.calls if c[0] == "POST") == 2
+
+
+def test_run_domino_job_passes_a_validated_environment(server, laptop, http, run):
+    _add_project_lookup(http)
+    envs = [{"id": "e" * 24, "name": "Domino Standard Environment", "archived": False, "owner": {"username": "admin"}},
+            {"id": "f" * 24, "name": "Dup", "archived": False, "owner": {"username": "a"}},
+            {"id": "a" * 24, "name": "Dup", "archived": False, "owner": {"username": "b"}}]
+    http.add("GET", "/api/environments/beta/environments",
+             lambda kw: FakeResponse(200, {"environments": envs if kw["params"]["offset"] == 0 else [], "metadata": {}}))
+    http.add("POST", "/api/jobs/v1/jobs", FakeResponse(200, {"job": {"id": "j", "status": {}}}))
+    result = run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t", environment_id="e" * 24))
+    assert http.calls[-1][2]["json"]["environmentId"] == "e" * 24 and result["environment_id"] == "e" * 24
+    run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t", environment_id="domino standard environment"))
+    assert http.calls[-1][2]["json"]["environmentId"] == "e" * 24
+    with pytest.raises(server.DominoError) as err:
+        run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t", environment_id="Dup"))
+    assert "Several environments" in str(err.value)
+    with pytest.raises(server.DominoError) as err:
+        run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t", environment_id="nope"))
+    assert "not found" in str(err.value)
+
+
+# ---------------------------------------------------------------------------------------------
+# Binary files
+# ---------------------------------------------------------------------------------------------
+
+BINARY = bytes(range(256)) * 4   # not UTF-8
+
+
+def test_sync_local_file_uploads_binary_bytes_unchanged(server, laptop, http, run, tmp_path):
+    _add_project_lookup(http)
+    local = tmp_path / "model.joblib"
+    local.write_bytes(BINARY)
+    _add_file(http, "model.joblib", None)
+    _add_upload(http, "model.joblib")
+    result = run(server.sync_local_file_to_domino(OWNER, PROJECT, str(local)))
+    assert result["success"] and http.calls[-1][2]["data"] == BINARY
+    assert http.calls[-1][2]["headers"]["Content-Type"] == "application/octet-stream"
+    assert result["key"] == hashlib.sha1(BINARY).hexdigest() and result["size"] == len(BINARY)
+
+
+def test_upload_and_smart_sync_accept_base64(server, laptop, http, run):
+    import base64
+    _add_project_lookup(http)
+    _add_file(http, "a.bin", None)
+    _add_upload(http, "a.bin")
+    encoded = base64.b64encode(BINARY).decode()
+    result = run(server.upload_file_to_domino_project(OWNER, PROJECT, "a.bin", content_base64=encoded))
+    assert result["success"] and http.calls[-1][2]["data"] == BINARY
+    _add_file(http, "b.bin", None)
+    _add_upload(http, "b.bin")
+    result = run(server.smart_sync_file(OWNER, PROJECT, "b.bin", content_base64=encoded))
+    assert result["action"] == "created" and http.calls[-1][2]["data"] == BINARY
+    with pytest.raises(server.DominoError) as err:
+        run(server.smart_sync_file(OWNER, PROJECT, "b.bin", content="x", content_base64=encoded))
+    assert "exactly one" in str(err.value)
+    with pytest.raises(server.DominoError):
+        run(server.upload_file_to_domino_project(OWNER, PROJECT, "b.bin"))
+    with pytest.raises(server.DominoError) as err:
+        run(server.upload_file_to_domino_project(OWNER, PROJECT, "b.bin", content_base64="not base64!!"))
+    assert "base64" in str(err.value)
+
+
+def test_download_returns_binary_as_base64_and_detects_binary_conflicts(server, laptop, http, run):
+    import base64
+    _add_project_lookup(http)
+    _add_file(http, "model.joblib", BINARY)
+    result = run(server.download_file_from_domino_project(OWNER, PROJECT, "model.joblib"))
+    assert result["encoding"] == "base64" and base64.b64decode(result["content_base64"]) == BINARY
+    assert "content" not in result and result["size"] == len(BINARY)
+    # identical bytes: no change
+    assert run(server.smart_sync_file(OWNER, PROJECT, "model.joblib", content_base64=base64.b64encode(BINARY).decode()))["action"] == "no_change"
+    # someone else replaced the binary: conflict carries base64, keys and sizes, no upload
+    other = BINARY[::-1]
+    _add_file(http, "model.joblib", other, commit="ab" * 20)
+    _add_upload(http, "model.joblib")
+    result = run(server.smart_sync_file(OWNER, PROJECT, "model.joblib", content_base64=base64.b64encode(BINARY + b"x").decode()))
+    assert result["conflict"] is True and base64.b64decode(result["remote_content_base64"]) == other
+    assert base64.b64decode(result["original_content_base64"]) == BINARY
+    assert result["remote_key"] == hashlib.sha1(other).hexdigest() and not _puts(http)
+
+
+def test_large_remote_file_is_compared_but_not_returned(server, laptop, http, run, monkeypatch):
+    monkeypatch.setattr(server, "_MAX_RETURN_BYTES", 10)
+    _add_project_lookup(http)
+    big = b"x" * 11
+    _add_file(http, "big.bin", big)
+    result = run(server.download_file_from_domino_project(OWNER, PROJECT, "big.bin"))
+    assert "content" not in result and "content_base64" not in result and "content_omitted" in result
+    assert result["key"] == hashlib.sha1(big).hexdigest()
+    assert run(server.smart_sync_file(OWNER, PROJECT, "big.bin", content="x" * 11))["action"] == "no_change"

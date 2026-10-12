@@ -14,19 +14,45 @@ committed `uv.lock` pins the dependencies. Python 3.11 or later; `mcp` 1.x (`mcp
 | Tool | Kind | What it does | Domino route |
 |---|---|---|---|
 | `get_domino_environment_info` | read, local | Inside or outside Domino, project owner, name and id, Git-based or DFS, auth mode, what is missing | none (environment variables) |
-| `run_domino_job` | write | Starts a Job with one command string; optional `git_branch` for a Git-based project | `POST /api/jobs/v1/jobs` (Public API) |
-| `check_domino_job_run_status` | read | Execution status of a job (`Queued`, `Running`, `Succeeded`, `Failed`, ...) | `GET /api/jobs/beta/jobs/{jobId}` (Public API) |
+| `run_domino_job` | write | Starts a Job with one command string; optional `hardware_tier`, `environment_id`, `git_branch`; with `wait_seconds` waits on the server and returns the final status and the end of the stdout | `POST /api/jobs/v1/jobs`; `GET /api/hardwaretiers/v1/hardwaretiers` and `GET /api/environments/beta/environments` to validate the ids (Public API) |
+| `check_domino_job_run_status` | read | Execution status of a job (`Queued`, `Running`, `Succeeded`, `Failed`, ...); with `wait_seconds` waits on the server until it completes or the cap is reached | `GET /api/jobs/beta/jobs/{jobId}` (Public API) |
 | `check_domino_job_run_results` | read | Job output: `stdOut` by default, or `stdErr`, `prepareOutput`, `complete` | `GET /api/jobs/beta/jobs/{jobId}/logs` (Public API) |
 | `list_domino_project_files` | read | Files and subdirectories of one directory of a DFS project (not recursive) | `GET /v4/files/browseFiles`, `GET /v4/files/browseDirectories` (Internal API) |
-| `download_file_from_domino_project` | read | Content of a text file at the latest commit; records the version for `smart_sync_file` | `GET /api/projects/beta/projects/{id}/commits/latest`, `GET /api/projects/v1/projects/{id}/files/{commitId}/{path}/content` (Public API) |
-| `upload_file_to_domino_project` | write | Creates a text file in a DFS project; replaces an existing one only with `overwrite=True`; refuses Git-based projects | `PUT /v1/projects/{owner}/{project}/{path}` (legacy API) |
-| `sync_local_file_to_domino` | write | Reads a local file and calls `upload_file_to_domino_project` | as above |
-| `smart_sync_file` | write | Upload with conflict detection; never replaces a file it has not seen unless `force_overwrite=True`; refuses Git-based projects | the read routes above plus the legacy upload |
+| `download_file_from_domino_project` | read | Content of a file at the latest commit (text as `content`, binary as `content_base64`); records the version for `smart_sync_file` | `GET /api/projects/beta/projects/{id}/commits/latest`, `GET /api/projects/v1/projects/{id}/files/{commitId}/{path}/content` (Public API) |
+| `upload_file_to_domino_project` | write | Creates a file of any type in a DFS project (`file_content` text or `content_base64`); replaces an existing one only with `overwrite=True`; refuses Git-based projects | `PUT /v1/projects/{owner}/{project}/{path}` (legacy API) |
+| `sync_local_file_to_domino` | write | Reads a local file as bytes (model artifacts, images, text) and uploads it unchanged | as above |
+| `smart_sync_file` | write | Upload of any file type (`content` text or `content_base64`) with conflict detection; never replaces a file it has not seen unless `force_overwrite=True`; refuses Git-based projects | the read routes above plus the legacy upload |
 | `open_web_browser` | local side effect | Opens a URL in the default browser of the machine running the server; inside a Domino execution it returns `False` without doing anything | none |
 
 A job id and a run id are the same value, so `run_id` from `run_domino_job` goes straight into
 the status and results tools. `user_name` and `project_name` on those two tools are optional and
 kept for compatibility.
+
+### Waiting for a Job
+
+Hosts block a standalone `sleep` and a status call returns at once, so waiting happens on the
+server: `check_domino_job_run_status(run_id, wait_seconds=300)` polls `GET /api/jobs/beta/jobs/{jobId}`
+with a 3 s to 10 s backoff until the Job completes or the budget is spent, then returns the last
+status with `waited_seconds` and, if not complete, a `message` saying to call again.
+`run_domino_job(..., wait_seconds=300)` does the same right after starting the Job and, once it
+completes, adds `results` (the last 100 lines or 8,000 characters of stdout, `results_truncated`
+when cut) and the MLflow link if the output printed one.
+
+One call waits at most 600 s. Claude Code allows hours per MCP call (`MCP_TOOL_TIMEOUT`, default
+about 28 hours; a call past two minutes moves to a background task) and aborts a stdio call only
+after 30 minutes without a response. Codex ends a tool call after 60 s by default
+(`tool_timeout_sec`), so when the connected client calls itself `codex` the server caps one wait
+at 50 s and the model calls again; set `tool_timeout_sec` higher in `~/.codex/config.toml` to
+wait longer per call. Other hosts: check their per-tool timeout and pass a smaller `wait_seconds`
+if needed.
+
+### Hardware tier and environment
+
+`run_domino_job` accepts `hardware_tier` (id such as `small-k8s`, or name) and `environment_id`
+(id or name). Domino silently runs a Job on the project default for an unknown hardware tier id,
+so both values are checked against `GET /api/hardwaretiers/v1/hardwaretiers` (archived tiers
+excluded, list cached per process) and `GET /api/environments/beta/environments` before the Job
+starts; an unknown value is an error that lists what exists. Omit both for the project defaults.
 
 Project ids come from `DOMINO_PROJECT_ID` inside Domino when the names match the current
 project, otherwise from `GET /api/projects/beta/projects`, scanned page by page until an empty
@@ -67,8 +93,11 @@ Job starts from the uploaded version. What this cannot cover: a write by another
 last ~20 s is not visible yet, so a sync in that window may miss it. For shared projects, give
 other people's edits a minute before syncing over them.
 
-Files are read and written as UTF-8 text; reads are capped at 2 MiB. Paths are project-relative;
-`..` is rejected.
+Files are bytes: text files travel as `content` / `file_content`, binary files (model artifacts
+such as `.joblib` or `.pkl`, images) as `content_base64`, and `sync_local_file_to_domino` reads
+any local file as bytes. Version keys and conflict checks compare bytes. A tool returns file
+content (text, or base64 for binary) up to 2 MiB; larger files are still compared by key, with
+`content_omitted` in place of the content. Paths are project-relative; `..` is rejected.
 
 ## Environment variables
 
