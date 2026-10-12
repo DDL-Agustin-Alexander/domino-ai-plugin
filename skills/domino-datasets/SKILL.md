@@ -59,8 +59,7 @@ UI lists mounted paths under **Data > Datasets** (Workspace) and **Details > Dat
   drag-and-drop keeps folder structure.
 - **CLI** (larger uploads): `domino upload-dataset [--fileUploadSetting Ignore|Overwrite|Rename]
   [--targetRelativePath <dir>] <owner>/<project>/<dataset> <local-folder>`; flags and values
-  are case-sensitive; tune with `DOMINO_UPLOAD_CHUNK_BYTES` (default 3 MB) and
-  `DOMINO_UPLOAD_THREADS` (default 8). Install and sign in: [domino-cli](../domino-cli/SKILL.md).
+  are case-sensitive. Install and sign in: [domino-cli](../domino-cli/SKILL.md).
 - **From code**: write to the mount path; every execution sees the change at once, and it
   becomes a version when you snapshot.
 - **python-domino**: `datasets_upload_files(dataset_id, local_path, ...)`; signature in
@@ -75,25 +74,29 @@ one is in progress; time scales with size.
   `domino create-snapshot <owner>/<project>/<dataset>`; or
   `POST /api/datasetrw/v1/datasets/{datasetId}/snapshots` with `{"relativeFilePaths": ["*"]}`.
   `status` starts `pending` and becomes `active`; poll `GET /api/datasetrw/v1/snapshots/{id}`.
-- **Read**: the numbered or tagged path above, or pin the execution to one snapshot on the
-  **Data Plane & Hardware** tab at launch; it then mounts read-only at the live path.
-- **Iterate**: snapshots never change. **Copy to New Dataset**, `POST .../datasets` with
-  `snapshotId`, or `domino create-dataset-from-snapshot <owner>/<project>/<dataset> <n> <new-name>`.
-- **Tags** name one snapshot (`snapshots/<name>/<tag>`); Owners and Editors add or remove them on
-  the **Snapshots** page or with `POST .../datasets/{datasetId}/tags`
+- **Read**: at `.../snapshots/<name>/<n>` or `/<tag>`, but only in executions started after the
+  snapshot became `active`; the Workspace or Job that took it has no such path. To read it
+  now: `GET $DOMINO_API_PROXY/v4/datasetrw/snapshot/{snapshotId}/file/raw?path=<relative>`
+  (internal API, may change between Domino versions; no leading slash; list with
+  `.../files/recursive?path=`, empty for the root), `DatasetClient` with
+  `DatasetConfig(snapshot_id=...)`, or a new Job. Examples: [API.md](./API.md). Pinning a
+  snapshot at launch mounts it read-only at the live path.
+- **Iterate**: **Copy to New Dataset**, `POST .../datasets` with `snapshotId`, or
+  `domino create-dataset-from-snapshot`.
+- **Tags** name one snapshot (`snapshots/<name>/<tag>`); Owners and Editors manage them on the
+  **Snapshots** page or with `POST .../datasets/{datasetId}/tags`
   `{"snapshotId": "...", "tagName": "production"}` and `DELETE .../tags/{tagName}`. Re-using a
   name returns 400, so to move a tag remove it, then add it.
-- **Limits**: by default 20 active snapshots per Dataset (6.3 configuration record
-  `com.cerebro.domino.dataset.quota.maxActiveSnapshotsPerDataset`; Domino Support on Cloud).
-  At the limit an execution that would write a snapshot fails with an error, and a manual
-  **Take Snapshot** warns and, if you proceed, marks the oldest snapshot for deletion (it stops
-  mounting; an admin deletes it permanently). Delete old snapshots, raise the limit, or exempt
-  the Project; details in [BEST-PRACTICES.md](./BEST-PRACTICES.md).
+- **Limits**: default 20 active snapshots per Dataset (6.3 record
+  `com.cerebro.domino.dataset.quota.maxActiveSnapshotsPerDataset`; Domino Support on Cloud). At
+  the limit an execution that would write a snapshot errors; a manual **Take Snapshot** warns
+  and, if you proceed, marks the oldest for deletion (it stops mounting; an admin purges it).
+  Delete, raise the limit, or exempt the Project: [BEST-PRACTICES.md](./BEST-PRACTICES.md).
 
 ## Share across Projects
 
-Dataset roles are independent of Project roles: **Owner** (everything, including permissions),
-**Editor** (upload, snapshot, tag, update metadata), **Reader** (view and mount). Grant them on
+Dataset roles are independent of Project roles: **Owner** (everything), **Editor** (upload,
+snapshot, tag, update metadata), **Reader** (view and mount). Grant them on
 the Dataset's permissions panel or with `POST /api/datasetrw/v1/datasets/{datasetId}/grants`
 (`DatasetRwOwner`, `DatasetRwEditor`, `DatasetRwReader`). A user with a role mounts it in
 another Project via **Data > Domino Datasets > Mount Shared Dataset** or
@@ -113,7 +116,6 @@ Project that mounts it; confirm with the user first.
 |---|---|
 | Path missing in the execution | `DOMINO_IS_GIT_BASED`; Dataset mounted in this Project; execution started after the mount |
 | Permission denied writing | Dataset role (Reader is read-only); snapshot paths are always read-only; a pinned snapshot replaces the live mount; test with `os.access(path, os.W_OK)` |
-| Snapshot error at launch or `failed` status | Snapshot limit reached; delete snapshots or raise the limit |
 | Slow reads | Parquet, column projection, chunked reads ([BEST-PRACTICES.md](./BEST-PRACTICES.md)) |
 
 ## Reference files

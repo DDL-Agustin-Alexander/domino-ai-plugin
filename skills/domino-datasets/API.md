@@ -105,6 +105,32 @@ requests.post(f"{base}/api/datasetrw/v1/datasets/{dataset_id}/tags", headers=hea
               json={"snapshotId": snap["id"], "tagName": "production"}).raise_for_status()
 ```
 
+Read a snapshot you took in this execution. It is not mounted here (mounts are fixed at
+execution start), so go through the internal file routes, which answer through the proxy and
+from outside with a bearer (verified on 6.4.0). Internal API, may change between Domino
+versions; `path` is relative to the snapshot root with no leading slash, and an empty `path`
+lists the root:
+
+```bash
+SID=<snapshot id from the POST or the snapshots list>
+curl -sS "$DOMINO_API_PROXY/v4/datasetrw/snapshot/$SID/files/recursive?path=" | python3 -m json.tool | head
+curl -sS "$DOMINO_API_PROXY/v4/datasetrw/snapshot/$SID/file/raw?path=processed/features.parquet" \
+  -o /tmp/features.parquet
+```
+
+```python
+listing = requests.get(f"{base}/v4/datasetrw/snapshot/{snapshot_id}/files/recursive",
+                       headers=headers, params={"path": ""}).json()
+raw = requests.get(f"{base}/v4/datasetrw/snapshot/{snapshot_id}/file/raw",
+                   headers=headers, params={"path": "processed/features.parquet"})
+raw.raise_for_status()
+open("/tmp/features.parquet", "wb").write(raw.content)
+```
+
+The same read without any internal route: `DatasetClient().get_dataset(...)` plus
+`dataset.update(DatasetConfig(snapshot_id=snapshot_id))` in the domino-data-sdk skill. A Job
+started after the snapshot is `active` simply mounts it at `.../snapshots/<name>/<n>`.
+
 Find a Dataset by name across Projects:
 
 ```python
