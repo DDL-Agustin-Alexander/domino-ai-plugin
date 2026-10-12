@@ -1,4 +1,8 @@
-"""Shared fixtures: import the server module with a clean environment and a fake HTTP layer."""
+"""Shared fixtures: import the server module with a clean, hermetic environment and a fake HTTP layer.
+
+Hermetic means: no Domino variables from the real environment, no env file, and no ancestor-process
+recovery (os.getppid is patched to 1 during import), so the suite passes inside a Domino Workspace.
+"""
 import asyncio
 import importlib
 import json as jsonlib
@@ -16,27 +20,32 @@ _ENV_NAMES = (
     "DOMINO_API_HOST", "DOMINO_API_PROXY", "DOMINO_HOST", "DOMINO_TOKEN", "DOMINO_API_KEY",
     "DOMINO_PROJECT_ID", "DOMINO_PROJECT_NAME", "DOMINO_PROJECT_OWNER", "DOMINO_IS_GIT_BASED",
     "DOMINO_WORKING_DIR", "DOMINO_RUN_ID", "DOMINO_USER_HOST", "VSCODE_PROXY_URI",
-    "DOMINO_MCP_ENV_FILE", "XDG_CONFIG_HOME",
+    "DOMINO_MCP_ENV_FILE", "DOMINO_INSECURE_HTTP", "XDG_CONFIG_HOME",
 )
 
 
 @pytest.fixture
 def clean_env(monkeypatch, tmp_path):
-    """No Domino variables, no env file."""
+    """No Domino variables, no env file, no ancestor recovery."""
     for name in _ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("DOMINO_MCP_ENV_FILE", str(tmp_path / "absent.env"))
+    monkeypatch.setattr(os, "getppid", lambda: 1)
     return monkeypatch
+
+
+def import_server():
+    """A freshly imported server module (import-time environment handling runs now)."""
+    sys.modules.pop("domino_mcp_server", None)
+    module = importlib.import_module("domino_mcp_server")
+    module._project_cache.clear()
+    module._file_version_cache.clear()
+    return module
 
 
 @pytest.fixture
 def server(clean_env):
-    """A freshly imported server module (import-time environment handling runs under clean_env)."""
-    sys.modules.pop("domino_mcp_server", None)
-    module = importlib.import_module("domino_mcp_server")
-    module._project_id_cache.clear()
-    module._file_version_cache.clear()
-    return module
+    return import_server()
 
 
 class FakeResponse:
@@ -55,7 +64,10 @@ class FakeResponse:
 
 
 class FakeHTTP:
-    """Routes requests.request(method, url, ...) to canned responses and records every call."""
+    """Routes requests.request(method, url, ...) to canned responses and records every call.
+
+    An unregistered route fails the test: a wrong URL must never pass as "not found".
+    """
 
     def __init__(self):
         self.routes = {}   # (METHOD, path) -> FakeResponse | callable(kwargs) -> FakeResponse
@@ -70,7 +82,7 @@ class FakeHTTP:
         self.calls.append((method.upper(), parts.path, {**kwargs, "base": f"{parts.scheme}://{parts.netloc}"}))
         route = self.routes.get((method.upper(), parts.path))
         if route is None:
-            return FakeResponse(404, {"errors": [f"no fake route for {method} {parts.path}"]})
+            raise AssertionError(f"unexpected request {method.upper()} {parts.path}; registered: {sorted(self.routes)}")
         return route(kwargs) if callable(route) else route
 
 

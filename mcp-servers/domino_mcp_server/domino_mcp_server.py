@@ -10,7 +10,8 @@
 #   - uploading a file:       PUT /v1/projects/{owner}/{project}/{path}
 #                             (legacy API, not in any published spec)
 
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
+import functools
 import hashlib
 import os
 import re
@@ -19,6 +20,7 @@ import urllib.parse
 import webbrowser
 from pathlib import Path
 
+import anyio
 import requests
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
@@ -27,22 +29,35 @@ from mcp.server.fastmcp import FastMCP
 # Environment
 # ---------------------------------------------------------------------------------------------
 
-# A host that cannot resolve a ${...} placeholder in its MCP config may pass it through as
-# literal text (Claude Code does for an unset ${DOMINO_TOKEN}, Cursor for an unset ${env:NAME}).
-# Treat such values as unset so the env-file fallback and the "not set" errors below still apply.
-for _name in [k for k, v in os.environ.items() if v.startswith("${")]:
-    del os.environ[_name]
+# Variables the server reads for its own configuration (not the ones Domino injects).
+_CONFIG_VARS = ("DOMINO_HOST", "DOMINO_TOKEN", "DOMINO_API_KEY", "DOMINO_MCP_ENV_FILE",
+                "DOMINO_INSECURE_HTTP")
 
-# Variables this server reads. Some hosts start stdio MCP servers with a minimal environment and
-# give a plugin no way to forward more: Codex passes only HOME, LANG, LC_ALL, LOGNAME, PATH, SHELL
-# and USER, and drops a plugin server that declares env_vars. Inside a Domino Workspace or Job the
-# Domino variables are still set on the process that started the agent, so copy the ones this
-# server reads from the nearest ancestor that has them. Linux only; the kernel allows reading the
-# environment of processes owned by the same user.
+
+def _drop_unset_placeholders(environ: Dict[str, str]) -> None:
+    """Treat values a host passes for an unset variable as unset.
+
+    Claude Code passes an unset ${VAR} through as the literal text "${VAR}"; Cursor may pass an
+    unset ${env:NAME} as literal text or as an empty string. Either way the env-file fallback and
+    the "not set" errors must still apply, so delete such values.
+    """
+    for name in [k for k, v in environ.items() if v.startswith("${")]:
+        del environ[name]
+    for name in _CONFIG_VARS:
+        if environ.get(name) == "":
+            del environ[name]
+
+
+# Some hosts start stdio MCP servers with a minimal environment and give a plugin no way to
+# forward more: Codex passes only HOME, LANG, LC_ALL, LOGNAME, PATH, SHELL and USER, and drops a
+# plugin server that declares env_vars. Inside a Domino Workspace or Job the Domino variables are
+# still set on the process that started the agent, so copy the ones this server reads from the
+# nearest ancestor that has them. Linux only; the kernel allows reading the environment of
+# processes owned by the same user.
 _DOMINO_VARS = (
     "DOMINO_API_HOST", "DOMINO_API_PROXY", "DOMINO_PROJECT_ID", "DOMINO_PROJECT_NAME",
     "DOMINO_PROJECT_OWNER", "DOMINO_IS_GIT_BASED", "DOMINO_WORKING_DIR", "DOMINO_RUN_ID",
-    "DOMINO_USER_HOST", "VSCODE_PROXY_URI",
+    "VSCODE_PROXY_URI",
 )
 _MARKER_VARS = ("DOMINO_API_PROXY", "DOMINO_API_HOST")
 
@@ -96,31 +111,49 @@ def _env_file_path() -> Path:
     return Path(base) / "domino-mcp-server" / ".env"
 
 
-_recover_domino_env()
-load_dotenv(_env_file_path(), override=False)
+def _load_environment() -> None:
+    """Import-time environment handling, in order: placeholders, ancestor recovery, env file."""
+    _drop_unset_placeholders(os.environ)
+    _recover_domino_env()
+    load_dotenv(_env_file_path(), override=False)
+    _drop_unset_placeholders(os.environ)
+    if os.environ.get("DOMINO_API_KEY") and not os.environ.get("DOMINO_TOKEN"):
+        print("domino_mcp_server: DOMINO_API_KEY is set but legacy API keys are not supported by "
+              "this server. Set DOMINO_TOKEN to a Personal Access Token or service account token.",
+              file=sys.stderr)
 
-if os.environ.get("DOMINO_API_KEY") and not os.environ.get("DOMINO_TOKEN"):
-    print("domino_mcp_server: DOMINO_API_KEY is set but legacy API keys are deprecated and no longer "
-          "sent. Set DOMINO_TOKEN to a Personal Access Token or service account token instead.",
-          file=sys.stderr)
+
+_load_environment()
 
 
 class DominoError(Exception):
     """A tool-level failure with a message meant for the user and the model."""
 
 
-_AUTH_HELP = (
-    "Outside a Domino execution set DOMINO_HOST to your Domino URL (for example "
-    "https://domino.example.com) and DOMINO_TOKEN to a Personal Access Token (Account settings > "
-    "Personal Access Token) or a service account token. Inside a Domino Workspace or Job the "
-    "platform sets DOMINO_API_PROXY and no token is needed. See "
-    "https://docs.domino.ai/cloud/reference/api/domino-api-authentication."
-)
+def _auth_help() -> str:
+    text = (
+        "Outside a Domino execution set DOMINO_HOST to your Domino URL (for example "
+        "https://domino.example.com) and DOMINO_TOKEN to a Personal Access Token (Account settings > "
+        "Personal Access Token) or a service account token, either in the environment the MCP host "
+        f"passes to this server or in the env file {_env_file_path()} (KEY=value lines, chmod 600; "
+        "the file is read when the host strips the environment, as Codex does). Inside a Domino "
+        "Workspace or Job the platform sets DOMINO_API_PROXY and no token is needed. See "
+        "https://docs.domino.ai/cloud/reference/api/domino-api-authentication."
+    )
+    legacy_dotenv = Path(__file__).resolve().parent / ".env"
+    if legacy_dotenv.is_file():
+        text += f" Note: {legacy_dotenv} is no longer read; move its values to the env file above."
+    return text
 
 
 def _is_domino_workspace() -> bool:
     """True inside a Domino execution (Workspace, Job, App): the platform sets DOMINO_API_PROXY."""
     return bool(os.environ.get("DOMINO_API_PROXY"))
+
+
+def _is_loopback(url: str) -> bool:
+    host = urllib.parse.urlparse(url).hostname or ""
+    return host in ("localhost", "127.0.0.1", "::1")
 
 
 def _get_domino_host() -> str:
@@ -132,13 +165,39 @@ def _get_domino_host() -> str:
     proxy = os.environ.get("DOMINO_API_PROXY")
     if proxy:
         return proxy.rstrip("/")
-    host = os.environ.get("DOMINO_HOST") or os.environ.get("DOMINO_API_HOST")
+    host = (os.environ.get("DOMINO_HOST") or os.environ.get("DOMINO_API_HOST") or "").strip()
     if not host:
         raise DominoError("DOMINO_HOST is not set and this is not a Domino execution "
-                          "(DOMINO_API_PROXY is not set). " + _AUTH_HELP)
+                          "(DOMINO_API_PROXY is not set). " + _auth_help())
+    if host.startswith("http://") and not _is_loopback(host) \
+            and os.environ.get("DOMINO_INSECURE_HTTP", "").lower() not in ("1", "true", "yes"):
+        raise DominoError(f"DOMINO_HOST uses http://, which would send DOMINO_TOKEN in clear text. "
+                          f"Use the https:// URL of your Domino deployment (set DOMINO_INSECURE_HTTP=true "
+                          f"to allow http:// deliberately).")
     if not host.startswith(("http://", "https://")):
-        raise DominoError(f"DOMINO_HOST must be a URL starting with https:// (got {host!r}).")
+        raise DominoError("DOMINO_HOST must be a URL starting with https://")
     return host.rstrip("/")
+
+
+_TOKEN_BAD_CHARS = re.compile(r"[\s\x00-\x1f\x7f]")
+
+
+def _get_token() -> str | None:
+    """DOMINO_TOKEN, stripped of surrounding whitespace; None when unset.
+
+    Rejects a value with inner whitespace or control characters without echoing it, because
+    `requests` would otherwise include the header value in its exception text.
+    """
+    raw = os.environ.get("DOMINO_TOKEN")
+    if raw is None:
+        return None
+    token = raw.strip()
+    if not token:
+        return None
+    if _TOKEN_BAD_CHARS.search(token):
+        raise DominoError("DOMINO_TOKEN contains whitespace or control characters inside the value; "
+                          "paste the token on one line with nothing else (the value is not shown here).")
+    return token
 
 
 def _get_auth_headers() -> Dict[str, str]:
@@ -146,45 +205,56 @@ def _get_auth_headers() -> Dict[str, str]:
 
     Inside a Domino execution: none; the API proxy adds the user's token. Outside: DOMINO_TOKEN
     (Personal Access Token or service account token) as a bearer. Legacy API keys
-    (DOMINO_API_KEY, X-Domino-Api-Key) are deprecated by Domino and not sent.
+    (DOMINO_API_KEY, X-Domino-Api-Key) are deprecated by Domino and not sent by this server.
     """
     if _is_domino_workspace():
         return {}
-    token = os.environ.get("DOMINO_TOKEN")
+    token = _get_token()
     if token:
         return {"Authorization": f"Bearer {token}"}
     if os.environ.get("DOMINO_API_KEY"):
         raise DominoError("DOMINO_API_KEY is set, but legacy API keys (X-Domino-Api-Key) are "
-                          "deprecated by Domino and this server no longer sends them. " + _AUTH_HELP)
-    raise DominoError("DOMINO_TOKEN is not set. " + _AUTH_HELP)
+                          "deprecated by Domino and not supported by this server. " + _auth_help())
+    raise DominoError("DOMINO_TOKEN is not set. " + _auth_help())
 
 
 def _auth_mode() -> str:
     if _is_domino_workspace():
         return "api_proxy"
-    if os.environ.get("DOMINO_TOKEN"):
-        return "bearer_token"
-    return "none"
+    try:
+        return "bearer_token" if _get_token() else "none"
+    except DominoError:
+        return "invalid_token"
 
 
-def _get_external_host() -> str:
-    """The user-facing Domino URL, for links in results.
+def _redact(text: str) -> str:
+    """Remove the bearer token from any text that may reach the model or a log."""
+    try:
+        token = _get_token()
+    except DominoError:
+        token = (os.environ.get("DOMINO_TOKEN") or "").strip() or None
+    if token:
+        text = text.replace(token, "<redacted>")
+    return re.sub(r"(?i)bearer\s+[^\s'\"]+", "Bearer <redacted>", text)
 
-    Inside a Workspace: the host of VSCODE_PROXY_URI when set, else DOMINO_USER_HOST, else
-    DOMINO_API_HOST. Outside: DOMINO_HOST is already the external URL.
+
+def _get_external_host() -> str | None:
+    """The user-facing Domino URL for links in results, or None when it is not known.
+
+    Inside a Workspace only VSCODE_PROXY_URI carries it (DOMINO_API_HOST is the in-cluster URL
+    and would give unreachable links). Outside, DOMINO_HOST is already the external URL.
     """
     if not _is_domino_workspace():
-        return _get_domino_host()
+        try:
+            return _get_domino_host()
+        except DominoError:
+            return None
     vpu = os.environ.get("VSCODE_PROXY_URI", "")
     if vpu:
         parsed = urllib.parse.urlparse(vpu)
         if parsed.scheme and parsed.hostname:
             return f"{parsed.scheme}://{parsed.hostname}"
-    for name in ("DOMINO_USER_HOST", "DOMINO_API_HOST"):
-        value = os.environ.get(name)
-        if value:
-            return value.rstrip("/")
-    return _get_domino_host()
+    return None
 
 
 def _env_flag(name: str) -> bool | None:
@@ -217,25 +287,43 @@ def _describe_http_error(method: str, path: str, resp: requests.Response) -> str
         message += ". Check that DOMINO_TOKEN is a valid, unexpired Personal Access Token or " \
                    "service account token for DOMINO_HOST and that the token's user can access " \
                    "this project."
-    return message
+    return _redact(message)
 
 
 def _api(method: str, path: str, *, params: Dict[str, Any] | None = None,
          json: Any = None, data: bytes | None = None, headers: Dict[str, str] | None = None,
          allow: tuple = ()) -> requests.Response:
-    """One Domino API call. Raises DominoError with a readable message on any failure."""
+    """One Domino API call. Raises DominoError with a readable, token-free message on failure."""
     url = f"{_get_domino_host()}{path}"
     hdrs = {**_get_auth_headers(), **(headers or {})}
     try:
         resp = requests.request(method, url, params=params, json=json, data=data, headers=hdrs,
                                 timeout=_TIMEOUT)
-    except requests.exceptions.RequestException as e:
-        raise DominoError(f"{method} {path} failed: {e}") from None
+    except Exception as e:  # requests exceptions can embed header values; never let them through raw
+        raise DominoError(_redact(f"{method} {path} failed: {e}")) from None
     if resp.status_code in allow:
         return resp
     if resp.status_code >= 400:
         raise DominoError(_describe_http_error(method, path, resp))
     return resp
+
+
+def _api_json(method: str, path: str, **kwargs: Any) -> Any:
+    resp = _api(method, path, **kwargs)
+    try:
+        return resp.json()
+    except ValueError:
+        raise DominoError(f"{method} {path} returned a non-JSON response (HTTP {resp.status_code}). "
+                          f"Check that DOMINO_HOST is the URL of the Domino deployment itself, not a "
+                          f"login page or another site.") from None
+
+
+def _threaded(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Run a blocking tool implementation in a worker thread so the stdio event loop stays free."""
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+    return wrapper
 
 
 # ---------------------------------------------------------------------------------------------
@@ -298,60 +386,95 @@ def _file_key(content: bytes) -> str:
     return hashlib.sha1(content).hexdigest()
 
 
-_project_id_cache: Dict[tuple, str] = {}
+# (owner, name) lower-cased -> {"id": str, "git_based": bool | None}
+_project_cache: Dict[tuple, Dict[str, Any]] = {}
+_PROJECT_PAGE = 100
+_PROJECT_MAX_PAGES = 500   # a hard stop against a server that never returns an empty page
 
 
-def _resolve_project_id(user_name: str, project_name: str) -> str:
-    """The id of project `user_name/project_name`.
+def _project_info(user_name: str, project_name: str) -> Dict[str, Any]:
+    """The id of project `user_name/project_name` and whether it is Git-based.
 
-    Inside a Domino execution the platform's DOMINO_PROJECT_ID is used when the names match the
-    current project. Otherwise the Public API project list is searched (paginated) and the result
-    cached for the life of the process.
+    Inside a Domino execution the platform's DOMINO_PROJECT_ID and DOMINO_IS_GIT_BASED are used
+    when the names match the current project. Otherwise the Public API project list is searched
+    page by page until an empty page (or totalCount is reached) and the result cached for the
+    life of the process.
     """
     owner, name = user_name.strip(), project_name.strip()
     if not owner or not name:
         raise DominoError("user_name and project_name are required")
+    key = (owner.lower(), name.lower())
     env_id = os.environ.get("DOMINO_PROJECT_ID")
-    if env_id and os.environ.get("DOMINO_PROJECT_OWNER", "").lower() == owner.lower() \
-            and os.environ.get("DOMINO_PROJECT_NAME", "").lower() == name.lower():
-        return env_id
-    cached = _project_id_cache.get((owner.lower(), name.lower()))
+    if env_id and os.environ.get("DOMINO_PROJECT_OWNER", "").lower() == key[0] \
+            and os.environ.get("DOMINO_PROJECT_NAME", "").lower() == key[1]:
+        git_based = _env_flag("DOMINO_IS_GIT_BASED")
+        if git_based is None:
+            project = (_api_json("GET", f"/api/projects/v1/projects/{env_id}") or {}).get("project") or {}
+            git_based = bool(project.get("mainRepository"))
+        return {"id": env_id, "git_based": git_based}
+    cached = _project_cache.get(key)
     if cached:
         return cached
-    limit, offset = 100, 0
-    for _ in range(50):  # at most 5,000 projects
-        body = _api("GET", "/api/projects/beta/projects",
-                    params={"offset": offset, "limit": limit}).json()
+    offset = 0
+    for _ in range(_PROJECT_MAX_PAGES):
+        body = _api_json("GET", "/api/projects/beta/projects",
+                         params={"offset": offset, "limit": _PROJECT_PAGE}) or {}
         projects = body.get("projects") or []
-        for p in projects:
-            if (p.get("ownerUsername", "").lower(), p.get("name", "").lower()) == (owner.lower(), name.lower()):
-                _project_id_cache[(owner.lower(), name.lower())] = p["id"]
-                return p["id"]
-        if len(projects) < limit:
+        if not projects:
             break
-        offset += limit
+        for p in projects:
+            if (p.get("ownerUsername", "").lower(), p.get("name", "").lower()) == key:
+                info = {"id": p["id"], "git_based": bool(p.get("mainRepository"))}
+                _project_cache[key] = info
+                return info
+        offset += len(projects)
+        total = (body.get("metadata") or {}).get("totalCount")
+        if isinstance(total, int) and offset >= total:
+            break
+    else:
+        raise DominoError(f"Gave up looking for project {owner}/{name} after "
+                          f"{_PROJECT_MAX_PAGES * _PROJECT_PAGE} projects.")
     raise DominoError(f"Project {owner}/{name} was not found among the projects this user can "
                       f"access. Check the owner user name and project name.")
 
 
+def _resolve_project_id(user_name: str, project_name: str) -> str:
+    return _project_info(user_name, project_name)["id"]
+
+
+def _require_dfs_project(user_name: str, project_name: str) -> Dict[str, Any]:
+    """The project info, or an error when the project is Git-based (file writes would be lost)."""
+    info = _project_info(user_name, project_name)
+    if info.get("git_based"):
+        raise DominoError(f"{user_name}/{project_name} is a Git-based project: Jobs run the code in "
+                          f"its Git repository, so a file uploaded through the Domino file API is not "
+                          f"what a Job sees. Commit and push to the repository instead; the file tools "
+                          f"are for DFS projects.")
+    return info
+
+
 def _latest_commit_id(project_id: str) -> str:
-    body = _api("GET", f"/api/projects/beta/projects/{project_id}/commits/latest").json()
+    body = _api_json("GET", f"/api/projects/beta/projects/{project_id}/commits/latest") or {}
     commit = body.get("commitId")
     if not commit:
         raise DominoError(f"Could not read the latest commit of project {project_id}")
     return commit
 
 
-def _read_remote_file(project_id: str, commit_id: str, path: str) -> bytes | None:
-    """Raw content of a project file at a commit (Public API), or None when it does not exist."""
+def _read_remote_file(project_id: str, commit_id: str, path: str) -> requests.Response:
+    """GET the raw content of a project file at a commit (Public API); 403 and 404 are returned."""
     encoded = urllib.parse.quote(path, safe="")  # '/' must be sent as %2F
-    resp = _api("GET", f"/api/projects/v1/projects/{project_id}/files/{commit_id}/{encoded}/content",
+    return _api("GET", f"/api/projects/v1/projects/{project_id}/files/{commit_id}/{encoded}/content",
                 allow=(403, 404))
-    if resp.status_code in (403, 404):
-        # Domino answers 403 "File ..., commitId ..., projectId ... are not valid" for a path that
-        # does not exist at that commit; 404 for an unknown project.
-        return None
-    return resp.content
+
+
+def _listed_in_directory(user_name: str, project_name: str, path: str) -> bool:
+    """Whether `path` appears in the listing of its parent directory (Internal API)."""
+    parent = path.rsplit("/", 1)[0] if "/" in path else "/"
+    # Domino Internal API, may change between Domino versions: no public listing route exists.
+    files = _api_json("GET", "/v4/files/browseFiles",
+                      params={"ownerUsername": user_name, "projectName": project_name, "filePath": parent})
+    return any(f.get("path") == path for f in (files or []))
 
 
 _MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -365,6 +488,27 @@ def _decode_text(content: bytes, path: str) -> str:
         return content.decode("utf-8")
     except UnicodeDecodeError:
         raise DominoError(f"{path} is not UTF-8 text; this server only syncs text files") from None
+
+
+def _remote_state(user_name: str, project_name: str, path: str, info: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """{"exists": bool, "commit_id": str, "content": str|None, "key": str|None} at the latest commit.
+
+    "Does not exist" is concluded only from a 404, or from a 403 confirmed by a successful listing
+    of the parent directory that does not contain the file (Domino answers 403 "... are not valid"
+    for a missing path). Any other failure raises, so nothing is ever written over a file that
+    could not be read.
+    """
+    project_id = (info or _project_info(user_name, project_name))["id"]
+    commit_id = _latest_commit_id(project_id)
+    resp = _read_remote_file(project_id, commit_id, path)
+    if resp.status_code == 200:
+        raw = resp.content
+        return {"exists": True, "commit_id": commit_id, "content": _decode_text(raw, path), "key": _file_key(raw)}
+    if resp.status_code == 403:
+        if _listed_in_directory(user_name, project_name, path):
+            raise DominoError(f"Could not read {path} in {user_name}/{project_name} although it exists "
+                              f"({_describe_http_error('GET', 'file content', resp)}). Nothing was changed.")
+    return {"exists": False, "commit_id": commit_id, "content": None, "key": None}
 
 
 def _filter_domino_stdout(stdout_text: str) -> str:
@@ -405,22 +549,29 @@ def _filter_domino_stdout(stdout_text: str) -> str:
     return filtered_text
 
 
-def _extract_and_format_mlflow_url(text: str, user_name: str, project_name: str) -> str | None:
-    """
-    Finds an MLflow URL in the format http://127.0.0.1:8768/#/experiments/.../runs/...
-    and reformats it to the Domino URL format.
-    """
-    pattern = r"http://127\.0\.0\.1:8768/#/experiments/(\d+)/runs/([a-f0-9]+)"
-    match = re.search(pattern, text)
-    if match:
-        experiment_id = match.group(1)
-        run_id = match.group(2)
-        return f"{_get_external_host()}/experiments/{user_name}/{project_name}/{experiment_id}/{run_id}"
-    return None
+_MLFLOW_LOCAL_RUN = r"http://127\.0\.0\.1:8768/#/experiments/(\d+)/runs/([a-f0-9]+)"
 
 
-_LOG_PAGE_LIMIT = 1000   # the Public API caps `limit` at 1000
-_LOG_MAX_PAGES = 5
+def _mlflow_link(text: str, user_name: str, project_name: str) -> Dict[str, str] | None:
+    """The Domino experiment-run path for a local MLflow URL printed by a job, if any.
+
+    Returns {"mlflow_path": "/experiments/..."} plus "mlflow_url" when the user-facing host is known.
+    """
+    match = re.search(_MLFLOW_LOCAL_RUN, text)
+    if not match:
+        return None
+    path = f"/experiments/{user_name}/{project_name}/{match.group(1)}/{match.group(2)}"
+    result = {"mlflow_path": path}
+    host = _get_external_host()
+    if host:
+        result["mlflow_url"] = f"{host}{path}"
+    return result
+
+
+# Both specs: "Will not retrieve over 10000 log lines at a time"; Domino Cloud 6.4 applied 1000 to a
+# larger request. Ask for the maximum and follow the cursor until isComplete or the page cap.
+_LOG_PAGE_LIMIT = 10000
+_LOG_MAX_PAGES = 10
 
 
 def _job_logs(job_id: str, log_type: str) -> Dict[str, Any]:
@@ -428,18 +579,24 @@ def _job_logs(job_id: str, log_type: str) -> Dict[str, Any]:
     lines: List[str] = []
     cursor = None
     is_complete = False
+    last_entry: Dict[str, Any] | None = None
     for _ in range(_LOG_MAX_PAGES):
         params: Dict[str, Any] = {"logType": log_type, "limit": _LOG_PAGE_LIMIT}
         if cursor:
             params["latestTimeNano"] = cursor
-        body = _api("GET", f"/api/jobs/beta/jobs/{job_id}/logs", params=params).json()
+        body = _api_json("GET", f"/api/jobs/beta/jobs/{job_id}/logs", params=params) or {}
         logs = body.get("logs") or {}
-        entries = logs.get("logContent") or []
+        entries = list(logs.get("logContent") or [])
+        # The cursor means "from this time"; drop a boundary line repeated from the previous page.
+        if entries and last_entry and entries[0].get("timestamp") == last_entry.get("timestamp") \
+                and entries[0].get("log") == last_entry.get("log"):
+            entries = entries[1:]
         lines.extend(str(e.get("log", "")) for e in entries)
         is_complete = bool(logs.get("isComplete"))
         next_cursor = ((body.get("metadata") or {}).get("pagination") or {}).get("latestTimeNano")
         if is_complete or not entries or not next_cursor or next_cursor == cursor:
             break
+        last_entry = entries[-1]
         cursor = next_cursor
     return {"lines": lines, "is_complete": is_complete}
 
@@ -466,9 +623,10 @@ def _summarize_job(job: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------------------------
 
 @mcp.tool()
-async def check_domino_job_run_results(run_id: str, user_name: str | None = None,
-                                       project_name: str | None = None,
-                                       log_type: str = "stdOut") -> Dict[str, Any]:
+@_threaded
+def check_domino_job_run_results(run_id: str, user_name: str | None = None,
+                                 project_name: str | None = None,
+                                 log_type: str = "stdOut") -> Dict[str, Any]:
     """
     Returns the output of a Domino job run (its stdout by default).
 
@@ -497,14 +655,13 @@ async def check_domino_job_run_results(run_id: str, user_name: str | None = None
         "is_complete": logs["is_complete"],
     }
     if user_name and project_name:
-        mlflow_url = _extract_and_format_mlflow_url(text, user_name, project_name)
-        if mlflow_url:
-            local_run = r"http://127\.0\.0\.1:8768/#/experiments/\d+/runs/[a-f0-9]+"
+        link = _mlflow_link(text, user_name, project_name)
+        if link:
             local_exp = r"View experiment at: http://127\.0\.0\.1:8768/#/experiments/\d+"
             kept = [ln for ln in text.splitlines()
-                    if not re.search(local_run, ln) and not re.search(local_exp, ln)]
+                    if not re.search(_MLFLOW_LOCAL_RUN, ln) and not re.search(local_exp, ln)]
             result["results"] = "\n".join(kept).strip()
-            result["mlflow_url"] = mlflow_url
+            result.update(link)
     if not logs["lines"]:
         result["note"] = ("No log lines were returned. The job may have produced no output of this "
                           "type, may still be starting, or its logs may have expired; try "
@@ -513,8 +670,9 @@ async def check_domino_job_run_results(run_id: str, user_name: str | None = None
 
 
 @mcp.tool()
-async def check_domino_job_run_status(run_id: str, user_name: str | None = None,
-                                      project_name: str | None = None) -> Dict[str, Any]:
+@_threaded
+def check_domino_job_run_status(run_id: str, user_name: str | None = None,
+                                project_name: str | None = None) -> Dict[str, Any]:
     """
     Checks the status of a job run to determine if it is finished, in progress or failed. A run can
     take a minute or more, so call this repeatedly until is_completed is true before reading
@@ -531,16 +689,19 @@ async def check_domino_job_run_status(run_id: str, user_name: str | None = None,
         Failed, Stopped.
     """
     encoded_run_id = _validate_url_parameter(run_id, "run_id")
-    body = _api("GET", f"/api/jobs/beta/jobs/{encoded_run_id}").json()   # Public API
+    body = _api_json("GET", f"/api/jobs/beta/jobs/{encoded_run_id}") or {}   # Public API
     return _summarize_job(body.get("job") or {})
 
 
 @mcp.tool()
-async def run_domino_job(user_name: str, project_name: str, run_command: str, title: str) -> Dict[str, Any]:
+@_threaded
+def run_domino_job(user_name: str, project_name: str, run_command: str, title: str,
+                   git_branch: str | None = None) -> Dict[str, Any]:
     """
     Runs a command as a Job on the Domino platform, typically a script such as
-    'python my_script.py --arg1 val1'. The command runs against the project's latest files
-    (committed and pushed for a Git-based project; synced for a DFS project).
+    'python my_script.py --arg1 val1'. The command runs against the project's latest files: for a
+    DFS project the synced files; for a Git-based project the repository's default branch
+    (pushed commits only) unless git_branch names another branch.
 
     Args:
         user_name (str): The user name of the project owner.
@@ -548,6 +709,8 @@ async def run_domino_job(user_name: str, project_name: str, run_command: str, ti
         run_command (str): The command to run, as one string, exactly as you would type it in a
             shell. Example: 'python my_script.py --arg1 val1 --name "my run"'
         title (str): A title that helps identify the job later. Example: 'running training.py'
+        git_branch (str, optional): For a Git-based project, the branch to run from instead of
+            the default branch.
 
     Returns:
         {"job_id", "run_id", "number", "status", ...} of the new job. Poll
@@ -556,8 +719,10 @@ async def run_domino_job(user_name: str, project_name: str, run_command: str, ti
     if not run_command or not run_command.strip():
         raise DominoError("run_command must not be empty")
     project_id = _resolve_project_id(user_name, project_name)
-    payload = {"projectId": project_id, "runCommand": run_command.strip(), "title": title}
-    body = _api("POST", "/api/jobs/v1/jobs", json=payload).json()   # Public API (NewJobV1)
+    payload: Dict[str, Any] = {"projectId": project_id, "runCommand": run_command.strip(), "title": title}
+    if git_branch:
+        payload["mainRepoGitRef"] = {"refType": "branches", "value": git_branch}
+    body = _api_json("POST", "/api/jobs/v1/jobs", json=payload) or {}   # Public API (NewJobV1)
     result = _summarize_job(body.get("job") or {})
     result["message"] = (f"Started job {result.get('number')} ({result.get('job_id')}) in "
                          f"{user_name}/{project_name}. Poll check_domino_job_run_status with "
@@ -569,7 +734,8 @@ async def run_domino_job(user_name: str, project_name: str, run_command: str, ti
 @mcp.tool()
 def open_web_browser(url: str) -> bool:
     """Opens the specified URL in the default web browser on the machine running this server.
-    Inside a Domino Workspace there is no browser; show the URL to the user instead.
+    Inside a Domino Workspace or Job there is no browser: the tool returns False without doing
+    anything, and you should show the URL to the user instead.
 
     Args:
         url: The URL to open.
@@ -577,7 +743,7 @@ def open_web_browser(url: str) -> bool:
     Returns:
         True if the browser was opened successfully, False otherwise.
     """
-    if not url.startswith(("http://", "https://")):
+    if _is_domino_workspace() or not url.startswith(("http://", "https://")):
         return False
     try:
         return bool(webbrowser.open_new_tab(url))
@@ -626,10 +792,15 @@ async def get_domino_environment_info() -> Dict[str, Any]:
         info["is_git_based"] = None
         info["is_dfs_project"] = None
         if info["auth_mode"] == "none":
-            info["error"] = info.get("error") or ("DOMINO_TOKEN is not set. " + _AUTH_HELP)
+            info["error"] = info.get("error") or ("DOMINO_TOKEN is not set. " + _auth_help())
+        elif info["auth_mode"] == "invalid_token":
+            try:
+                _get_token()
+            except DominoError as e:
+                info["error"] = str(e)
         if os.environ.get("DOMINO_API_KEY"):
-            info["warning"] = ("DOMINO_API_KEY is set but legacy API keys are deprecated and not "
-                               "used; set DOMINO_TOKEN instead.")
+            info["warning"] = ("DOMINO_API_KEY is set but legacy API keys are not supported by this "
+                               "server; set DOMINO_TOKEN instead.")
         info["note"] = ("Running outside Domino. Take the project owner, project name and the "
                         "DFS setting from the user or from domino_project_settings.md.")
     return info
@@ -652,6 +823,7 @@ def _probe_git(working_dir: str) -> bool | None:
 # Tools: DFS (Domino File System) files
 # These support syncing files with non-Git Domino projects. Reads use the Public API; listing
 # uses the Domino Internal API and uploading the legacy v1 API (no public equivalent exists).
+# Writes refuse Git-based projects, whose Jobs run the repository, not uploaded files.
 # ---------------------------------------------------------------------------------------------
 
 # Versions this process has seen, for conflict detection in smart_sync_file.
@@ -660,7 +832,8 @@ _file_version_cache: Dict[tuple, Dict[str, Any]] = {}
 
 
 @mcp.tool()
-async def list_domino_project_files(user_name: str, project_name: str, path: str = "/") -> Dict[str, Any]:
+@_threaded
+def list_domino_project_files(user_name: str, project_name: str, path: str = "/") -> Dict[str, Any]:
     """
     Lists the files and subdirectories in one directory of a Domino project (not recursive).
     Works with DFS (non-git) projects. Use it to see what exists before uploading or downloading.
@@ -679,8 +852,8 @@ async def list_domino_project_files(user_name: str, project_name: str, path: str
     params = {"ownerUsername": user_name, "projectName": project_name, "filePath": directory}
     # Domino Internal API, may change between Domino versions: the Public API has no directory
     # listing for DFS project files.
-    files = _api("GET", "/v4/files/browseFiles", params=params).json()
-    dirs = _api("GET", "/v4/files/browseDirectories", params=params).json()
+    files = _api_json("GET", "/v4/files/browseFiles", params=params) or []
+    dirs = _api_json("GET", "/v4/files/browseDirectories", params=params) or []
     simplified_files = [{
         "path": f.get("path"),
         "name": f.get("name"),
@@ -697,10 +870,9 @@ async def list_domino_project_files(user_name: str, project_name: str, path: str
     }
 
 
-def _upload(user_name: str, project_name: str, file_path: str, content: str) -> Dict[str, Any]:
+def _upload(user_name: str, project_name: str, path: str, content: str) -> Dict[str, Any]:
     encoded_user_name = _validate_url_parameter(user_name, "user_name")
     encoded_project_name = _validate_url_parameter(project_name, "project_name")
-    path = _normalize_project_path(file_path)
     encoded_path = "/".join(urllib.parse.quote(seg, safe="") for seg in path.split("/"))
     data = content.encode("utf-8")
     # Legacy v1 API, not in any published spec: the Public API has no upload route for DFS
@@ -715,47 +887,17 @@ def _upload(user_name: str, project_name: str, file_path: str, content: str) -> 
         "success": True,
         "path": body.get("path") or path,
         "size": body.get("size", len(data)),
-        "key": body.get("key") or _file_key(data),
+        "key": _file_key(data),   # always the local SHA-1, the same source the conflict check uses
         "lastModified": body.get("lastModified"),
     }
 
 
-def _remote_state(user_name: str, project_name: str, path: str) -> Dict[str, Any]:
-    """{"exists": bool, "commit_id": str, "content": str|None, "key": str|None} at the latest commit."""
-    project_id = _resolve_project_id(user_name, project_name)
-    commit_id = _latest_commit_id(project_id)
-    raw = _read_remote_file(project_id, commit_id, path)
-    if raw is None:
-        return {"exists": False, "commit_id": commit_id, "content": None, "key": None}
-    return {"exists": True, "commit_id": commit_id, "content": _decode_text(raw, path), "key": _file_key(raw)}
-
-
-@mcp.tool()
-async def upload_file_to_domino_project(
-    user_name: str,
-    project_name: str,
-    file_path: str,
-    file_content: str,
-    overwrite: bool = False
-) -> Dict[str, Any]:
-    """
-    Uploads a text file to a Domino project. Works with DFS (non-git) projects.
-    Creates the file if it does not exist. Refuses to replace an existing file unless
-    overwrite=True; prefer smart_sync_file, which detects conflicts instead of overwriting.
-
-    Args:
-        user_name (str): The username of the project owner (e.g., 'etan_lightstone')
-        project_name (str): The name of the Domino project (e.g., 'diabetes_dfs_proj')
-        file_path (str): The path where the file should be saved in the project (e.g., 'scripts/train.py')
-        file_content (str): The content of the file to upload
-        overwrite (bool): Replace the file if it already exists (default False).
-
-    Returns:
-        {"success": True, "path", "size", "key", "lastModified"} on success.
-    """
+def _upload_file(user_name: str, project_name: str, file_path: str, file_content: str,
+                 overwrite: bool) -> Dict[str, Any]:
     path = _normalize_project_path(file_path)
+    info = _require_dfs_project(user_name, project_name)
     if not overwrite:
-        remote = _remote_state(user_name, project_name, path)
+        remote = _remote_state(user_name, project_name, path, info)
         if remote["exists"]:
             if remote["content"] == file_content:
                 return {"success": True, "action": "no_change", "path": path, "key": remote["key"],
@@ -769,7 +911,35 @@ async def upload_file_to_domino_project(
 
 
 @mcp.tool()
-async def download_file_from_domino_project(
+@_threaded
+def upload_file_to_domino_project(
+    user_name: str,
+    project_name: str,
+    file_path: str,
+    file_content: str,
+    overwrite: bool = False
+) -> Dict[str, Any]:
+    """
+    Uploads a text file to a DFS (non-git) Domino project. Creates the file if it does not exist.
+    Refuses to replace an existing file unless overwrite=True; prefer smart_sync_file, which
+    detects conflicts instead of overwriting. Refuses Git-based projects (commit and push there).
+
+    Args:
+        user_name (str): The username of the project owner (e.g., 'etan_lightstone')
+        project_name (str): The name of the Domino project (e.g., 'diabetes_dfs_proj')
+        file_path (str): The path where the file should be saved in the project (e.g., 'scripts/train.py')
+        file_content (str): The content of the file to upload
+        overwrite (bool): Replace the file if it already exists (default False).
+
+    Returns:
+        {"success": True, "path", "size", "key", "lastModified"} on success.
+    """
+    return _upload_file(user_name, project_name, file_path, file_content, overwrite)
+
+
+@mcp.tool()
+@_threaded
+def download_file_from_domino_project(
     user_name: str,
     project_name: str,
     file_path: str
@@ -807,7 +977,8 @@ async def download_file_from_domino_project(
 
 
 @mcp.tool()
-async def sync_local_file_to_domino(
+@_threaded
+def sync_local_file_to_domino(
     user_name: str,
     project_name: str,
     local_file_path: str,
@@ -815,9 +986,9 @@ async def sync_local_file_to_domino(
     overwrite: bool = False
 ) -> Dict[str, Any]:
     """
-    Reads a local text file and uploads it to a Domino project. Works with DFS (non-git) projects.
-    Refuses to replace an existing remote file unless overwrite=True; use smart_sync_file for
-    conflict detection.
+    Reads a local text file and uploads it to a DFS (non-git) Domino project. Refuses to replace
+    an existing remote file unless overwrite=True; use smart_sync_file for conflict detection.
+    Refuses Git-based projects (commit and push there).
 
     Args:
         user_name (str): The username of the project owner (e.g., 'etan_lightstone')
@@ -843,17 +1014,12 @@ async def sync_local_file_to_domino(
     if domino_file_path is None:
         domino_file_path = os.path.basename(local_file_path)
 
-    return await upload_file_to_domino_project(
-        user_name=user_name,
-        project_name=project_name,
-        file_path=domino_file_path,
-        file_content=content,
-        overwrite=overwrite,
-    )
+    return _upload_file(user_name, project_name, domino_file_path, content, overwrite)
 
 
 @mcp.tool()
-async def smart_sync_file(
+@_threaded
+def smart_sync_file(
     user_name: str,
     project_name: str,
     file_path: str,
@@ -861,8 +1027,8 @@ async def smart_sync_file(
     force_overwrite: bool = False
 ) -> Dict[str, Any]:
     """
-    Syncs a text file to a Domino project with conflict detection. Only use this for non-git
-    projects (DFS based).
+    Syncs a text file to a DFS (non-git) Domino project with conflict detection. Refuses
+    Git-based projects (commit and push there).
 
     This is the RECOMMENDED way to upload files when working with shared projects. It never
     replaces a remote file it has not seen: it compares the remote version with the one you
@@ -891,7 +1057,8 @@ async def smart_sync_file(
     path = _normalize_project_path(file_path)
     cache_key = (user_name, project_name, path)
     cached = _file_version_cache.get(cache_key)
-    remote = _remote_state(user_name, project_name, path)   # Public API, latest commit
+    info = _require_dfs_project(user_name, project_name)
+    remote = _remote_state(user_name, project_name, path, info)   # Public API, latest commit
 
     def _do_upload(action: str, **extra: Any) -> Dict[str, Any]:
         result = _upload(user_name, project_name, path, content)

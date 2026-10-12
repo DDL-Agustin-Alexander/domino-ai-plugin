@@ -14,22 +14,25 @@ committed `uv.lock` pins the dependencies. Python 3.11 or later; `mcp` 1.x (`mcp
 | Tool | Kind | What it does | Domino route |
 |---|---|---|---|
 | `get_domino_environment_info` | read, local | Inside or outside Domino, project owner, name and id, Git-based or DFS, auth mode, what is missing | none (environment variables) |
-| `run_domino_job` | write | Starts a Job with one command string | `POST /api/jobs/v1/jobs` (Public API) |
+| `run_domino_job` | write | Starts a Job with one command string; optional `git_branch` for a Git-based project | `POST /api/jobs/v1/jobs` (Public API) |
 | `check_domino_job_run_status` | read | Execution status of a job (`Queued`, `Running`, `Succeeded`, `Failed`, ...) | `GET /api/jobs/beta/jobs/{jobId}` (Public API) |
 | `check_domino_job_run_results` | read | Job output: `stdOut` by default, or `stdErr`, `prepareOutput`, `complete` | `GET /api/jobs/beta/jobs/{jobId}/logs` (Public API) |
 | `list_domino_project_files` | read | Files and subdirectories of one directory of a DFS project (not recursive) | `GET /v4/files/browseFiles`, `GET /v4/files/browseDirectories` (Internal API) |
 | `download_file_from_domino_project` | read | Content of a text file at the latest commit; records the version for `smart_sync_file` | `GET /api/projects/beta/projects/{id}/commits/latest`, `GET /api/projects/v1/projects/{id}/files/{commitId}/{path}/content` (Public API) |
-| `upload_file_to_domino_project` | write | Creates a text file; replaces an existing one only with `overwrite=True` | `PUT /v1/projects/{owner}/{project}/{path}` (legacy API) |
+| `upload_file_to_domino_project` | write | Creates a text file in a DFS project; replaces an existing one only with `overwrite=True`; refuses Git-based projects | `PUT /v1/projects/{owner}/{project}/{path}` (legacy API) |
 | `sync_local_file_to_domino` | write | Reads a local file and calls `upload_file_to_domino_project` | as above |
-| `smart_sync_file` | write | Upload with conflict detection; never replaces a file it has not seen unless `force_overwrite=True` | the read routes above plus the legacy upload |
-| `open_web_browser` | local side effect | Opens a URL in the default browser of the machine running the server (no-op in a Workspace) | none |
+| `smart_sync_file` | write | Upload with conflict detection; never replaces a file it has not seen unless `force_overwrite=True`; refuses Git-based projects | the read routes above plus the legacy upload |
+| `open_web_browser` | local side effect | Opens a URL in the default browser of the machine running the server; inside a Domino execution it returns `False` without doing anything | none |
 
 A job id and a run id are the same value, so `run_id` from `run_domino_job` goes straight into
 the status and results tools. `user_name` and `project_name` on those two tools are optional and
 kept for compatibility.
 
 Project ids come from `DOMINO_PROJECT_ID` inside Domino when the names match the current
-project, otherwise from `GET /api/projects/beta/projects` (paginated, cached per process).
+project, otherwise from `GET /api/projects/beta/projects`, scanned page by page until an empty
+page (cached per process). The same lookup says whether the project is Git-based
+(`mainRepository`, or `DOMINO_IS_GIT_BASED` inside Domino): the write tools refuse Git-based
+projects, because Jobs there run the repository, not uploaded files; commit and push instead.
 
 ### Conflict detection
 
@@ -50,8 +53,12 @@ Only `force_overwrite=True` replaces a conflicting file; the response then carri
 existing, different file unless `overwrite=True`. The baseline lives in the server process: a
 new session starts without one, which is the safe direction (a conflict, never an overwrite).
 
-Files are read and written as UTF-8 text, up to 2 MiB. Paths are project-relative; `..` is
-rejected.
+"Does not exist" is concluded only from a 404, or from a 403 (what Domino answers for a missing
+path) confirmed by a listing of the parent directory that does not contain the file. Any other
+failure to read the file is an error, and nothing is written over a file that could not be read.
+
+Files are read and written as UTF-8 text; reads are capped at 2 MiB. Paths are project-relative;
+`..` is rejected.
 
 ## Environment variables
 
@@ -65,7 +72,7 @@ Nothing to configure. Domino sets these and the server reads them:
 | `DOMINO_PROJECT_ID`, `DOMINO_PROJECT_OWNER`, `DOMINO_PROJECT_NAME` | The current project, reported by `get_domino_environment_info` and used instead of a lookup |
 | `DOMINO_IS_GIT_BASED` | Git-based (`true`) or DFS (`false`) project. If unset, `git rev-parse` runs in `DOMINO_WORKING_DIR`; never in the server's own directory |
 | `DOMINO_WORKING_DIR`, `DOMINO_RUN_ID` | Reported for context |
-| `VSCODE_PROXY_URI`, `DOMINO_USER_HOST`, `DOMINO_API_HOST` | The user-facing Domino URL, in that order, for links (MLflow run URL) |
+| `VSCODE_PROXY_URI` | The user-facing Domino URL, for the MLflow run link in job results. Without it the result carries only `mlflow_path` (`DOMINO_API_HOST` is the in-cluster URL and would give unreachable links) |
 
 Some hosts start stdio MCP servers with a stripped environment (Codex passes only `HOME`,
 `LANG`, `LC_ALL`, `LOGNAME`, `PATH`, `SHELL`, `USER`). On Linux the server then copies the
@@ -76,19 +83,21 @@ variables above from the nearest ancestor process that has `DOMINO_API_PROXY` or
 
 | Variable | Value |
 |---|---|
-| `DOMINO_HOST` | Your Domino URL, for example `https://domino.example.com` (`DOMINO_API_HOST` is accepted as a fallback) |
-| `DOMINO_TOKEN` | A [Personal Access Token](https://docs.domino.ai/cloud/reference/api/domino-api-authentication) (Account settings > Personal Access Token) or a service account token, sent as `Authorization: Bearer`. Ignored when `DOMINO_API_PROXY` is set. |
+| `DOMINO_HOST` | Your Domino URL, for example `https://domino.example.com` (`DOMINO_API_HOST` is accepted as a fallback). `http://` is refused except for localhost, because it would send the token in clear text; set `DOMINO_INSECURE_HTTP=true` to allow it deliberately |
+| `DOMINO_TOKEN` | A [Personal Access Token](https://docs.domino.ai/cloud/reference/api/domino-api-authentication) (Account settings > Personal Access Token) or a service account token, sent as `Authorization: Bearer`. Surrounding whitespace is stripped; a value with whitespace inside is rejected. Ignored when `DOMINO_API_PROXY` is set. The token never appears in tool results, errors or logs. |
 
-Legacy user API keys (`DOMINO_API_KEY`, `X-Domino-Api-Key`) are deprecated by Domino and no
-longer supported: a PAT is rejected on that header, and a legacy key is not sent. If
+Legacy user API keys (`DOMINO_API_KEY`, `X-Domino-Api-Key`) are deprecated by Domino and not
+supported by this server: a PAT is rejected on that header, and a legacy key is not sent. If
 `DOMINO_API_KEY` is set and `DOMINO_TOKEN` is not, every API tool fails with a message that says
 to set `DOMINO_TOKEN`, and the server prints the same warning on stderr at start.
 
 When the host does not pass these variables, the server reads an env file (`KEY=value` lines,
-existing variables win): `$DOMINO_MCP_ENV_FILE` if set, else
+existing non-empty variables win): `$DOMINO_MCP_ENV_FILE` if set, else
 `$XDG_CONFIG_HOME/domino-mcp-server/.env`, else `~/.config/domino-mcp-server/.env`. Make it
-readable only by you (`chmod 600`). A `.env` in the project directory is not read: `uv
---directory` starts the server with the plugin directory as its working directory.
+readable only by you (`chmod 600`). A `.env` in the project directory or next to the server is
+not read: `uv --directory` starts the server with the plugin directory as its working directory,
+and earlier versions that walked up from the server directory found files by accident. The
+"not set" errors name the env file path, since under Codex it is the only route that works.
 
 Errors from the API say which variable to fix: a 401 or 403 outside Domino names `DOMINO_TOKEN`
 and `DOMINO_HOST`; a missing variable names both and links the authentication page.
@@ -97,9 +106,9 @@ and `DOMINO_HOST`; a missing variable names both and links the authentication pa
 
 | Host | File | Environment |
 |---|---|---|
-| Claude Code | `.mcp.json` (plugin root): `uv --directory ${CLAUDE_PLUGIN_ROOT}/mcp-servers/domino_mcp_server run domino_mcp_server.py` | Inherits your shell; the `env` block forwards `DOMINO_HOST` and `DOMINO_TOKEN` as `${VAR}`. An unset variable arrives as the literal text `${DOMINO_TOKEN}`, which the server treats as unset. |
+| Claude Code | `.mcp.json` (plugin root): `uv --directory ${CLAUDE_PLUGIN_ROOT}/mcp-servers/domino_mcp_server run domino_mcp_server.py` | Inherits your shell; the `env` block forwards `DOMINO_HOST` and `DOMINO_TOKEN` as `${VAR}`. An unset variable arrives as the literal text `${DOMINO_TOKEN}` (documented Claude Code behaviour), which the server treats as unset. |
 | Codex and the ChatGPT desktop app (local marketplace) | `mcp.json` (Agent Plugins format, `${PLUGIN_ROOT}`) | No `env` block (the format forbids secrets there) and Codex strips the shell environment. Inside a Workspace the server recovers the Domino variables itself; on a laptop use the env file above. |
-| Cursor | `.cursor-plugin/mcp.json` (`${CURSOR_PLUGIN_ROOT}`) | `${env:DOMINO_HOST}` and `${env:DOMINO_TOKEN}`: Cursor asks for both at install. |
+| Cursor | `.cursor-plugin/mcp.json` (`${CURSOR_PLUGIN_ROOT}`) | `${env:DOMINO_HOST}` and `${env:DOMINO_TOKEN}`, resolved from your environment. Whether Cursor passes literal text or an empty string for an unset variable is not documented; the server treats both as unset. |
 | Any other host | register a stdio server with the same `uv --directory <path to this directory> run domino_mcp_server.py` command | pass `DOMINO_HOST` and `DOMINO_TOKEN` the way the host supports, or use the env file |
 
 The server's `instructions` (sent in the MCP `initialize` response) are the lead section of
@@ -130,5 +139,8 @@ uv lock                              # after changing pyproject.toml; commit uv.
 claude --plugin-dir ../.. mcp list   # expect domino_server: Connected
 ```
 
-Every HTTP call has a 10 s connect and 60 s read timeout. Tool failures are raised as MCP tool
-errors with the message the user needs, not returned as data.
+Every HTTP call has a 10 s connect and 60 s read timeout and runs in a worker thread, so the
+stdio event loop keeps answering pings while Domino is slow. Tool failures are raised as MCP
+tool errors with the message the user needs, not returned as data; the bearer token is redacted
+from every error text. Running the tests inside a Domino Workspace is fine: the fixtures pin the
+environment and disable the ancestor-process recovery.
