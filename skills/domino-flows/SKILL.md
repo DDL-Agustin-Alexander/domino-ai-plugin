@@ -1,128 +1,83 @@
 ---
 name: domino-flows
-description: Orchestrate multi-step ML workflows using Domino Flows (built on Flyte). Define DAGs with typed inputs/outputs, heterogeneous environments, automatic lineage, and reproducibility. Use when building data pipelines, multi-stage training workflows, or processes requiring orchestration and monitoring.
+description: Orchestrate multi-step ML and data pipelines with Domino Flows (Flyte-based). Covers defining tasks with DominoJobTask/DominoJobConfig or run_domino_job_task, typed inputs and outputs under /workflow, Flow Artifacts (DATA, MODEL, REPORT) and export to Datasets or NetApp Volumes, pinning environment, hardware tier, commit and dataset snapshots for reproducibility, caching, subflows, approvals, launching with pyflyte, scheduling through a Job, and monitoring runs, lineage and logs. Use when building a DAG of Domino Jobs, a multi-stage training workflow, or any pipeline that needs lineage and reproducible reruns.
+compatibility: Domino 6.3 and Domino Cloud. Needs a Workspace or Job on a Domino Standard Environment 6.0 or later (or an environment built on it) for the flytekit and flytekitplugins.domino libraries.
 ---
 
-# Domino Flows Skill
+# Domino Flows
 
-This skill provides comprehensive knowledge for orchestrating ML workflows using Domino Flows, built on the Flyte platform.
+Applies to Domino 6.3 and Domino Cloud.
 
-## Key Concepts
+A flow is a Python function decorated with `@workflow` whose nodes are **tasks**, each run as a Domino Job in its own container. Tasks declare typed inputs and outputs; outputs become inputs downstream, which defines the DAG, parallelism and lineage. Flows run on Flyte, but you author them with Domino's `flytekitplugins.domino` classes.
 
-### What are Domino Flows?
+## Reference files
 
-Domino Flows enable:
-- **DAG-based orchestration**: Define workflows as directed acyclic graphs
-- **Typed interfaces**: Strong typing for inputs and outputs
-- **Heterogeneous environments**: Different environments per task
-- **Automatic lineage**: Track data and model provenance
-- **Reproducibility**: Version-controlled workflows
-- **Scalability**: Distributed execution across compute resources
+| File | Use when |
+|------|----------|
+| [FLOW-BASICS.md](./FLOW-BASICS.md) | Task and flow definition, reading inputs and writing outputs, job configuration, launching, monitoring, caching |
+| [EXAMPLES.md](./EXAMPLES.md) | Complete data pipeline, training pipeline with Flow Artifacts and parallel branches, pinned production config, scheduled runs |
 
-### Core Components
+## Rules specific to Domino Flows
 
-| Component | Description |
-|-----------|-------------|
-| **Task** | Single unit of work (runs as a Domino Job) |
-| **Workflow** | DAG connecting tasks |
-| **Artifact** | Typed input/output passed between tasks |
-| **Launch Plan** | Configured workflow execution |
+- Define tasks with `DominoJobTask` + `DominoJobConfig` (`flytekitplugins.domino.task`) or the `run_domino_job_task` helper (`flytekitplugins.domino.helpers`). These are the task types documented for Domino Flows; plain Flyte `@task` functions are not documented, and dynamic workflows and map tasks are explicitly unsupported. `@workflow` comes from `flytekit`.
+- Task code reads each input from `/workflow/inputs/<name>` and must write each declared output to `/workflow/outputs/<name>`; a missing output fails the task. Non-file inputs (`str`, `int`, `float`, `bool`, `list`, `dict`) arrive as the value's text; file inputs are the file itself.
+- Flow jobs make no code commits or dataset snapshots at the end; results must be task outputs (or Flow Artifacts exported to a Dataset or NetApp Volume).
+- Only Dataset and NetApp Volume **snapshots** can be mounted (never version 0, the read-write view), one snapshot per dataset, read-only, at the usual `latest` path (`/mnt/data/<name>` Git-based, `/domino/datasets/local/<name>` DFS).
+- `use_latest=True` (or `use_project_defaults_for_omitted=True`) fills in the project's default environment, hardware tier and latest commit at launch. Fine while iterating; for production pin `EnvironmentId` + `EnvironmentRevisionSpec`, `HardwareTierId`, `CommitId` or `MainRepoGitRef`, and `DatasetSnapshots` explicitly.
+- Launch from a Workspace terminal or as a Job command with `pyflyte run --remote`; commit the flow file first so the registered version is traceable. Re-runs, single-node reruns and recovery from transient failures are in the Flows UI; a changed definition must be launched from the CLI again.
+- Stopping one of a flow's Jobs in the Jobs UI stops the whole flow. `DOMINO_IS_WORKFLOW_JOB` is set inside flow jobs.
 
-## Related Documentation
-
-- [FLOW-BASICS.md](./FLOW-BASICS.md) - DAG concepts, task definitions
-- [EXAMPLES.md](./EXAMPLES.md) - Common flow patterns
-
-## Quick Start
-
-> ⚠️ **Critical**: Domino Flows does NOT support native Flyte `@task` decorators.
-> Tasks must use `DominoJobTask` + `DominoJobConfig`. Only `@workflow` is unchanged.
-
-### Basic Flow
-
-Each task runs as a Domino Job. Stage scripts read from `/workflow/inputs/<name>`
-and write to `/workflow/outputs/o0`. Pass `PYTHONPATH=/mnt/code` in the command.
+## Minimal flow
 
 ```python
+# workflow.py (project root)
 from flytekit import workflow
 from flytekitplugins.domino.task import DominoJobConfig, DominoJobTask
 
-preprocess_task = DominoJobTask(
-    name="Preprocess Data",
-    domino_job_config=DominoJobConfig(
-        Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/stages/preprocess.py'",
-    ),
-    inputs={"input_path": str},
-    outputs={"o0": str},
-    use_latest=True,
-)
-
-train_task = DominoJobTask(
-    name="Train Model",
-    domino_job_config=DominoJobConfig(
-        Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/stages/train.py'",
-    ),
-    inputs={"preprocess_output": str},
-    outputs={"o0": str},
-    use_latest=True,
-)
-
 @workflow
-def training_pipeline(input_path: str = "/mnt/data/raw.csv") -> str:
-    preprocess_output = preprocess_task(input_path=input_path)
-    result = train_task(preprocess_output=preprocess_output)
-    return result
-```
+def simple_math_workflow(a: int, b: int) -> float:
+    add_task = DominoJobTask(
+        name="Add numbers",
+        domino_job_config=DominoJobConfig(Command="python add.py"),
+        inputs={"first_value": int, "second_value": int},
+        outputs={"sum": int},
+        use_latest=True,
+    )
+    total = add_task(first_value=a, second_value=b)
 
-### Stage Script Pattern
+    sqrt_task = DominoJobTask(
+        name="Square root",
+        domino_job_config=DominoJobConfig(Command="python sqrt.py"),
+        inputs={"value": int},
+        outputs={"sqrt": float},
+        use_latest=True,
+    )
+    return sqrt_task(value=total)
+```
 
 ```python
-# stages/preprocess.py
-import json, os
-
-INPUTS, OUTPUTS = "/workflow/inputs", "/workflow/outputs"
-
-def main():
-    input_path = open(f"{INPUTS}/input_path").read().strip()
-    # ... do work ...
-    os.makedirs(OUTPUTS, exist_ok=True)
-    with open(f"{OUTPUTS}/o0", "w") as f:
-        f.write(json.dumps({"output_path": "/mnt/artifacts/processed.parquet"}))
-
-if __name__ == "__main__":
-    main()
+# add.py
+from pathlib import Path
+a = int(Path("/workflow/inputs/first_value").read_text())
+b = int(Path("/workflow/inputs/second_value").read_text())
+Path("/workflow/outputs/sum").write_text(str(a + b))
 ```
-
-### Running the Flow
 
 ```bash
-# Always commit and push first — jobs run against remote repo state
-git add -A && git commit -m "..." && git push
-
-# Trigger remotely
-PYTHONPATH=/mnt/code pyflyte run --remote \
-    my_flow.py training_pipeline \
-    --input_path "/mnt/data/raw.csv"
+git add workflow.py add.py sqrt.py && git commit -m "math flow" && git push   # Git-based project
+pyflyte run --remote --name math-run-1 workflow.py simple_math_workflow --a 10 --b 6
 ```
 
-## When to Use Flows
+Then **Flows** > flow > run: node status, versioned inputs and outputs, the Domino Job per node, logs, and the **Graph** view. Run names must be unique within the project.
 
-### Good Use Cases
+## Choosing Flows
 
-- Data processing → Model training pipelines
-- ETL with ML steps
-- Multi-stage training with different environments
-- Processes requiring reproducibility and lineage
-- Scheduled/triggered workflows
+Good fit: data processing then training in different environments (Dask then XGBoost, Spark then PyTorch), clinical pipelines (SDTM to ADaM to TFL), anything that needs lineage, parallel branches, caching or human approval. Poor fit: many small computations over one dataset in one environment, or tasks that write to mutable shared state. Real-time inference belongs in a Domino endpoint.
 
-### Not Ideal For
+## Scheduling and automation
 
-- Single dataset with many small computations
-- Tasks that write to mutable shared state
-- Simple single-step processes
-- Real-time inference (use Model APIs instead)
+There is no separate flow scheduler: create a scheduled Job whose command is the `pyflyte run --remote ...` line, on an environment built from the Domino Standard Environment. Each scheduled execution registers and runs the flow. For programmatic access to executions, Domino publishes the Flyte native API spec at https://docs.domino.ai/api-specs/cloud/flyte-native-api.json (6.3: `/api-specs/6.3/flyte-native-api.json`) and the Flyte console at `<deployment URL>/flows/console/select-project`.
 
-## Documentation Links
+## Documentation
 
-- Domino Flows: https://docs.dominodatalab.com/en/latest/user_guide/78acf5/orchestrate-with-flows/
-- Flyte Documentation: https://docs.flyte.org/
+- https://docs.domino.ai/cloud/platform-capabilities/features/flows/index (get started, define, artifacts, launch, monitor, reproducibility, advanced)

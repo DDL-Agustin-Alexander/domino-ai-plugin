@@ -1,267 +1,163 @@
-# Domino Flows Basics
+# Domino Flows: definitions, configuration, launching, monitoring
 
-This guide covers the fundamentals of building workflows with Domino Flows.
+Applies to Domino 6.3 and Domino Cloud. Sources: https://docs.domino.ai/cloud/platform-capabilities/features/flows/define-flows, `.../launch-flows`, `.../monitor-flows`, `.../reproducibility-flows`, `.../advanced-flows` (the 6.3 pages are identical).
 
-> ⚠️ **Critical**: Domino Flows does NOT support native Flyte `@task` decorators.
-> All tasks must use `DominoJobTask` + `DominoJobConfig` from `flytekitplugins.domino.task`.
-> Only `@workflow` from `flytekit` is used unchanged.
+## Two ways to declare a task
 
-## Task Definition
-
-### Basic DominoJobTask
-
-Each task runs as a Domino Job. The `Command` in `DominoJobConfig` specifies the script to run.
-Inputs and outputs are passed via files at `/workflow/inputs/<name>` and `/workflow/outputs/<name>`.
+Class constructors give full control; the helper packs config, task and call into one statement. Both run one Domino Job per task.
 
 ```python
+from typing import TypeVar
 from flytekit import workflow
+from flytekit.types.file import FlyteFile
 from flytekitplugins.domino.task import DominoJobConfig, DominoJobTask
-
-my_task = DominoJobTask(
-    name="My Task Name",
-    domino_job_config=DominoJobConfig(
-        Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/my_script.py'",
-    ),
-    inputs={"input_value": str},   # type hints for each input
-    outputs={"o0": str},           # outputs named o0, o1, etc.
-    use_latest=True,               # resolve hardware/environment from project defaults
-)
-```
-
-### Stage Script Pattern
-
-Each task's script reads from `/workflow/inputs/<name>` and writes to `/workflow/outputs/o0`:
-
-```python
-# my_script.py
-import json, os
-
-INPUTS = "/workflow/inputs"
-OUTPUTS = "/workflow/outputs"
-
-def main():
-    # Read inputs (each input is a plain text file)
-    input_value = open(f"{INPUTS}/input_value").read().strip()
-
-    # Do work
-    result = {"processed": input_value, "status": "done"}
-
-    # Write output (always named o0, o1, etc.)
-    os.makedirs(OUTPUTS, exist_ok=True)
-    with open(f"{OUTPUTS}/o0", "w") as f:
-        f.write(json.dumps(result))
-
-if __name__ == "__main__":
-    main()
-```
-
-### PYTHONPATH Requirement
-
-Domino Jobs do not inherit the workspace Python path. Always set `PYTHONPATH` explicitly:
-
-```python
-# ✅ Correct: Set PYTHONPATH so app imports work
-Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/app/stages/my_stage.py'"
-
-# ❌ Wrong: Module 'app' not found
-Command="python /mnt/code/app/stages/my_stage.py"
-```
-
-## Workflow Definition
-
-### Basic Sequential Workflow
-
-```python
-from flytekit import workflow
-from flytekitplugins.domino.task import DominoJobConfig, DominoJobTask
-
-ingest_task = DominoJobTask(
-    name="Stage 1: Ingest",
-    domino_job_config=DominoJobConfig(
-        Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/stages/stage1.py'",
-    ),
-    inputs={"source_path": str},
-    outputs={"o0": str},
-    use_latest=True,
-)
-
-train_task = DominoJobTask(
-    name="Stage 2: Train",
-    domino_job_config=DominoJobConfig(
-        Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/stages/stage2.py'",
-    ),
-    inputs={"ingest_output": str},
-    outputs={"o0": str},
-    use_latest=True,
-)
+from flytekitplugins.domino.helpers import Input, Output, run_domino_job_task
 
 @workflow
-def my_pipeline(source_path: str = "/mnt/data/raw") -> str:
-    """Connect tasks in a sequential DAG."""
-    ingest_output = ingest_task(source_path=source_path)
-    result = train_task(ingest_output=ingest_output)
-    return result
+def training_workflow(data_path: str) -> FlyteFile[TypeVar("pt")]:
+    # 1. Class constructors
+    prep = DominoJobTask(
+        name="Prep data",
+        domino_job_config=DominoJobConfig(Command="python prep-data.py"),
+        inputs={"data_path": str},
+        outputs={"processed_data": FlyteFile[TypeVar("csv")]},
+        use_latest=True,
+    )
+    prep_results = prep(data_path=data_path)
+
+    # 2. Helper
+    train_results = run_domino_job_task(
+        flyte_task_name="Train model",
+        command="python train-model.py",
+        inputs=[Input(name="processed_data", type=FlyteFile[TypeVar("csv")], value=prep_results["processed_data"])],
+        output_specs=[Output(name="model", type=FlyteFile[TypeVar("pt")])],
+        use_project_defaults_for_omitted=True,
+    )
+    return train_results["model"]
 ```
 
-### Multiple Inputs
+Task results are promises; index them by output name (`prep_results["processed_data"]`). Passing one task's output into another creates the dependency edge; tasks without a data dependency run in parallel. A `@workflow` function may return nothing, one output, or a tuple.
+
+## Types
+
+- Files: `FlyteFile[TypeVar("csv")]` (the extension enables preview in the UI), or a Flow Artifact file (`Artifact(name="My Data", type=DATA).File(name="data.csv")`).
+- Python base types: `str`, `bool`, `int`, `float`, `list`, `dict`, `datetime`.
+- Data science types: `np.ndarray`, `pandas.DataFrame`, `pyspark.DataFrame`, `torch.Tensor`, `torch.nn.Module`, `sklearn.base.BaseEstimator`, `tf.keras.Model`.
+
+Types drive validation at submission, cache keys, lineage and previews. When in doubt use `str` with JSON inside for structured metadata and `FlyteFile` for anything large.
+
+## Task code: inputs and outputs
+
+Each input is a file at `/workflow/inputs/<name>`; each declared output must be written to `/workflow/outputs/<name>` or the task fails even if the script exits 0.
 
 ```python
-multi_input_task = DominoJobTask(
-    name="Multi Input Task",
-    domino_job_config=DominoJobConfig(
-        Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/stages/multi.py'",
-    ),
-    inputs={
-        "dataset_version": str,
-        "component_id": str,
-        "n_top": int,           # int inputs are written as plain text: "2"
-        "threshold": float,     # float inputs: "0.95"
-    },
-    outputs={"o0": str},
-    use_latest=True,
-)
+# prep-data.py
+from pathlib import Path
+import pandas as pd
+
+data_path = Path("/workflow/inputs/data_path").read_text().strip()   # str input: the text of the value
+df = pd.read_csv(data_path).dropna()
+Path("/workflow/outputs").mkdir(parents=True, exist_ok=True)
+df.to_csv("/workflow/outputs/processed_data", index=False)            # file output: write to the output name
 ```
-
-In the stage script, read ints/floats as:
-```python
-n_top = int(open(f"{INPUTS}/n_top").read().strip())
-threshold = float(open(f"{INPUTS}/threshold").read().strip())
-```
-
-## Supported Input/Output Types
-
-Domino Flows passes all data between stages as serialized text files:
-
-| Python Type | How it appears in `/workflow/inputs/<name>` |
-|-------------|----------------------------------------------|
-| `str` | Plain text |
-| `int` | "42" |
-| `float` | "3.14" |
-| `bool` | "True" or "False" |
-
-> **Best practice**: Use `str` for complex data by JSON-serializing dicts/lists.
-> This avoids type conversion issues and works reliably across all stages.
 
 ```python
-# In stage script: serialize output as JSON string
-result = {"key": "value", "count": 42}
-with open(f"{OUTPUTS}/o0", "w") as f:
-    f.write(json.dumps(result))
+# train-model.py
+import pandas as pd
+import torch
 
-# In next stage: deserialize
-data = json.loads(open(f"{INPUTS}/prev_output").read())
+df = pd.read_csv("/workflow/inputs/processed_data")                   # file input: read the path directly
+# ... train ...
+torch.save(model.state_dict(), "/workflow/outputs/model")
 ```
 
-## Hardware and Environment Configuration
+R: `read.csv(file.path("/workflow", "inputs", "processed_data"))` and `write.csv(df, file.path("/workflow", "outputs", "processed_data"))`.
 
-`use_latest=True` calls `resolveJobDefaults` to fetch the project's default hardware tier,
-environment, and commit ID. To override, set fields explicitly on `DominoJobConfig`:
+Ints and floats arrive as text (`int(Path(...).read_text())`); `bool` as `True` or `False`. Data under `/mnt` works as in a Workspace: an `Input` or `Output` with a `path` under `/mnt/data/...` or `/mnt/netapp-volumes/...` is populated there for reading and propagated downstream for writing. If a stage imports a package from the project, set `PYTHONPATH` in the command (`bash -c 'PYTHONPATH=/mnt/code python /mnt/code/stages/train.py'`), as for any Job.
 
-```python
-DominoJobConfig(
-    Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/stages/gpu_stage.py'",
-    HardwareTierId="gpu-k8s",           # Override hardware tier
-    EnvironmentId="698505e4701849448243f120",  # Override environment
-)
-```
+## DominoJobConfig
 
-## Triggering and Monitoring
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `Command` (required) | str | Job command, for example `python train.py` |
+| `Title` | str | Job title; ignored for the cache version |
+| `CommitId` | str | DFS project: code commit; Git-based: artifacts commit |
+| `MainRepoGitRef` | `GitRef(Type="branches"\|"commitId"\|..., Value=...)` | Git-based projects: branch, tag or commit of the main repository |
+| `ResolvedMainRepoGitRef` | str | Resolved commit to use while tracking a floating reference |
+| `UseLatestGitRef` | bool (False) | True: floating refs re-resolve on relaunch; False: the first resolution is reused |
+| `ImportedGitRepoOverrides` | list of `ImportedGitRepoOverride(Name=, Ref=GitRef(...))` | Pin imported repositories per task (Git-based projects) |
+| `HardwareTierId` | str | Tier **id**, not name (for example `small-k8s`); ignored for the cache version |
+| `EnvironmentId` | str | Environment **id**, not name or revision |
+| `EnvironmentRevisionSpec` | `EnvironmentRevisionSpecification(EnvironmentRevisionType.SomeRevision, "<revisionId>")` | Pin a revision |
+| `ComputeClusterProperties` | `ClusterProperties(ClusterType=ComputeClusterType.Dask, ComputeEnvironmentId=, WorkerHardwareTierId=, WorkerCount=, MaxWorkerCount=, WorkerStorageGiB=, MasterHardwareTierId=, ComputeEnvironmentRevisionSpec=, ExtraConfigs=)` | On-demand cluster for the task |
+| `VolumeSizeGiB` | float | Disk; ignored for the cache version |
+| `DatasetSnapshots` | list of `DatasetSnapshot(Id=, Version=)` | Snapshot version 1 or later only |
+| `NetAppVolumeSnapshots` | list of `NetAppVolumeSnapshot(Id=, Version=)` | Snapshot version 1 or later only |
+| `ExternalVolumeMountIds` | list of str | External data volumes |
+| `cache_ignore_vars` | tuple of str | Config arguments to leave out of the cache version |
 
-### Run Remotely
+`GitRef`, `ImportedGitRepoOverride`, `EnvironmentRevisionSpecification`, `EnvironmentRevisionType`, `DatasetSnapshot`, `NetAppVolumeSnapshot` and `ClusterProperties` ship with `flytekitplugins.domino`; list the module in your environment to confirm the import path (`python -c "import flytekitplugins.domino.task as t; print([n for n in dir(t) if n[0].isupper()])"`).
+
+## DominoJobTask
+
+`name` (required), `domino_job_config` (required), `inputs` (dict of name to type), `outputs` (dict of name to type), `use_latest` (fill omitted config from project defaults), `cache` (bool or Flyte `Cache`), `cache_version`, `cache_ignore_input_vars`, `retries`, `timeout` (`timedelta` or seconds).
+
+## run_domino_job_task
+
+`flyte_task_name`, `job_title`, `command`, `inputs=[Input(...)]`, `output_specs=[Output(...)]`, `use_project_defaults_for_omitted`, `environment_name` or `environment_id` (+ `environment_revision_id`), `hardware_tier_name` or `hardware_tier_id`, `dfs_repo_commit_id`, `main_git_repo_ref`, `imported_git_repo_overrides`, `volume_size_gib`, `dataset_snapshots`, `netapp_volume_snapshots`, `external_data_volume_ids`, `cache`, `cache_version`, `cache_ignore_input_vars`, `retries`, `timeout`. Prefer ids over names: renaming an environment or tier would otherwise change what the flow resolves to.
+
+`Input(name, type, value=None, path=None)` and `Output(name, type, path=None)`; a `path` under `/mnt/data/...` or `/mnt/netapp-volumes/...` maps the file to the data location instead of `/workflow`.
+
+## Finding ids
+
+Ids are deployment-specific; look them up rather than copying them from another cluster.
 
 ```bash
-# Trigger flow execution
-PYTHONPATH=/mnt/code pyflyte run --remote \
-    app/flow/my_flow.py my_pipeline \
-    --source_path "/mnt/data/raw"
+TOKEN=$(curl -s http://localhost:8899/access-token)   # outside a run: PAT or service-account token
+curl -s -H "Authorization: Bearer $TOKEN" "$DOMINO_API_HOST/api/hardwaretiers/v1/hardwaretiers?limit=100"   # id, name, resources
+curl -s -H "Authorization: Bearer $TOKEN" "$DOMINO_API_HOST/api/environments/beta/environments?limit=100"   # id, name
 ```
 
-### Monitor Status
+Dataset ids and snapshot versions come from the Dataset page in the project or the datasets API (`domino-datasets`). With `DOMINO_API_PROXY` set, call `$DOMINO_API_PROXY/api/...` without the header.
 
-```python
-from flytekit.remote import FlyteRemote
-from flytekit.configuration import Config
+## Launch
 
-# Use Config.auto() — reads ~/.flyte/config.yaml (endpoint: 127.0.0.1:8181)
-remote = FlyteRemote(
-    config=Config.auto(),
-    default_project="<project-id>",
-    default_domain="development",    # pyflyte run --remote uses "development"
-)
-
-PHASES = {0:"UNDEFINED",1:"QUEUED",2:"RUNNING",3:"SUCCEEDING",4:"SUCCEEDED",
-          5:"FAILING",6:"FAILED",7:"ABORTED",8:"TIMED_OUT"}
-
-execution = remote.fetch_execution(name="my-execution-name")
-remote.sync(execution, sync_nodes=True)
-print(f"Phase: {PHASES[execution.closure.phase]}")
-for node_id, node_exec in sorted(execution.node_executions.items()):
-    print(f"  {node_id}: {PHASES[node_exec.closure.phase]}")
+```bash
+pyflyte run --remote workflow.py training_workflow --data_path /mnt/data/raw/train.csv
+pyflyte run --remote --name nightly-2026-10-12 --tag team=risk workflow.py training_workflow --data_path /mnt/data/raw/train.csv
 ```
 
-### Get Error Details
+Run from a Workspace terminal or as a Job command on an environment built from the Domino Standard Environment 6.0 or later. The flow is registered and started immediately; any change to `workflow.py` registers a new flow version on the next launch, and runs are grouped by version in the UI. Run names are unique per project. Commit the flow code: Domino stores the serialized definition, not its source.
 
-```python
-for node_id, node_exec in execution.node_executions.items():
-    for te in (node_exec.task_executions or []):
-        full_te = remote.client.get_task_execution(te.id)
-        if full_te.closure.error:
-            print(full_te.closure.error.message)
-```
+Re-run from the UI (**Flows** > flow > version > run > **Re-run**): new name, cache overwrite choice, same or new inputs, and per-task overrides of environment, hardware tier or Git reference. **Recover** resumes a run after a transient failure (timeout, capacity, spot pre-emption, server error), reusing finished outputs. **Rerun Node** re-executes one node with new inputs. All three need an unchanged definition; code changes go through the CLI.
 
-## Common Pitfalls
+## Monitor
 
-### 1. DatasetSnapshots — Verify Version Before Use
+- **Flows** page: flows and tasks registered in the project, active or archived, lineage of artifacts attached to Datasets.
+- Flow details: run list per version, **Graph** of the structure, run or archive.
+- Run details: nodes with status, Graph view, **Launch Inputs**, rerun or archive.
+- Node details: versioned inputs and outputs (previews need a typed file), a link to the Domino Job, execution logs.
+- Flyte console: `<deployment URL>/flows/console/select-project` (timeline view, blob URIs of outputs); some native Flyte actions are not supported.
+- Jobs started by a flow show the flow and task in the Job details and cannot be re-run from the Jobs UI.
 
-`DominoJobConfig.DatasetSnapshots` lets you mount Domino Datasets, but the `snapshotVersion`
-must match an existing snapshot or Domino will return a 500 error at job creation time.
-`resolveJobDefaults` echoes back whatever version you provide without validation.
+## Reproducibility checklist
 
-**Safest approach**: Don't specify `DatasetSnapshots`. Instead, add a fallback in each stage:
+Every launch serializes the flow structure, each task's job config (commit, environment revision, tier, snapshots) and the inputs; identical definitions reuse the version. For deterministic reruns:
 
-```python
-# In each stage script — self-healing data loading
-try:
-    df = load_features()           # Try reading from mounted/cached parquet
-except FileNotFoundError:
-    df = prepare_dataset()         # Generate from raw files if absent
-```
+1. Replace `use_latest=True` with explicit `CommitId` or `MainRepoGitRef`, `EnvironmentId` + `EnvironmentRevisionSpec`, `HardwareTierId`, `DatasetSnapshots`.
+2. Snapshot external data in a first task that copies it to an output.
+3. Write results only as outputs, never to a shared mutable location.
 
-### 2. resolveJobDefaults Overwrites DatasetSnapshots
+## Caching, subflows, approvals
 
-When `use_latest=True`, `resolve_job_properties()` calls `resolveJobDefaults` which
-**unconditionally overwrites** `DatasetSnapshots` with what the API returns.
-If the project has no default datasets, `DatasetSnapshots` becomes `[]` regardless of
-what you set — unless the API returns your dataset back (which only happens if the version
-is valid).
+- `cache=True, cache_version="1.0"` on a task reuses a result when the project, task name, cache version (job config minus `Title`, `VolumeSizeGiB`, `HardwareTierId` and cluster sizing, plus resolved git commits and the input/output signature) and input values all match; bump `cache_version` to force recomputation. `cache_ignore_input_vars` and `DominoJobConfig(cache_ignore_vars=...)` exclude parameters. Cached nodes show a cache symbol in the graph. With Flyte 1.15+, `cache=Cache(policies=...)` replaces the version string with a policy.
+- Subflows: call one `@workflow` function from another; it appears as a single node.
+- Approvals: `from flytekit import approve`; `approve(task_result, "Approval", timeout=timedelta(hours=2))` pauses until someone clicks **Resume** and approves in the UI; rejecting stops the run.
 
-### 3. CommitId Is Pinned at Registration Time
+## Documented pitfalls
 
-`resolveJobDefaults` returns the latest synced commit ID from the project's linked repo.
-Always commit and push before triggering a flow — the job runs against the **remote repo state**,
-not local files. There may be a sync delay of seconds to minutes between pushing to GitHub
-and Domino's internal git mirror updating.
-
-### 4. No `@task` Decorator
-
-```python
-# ❌ This will NOT work in Domino Flows
-from flytekit import task
-
-@task
-def my_task(x: str) -> str:
-    return x.upper()
-
-# ✅ This is the correct pattern
-from flytekitplugins.domino.task import DominoJobConfig, DominoJobTask
-
-my_task = DominoJobTask(
-    name="My Task",
-    domino_job_config=DominoJobConfig(
-        Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/my_script.py'",
-    ),
-    inputs={"x": str},
-    outputs={"o0": str},
-    use_latest=True,
-)
-```
+- Version 0 of a Dataset or NetApp Volume cannot be mounted; take a snapshot first.
+- Outputs not written to `/workflow/outputs/<name>` fail the task.
+- A changed flow definition relaunched from the UI runs the old version; launch from the CLI.
+- Stopping a flow's Job in the Jobs UI stops the whole flow.
+- `use_latest` picks up the project defaults at launch time, so a later change to the project's default environment changes what a new flow version runs on.

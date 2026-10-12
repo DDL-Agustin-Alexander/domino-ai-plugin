@@ -52,14 +52,16 @@ def log_domino_context():
     Call this at the start of each run to capture:
     - User who started the run
     - Project name
-    - Domino run ID
-    - Hardware tier used
+    - Domino run ID and run number
+    - Hardware tier id (Domino injects DOMINO_HARDWARE_TIER_ID; there is no
+      DOMINO_HARDWARE_TIER_NAME variable)
     """
     mlflow.set_tags({
         "domino.user": os.environ.get('DOMINO_STARTING_USERNAME', 'unknown'),
         "domino.project": os.environ.get('DOMINO_PROJECT_NAME', 'unknown'),
         "domino.run_id": os.environ.get('DOMINO_RUN_ID', 'unknown'),
-        "domino.hardware_tier": os.environ.get('DOMINO_HARDWARE_TIER_NAME', 'unknown'),
+        "domino.run_number": os.environ.get('DOMINO_RUN_NUMBER', 'unknown'),
+        "domino.hardware_tier": os.environ.get('DOMINO_HARDWARE_TIER_ID', 'unknown'),
     })
 
 

@@ -1,80 +1,84 @@
 ---
 name: domino-experiment-tracking
-description: Track traditional ML experiments in Domino using the MLflow-based Experiment Manager. Covers experiment setup, auto-logging for sklearn/TensorFlow/PyTorch, manual logging, artifact storage, run comparison, and model registration. Use when training ML models, logging metrics and parameters, comparing model runs, or registering models.
+description: Track traditional ML experiments in Domino's MLflow-based Experiment Manager. Covers unique experiment naming, auto-logging for scikit-learn, TensorFlow, PyTorch, XGBoost and LightGBM, manual logging of params, metrics and artifacts, Domino context tags, large-artifact multipart upload, comparing and exporting runs, and the Domino Model Registry (register from a run or by API, versions, aliases and tags, model cards, discoverability). Use when training ML models in Domino, logging metrics and parameters, comparing runs, or registering and versioning models. For GenAI tracing use domino-genai-tracing; to scaffold a helper module use domino-experiment-setup.
+compatibility: Domino 6.3 and Domino Cloud. Runs in a Domino Workspace or Job where MLFLOW_TRACKING_URI is preconfigured; registry REST routes need DOMINO_API_HOST with DOMINO_API_PROXY or the localhost:8899 access token in a run, a Personal Access Token outside.
 ---
 
-# Domino Experiment Tracking Skill
+# Domino experiment tracking
 
-This skill provides comprehensive knowledge for tracking ML experiments in Domino Data Lab using the built-in MLflow-based Experiment Manager.
+Applies to Domino 6.3 and Domino Cloud.
 
-## Key Concepts
+Domino's Experiment Manager is MLflow Tracking with Domino's storage, access control and UI on top. In a Workspace or Job the `mlflow` package is installed (Domino Standard Environments) and `MLFLOW_TRACKING_URI` already points at Domino, so plain MLflow code works without configuration.
 
-### Experiment Manager Overview
+## What is Domino-specific
 
-Domino's Experiment Manager is built on MLflow and provides:
-- Automatic and manual logging of parameters, metrics, and artifacts
-- Run comparison and visualization
-- Model versioning and registry
-- Integration with Domino projects and jobs
+- **Experiments are created in code, not in the UI.** `mlflow.set_experiment(name)` creates it; it appears under **Experiments** only after the first run is logged.
+- **Experiment names are unique across the whole deployment**, not per project. Always suffix with something unique, for example the project and the user: `f"churn-{os.environ['DOMINO_PROJECT_NAME']}-{os.environ['DOMINO_STARTING_USERNAME']}"`.
+- **Access follows the project**: visibility (Searchable or Private) and collaborator roles decide who sees runs. Results Consumers can view; Contributors and the owner can log and update; archiving another user's run needs the owner.
+- Runs started from a Job are the reproducible ones (code commit, environment, hardware tier recorded). Workspace runs show the file name but are not re-versioned as you edit; finish in a Job.
+- Give runs a `run_name`; otherwise MLflow generates one like `gifted-slug-123`.
+- You cannot stop a run from the UI; call `mlflow.end_run()` in the Workspace or Job. Deleting a parent run does not delete its children.
+- Compare up to four runs (select, **Compare**); export an experiment to CSV or a comparison to PDF from the three-dot menu.
+- The Model Registry is Domino's (MLflow-backed, with model cards, role-based access and discoverability); R models are not supported.
 
-### Critical Configuration
+## Reference files
 
-**Experiment names must be unique across the entire Domino deployment.** Always append username or project name to ensure uniqueness.
+| File | Use when |
+|------|----------|
+| [MLFLOW-BASICS.md](./MLFLOW-BASICS.md) | Auto-logging, manual logging, artifacts, tags, nested runs |
+| [COMPARING-RUNS.md](./COMPARING-RUNS.md) | Searching, comparing, exporting and loading runs programmatically |
+| [MODEL-REGISTRY.md](./MODEL-REGISTRY.md) | Registering, versioning with aliases and tags, model cards, registry REST routes |
 
-## Related Documentation
-
-- [MLFLOW-BASICS.md](./MLFLOW-BASICS.md) - Auto-logging, manual logging
-- [COMPARING-RUNS.md](./COMPARING-RUNS.md) - Run comparison, export
-- [MODEL-REGISTRY.md](./MODEL-REGISTRY.md) - Model registration & stages
-
-## Quick Start
+## Quick start
 
 ```python
-import mlflow
 import os
+import mlflow
+from sklearn.ensemble import RandomForestClassifier
 
-# CRITICAL: Experiment names must be unique across Domino deployment
-username = os.environ.get('DOMINO_STARTING_USERNAME', 'unknown')
-experiment_name = f"my-experiment-{username}"
+experiment = f"iris-{os.environ.get('DOMINO_PROJECT_NAME', 'local')}-{os.environ.get('DOMINO_STARTING_USERNAME', 'dev')}"
+mlflow.set_experiment(experiment)
+mlflow.autolog()                                   # sklearn, tensorflow, pytorch, xgboost, lightgbm ...
 
-# Set the experiment
-mlflow.set_experiment(experiment_name)
-
-# Enable auto-logging (easiest approach)
-mlflow.autolog()
-
-# Run training
-with mlflow.start_run(run_name="my-first-run"):
-    model.fit(X_train, y_train)
-
-    # Optional: manually log additional items
-    mlflow.log_param("custom_param", "value")
-    mlflow.log_metric("custom_metric", 0.95)
+with mlflow.start_run(run_name="rf-baseline"):
+    mlflow.set_tags({
+        "domino.project": os.environ.get("DOMINO_PROJECT_NAME", ""),
+        "domino.run_id": os.environ.get("DOMINO_RUN_ID", ""),
+        "domino.hardware_tier": os.environ.get("DOMINO_HARDWARE_TIER_ID", ""),
+    })
+    model = RandomForestClassifier(n_estimators=100).fit(X_train, y_train)
+    mlflow.log_metric("test_accuracy", model.score(X_test, y_test))
 ```
 
-## Supported Frameworks
+Framework auto-logging: `mlflow.sklearn.autolog()`, `mlflow.tensorflow.autolog()`, `mlflow.pytorch.autolog()`, `mlflow.xgboost.autolog()`, `mlflow.lightgbm.autolog()`, or `mlflow.autolog()` for all.
 
-| Framework | Auto-log Command |
-|-----------|------------------|
-| Scikit-learn | `mlflow.sklearn.autolog()` |
-| TensorFlow/Keras | `mlflow.tensorflow.autolog()` |
-| PyTorch | `mlflow.pytorch.autolog()` |
-| XGBoost | `mlflow.xgboost.autolog()` |
-| LightGBM | `mlflow.lightgbm.autolog()` |
-| All at once | `mlflow.autolog()` |
+## Domino variables worth tagging
 
-## Environment Variables
+| Variable | Value |
+|----------|-------|
+| `DOMINO_STARTING_USERNAME` | User who started the run |
+| `DOMINO_PROJECT_NAME`, `DOMINO_PROJECT_OWNER`, `DOMINO_PROJECT_ID` | Project identity |
+| `DOMINO_RUN_ID`, `DOMINO_RUN_NUMBER` | The Domino execution |
+| `DOMINO_HARDWARE_TIER_ID` | Hardware tier id (there is no `DOMINO_HARDWARE_TIER_NAME`) |
+| `MLFLOW_TRACKING_URI` | Preconfigured; do not override |
 
-Domino automatically configures MLflow to use the built-in tracking server. These variables are pre-set:
+Full list: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environments/manage-compute-environments/manage-environment-variables/5-glossary-default-variables
 
-| Variable | Description |
-|----------|-------------|
-| `MLFLOW_TRACKING_URI` | Domino's MLflow server URL |
-| `DOMINO_STARTING_USERNAME` | User running the experiment |
-| `DOMINO_PROJECT_NAME` | Current project name |
-| `DOMINO_RUN_ID` | Domino job run ID |
+## Large artifacts
 
-## Documentation Links
+For multi-GB artifacts (LLM weights, checkpoints) upload straight to blob storage instead of through the MLflow proxy (AWS and GCP deployments only):
 
-- Domino Experiment Tracking: https://docs.dominodatalab.com/en/latest/user_guide/da707d/track-and-monitor-experiments/
-- Domino Model Registry: https://docs.dominodatalab.com/en/latest/user_guide/3b6ae5/manage-models-with-model-registry/
+```python
+os.environ["MLFLOW_ENABLE_PROXY_MULTIPART_UPLOAD"] = "true"
+os.environ["MLFLOW_MULTIPART_UPLOAD_CHUNK_SIZE"] = "104857600"   # optional, 100 MB; a file splits into at most 1000 chunks
+# optional: MLFLOW_MULTIPART_UPLOAD_MINIMUM_FILE_SIZE
+```
+
+## Registering a model
+
+From a run in the UI: **Experiments** > run > **Register model from run**. In code: `mlflow.sklearn.log_model(model, "model", registered_model_name="churn-rf")` or `mlflow.register_model("runs:/<run_id>/model", "churn-rf")`. Promote with aliases (`client.set_registered_model_alias(name, "champion", version)`), not the deprecated MLflow stages. Details, Domino registry routes (`/api/registeredmodels/...`), model cards and discoverability: [MODEL-REGISTRY.md](./MODEL-REGISTRY.md). To serve a registered version as an endpoint see `domino-model-endpoints`.
+
+## Documentation
+
+- https://docs.domino.ai/cloud/platform-capabilities/features/development/track-monitor
+- https://docs.domino.ai/cloud/platform-capabilities/features/models/register-and-govern/model-registry

@@ -1,547 +1,195 @@
-# Deploying Model API Endpoints
+# Publishing and calling Domino endpoints
 
-This guide covers creating and managing model API endpoints in Domino Data Lab.
+Applies to Domino 6.3 and Domino Cloud. Management routes below exist in both public API specs
+(`https://docs.domino.ai/api-specs/6.3/public-api.json`, `https://docs.domino.ai/api-specs/cloud/public-api.json`).
+Product behaviour: https://docs.domino.ai/cloud/platform-capabilities/features/model-deployment/index.
 
-## Environment Requirements
+## The prediction function
 
-**Important:** Model APIs use the **default environment** set for your project. Ensure your environment has the `uwsgi` package installed.
+Domino runs your script once when a version starts, keeps every module-level object in memory, and calls the configured function for each request. Load models at module level, not inside the function.
 
-```dockerfile
-# Add to your environment's Dockerfile instructions
-RUN pip install uwsgi
-```
+Contract:
 
-To set the default environment:
-1. Go to **Project Settings** → **Execution Preferences**
-2. Set the **Default Environment** to one with `uwsgi` installed
+- The file is a `.py` (or `.R`) file in the project; the function can have any name (set in the publish form).
+- Arguments map from the request JSON (see "Request JSON"). Return a literal, list or dict that is JSON-serializable. NumPy scalars and arrays are not; convert with `.item()` / `.tolist()`, and cast `Decimal` to `float`.
+- Anything the function needs (model files, lookup tables) must be in the project files or in the environment image.
 
-## Creating an Endpoint
-
-### Endpoint Function Requirements
-
-```python
-# model.py
-def predict(input_data):
-    """
-    Requirements:
-    1. Function must be importable (in .py file at project root)
-    2. Can have any name (configured in UI)
-    3. Takes one argument (the request data)
-    4. Returns JSON-serializable data
-    """
-    # Your prediction logic
-    return {"result": "value"}
-```
-
-### Basic Endpoint Example
-
-```python
-# model.py
-import pickle
-import os
-
-# Global model cache
-_model = None
-
-def load_model():
-    """Load model once and cache."""
-    global _model
-    if _model is None:
-        model_path = os.environ.get('MODEL_PATH', 'model.pkl')
-        with open(model_path, 'rb') as f:
-            _model = pickle.load(f)
-    return _model
-
-def predict(features):
-    """
-    Predict endpoint function.
-
-    Args:
-        features: List of feature values or dict with features
-
-    Returns:
-        Dict with prediction and confidence
-    """
-    model = load_model()
-
-    # Handle different input formats
-    if isinstance(features, dict):
-        feature_values = list(features.values())
-    elif isinstance(features, list):
-        feature_values = features
-    else:
-        return {"error": "Invalid input format"}
-
-    # Make prediction
-    prediction = model.predict([feature_values])
-    probability = model.predict_proba([feature_values])
-
-    return {
-        "prediction": int(prediction[0]),
-        "confidence": float(max(probability[0])),
-        "probabilities": probability[0].tolist()
-    }
-```
-
-### Scikit-learn Example
+### Scikit-learn
 
 ```python
 # model.py
 import joblib
 import numpy as np
 
-_model = None
+_model = joblib.load("random_forest.joblib")    # once, when the version starts
 
-def load_model():
-    global _model
-    if _model is None:
-        _model = joblib.load('random_forest_model.joblib')
-    return _model
-
-def predict(data):
-    """
-    Predict using scikit-learn model.
-
-    Input format:
-    {
-        "features": [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
-    }
-
-    Output format:
-    {
-        "predictions": [0, 1],
-        "model_version": "1.0"
-    }
-    """
-    model = load_model()
-
-    features = data.get('features', [])
-    if not features:
-        return {"error": "No features provided"}
-
-    X = np.array(features)
-    predictions = model.predict(X)
-
-    return {
-        "predictions": predictions.tolist(),
-        "model_version": "1.0"
-    }
+def predict(features):
+    """Request: {"data": {"features": [[5.1, 3.5, 1.4, 0.2]]}}"""
+    X = np.asarray(features, dtype=float)
+    preds = _model.predict(X)
+    confidence = _model.predict_proba(X).max(axis=1)
+    return {"predictions": preds.tolist(), "confidence": confidence.tolist()}
 ```
 
-### PyTorch Example
+### PyTorch
 
 ```python
 # model.py
 import torch
-import json
 
-_model = None
-_device = None
+_device = "cuda" if torch.cuda.is_available() else "cpu"   # GPU only if the endpoint hardware tier has one
+_model = torch.jit.load("model_scripted.pt", map_location=_device).eval()
 
-def load_model():
-    global _model, _device
-    if _model is None:
-        _device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        _model = torch.jit.load('model_scripted.pt')
-        _model.to(_device)
-        _model.eval()
-    return _model, _device
-
-def predict(data):
-    """
-    Predict using PyTorch model.
-
-    Input format:
-    {
-        "inputs": [[1.0, 2.0, ...]]
-    }
-    """
-    model, device = load_model()
-
-    inputs = data.get('inputs', [])
-    if not inputs:
-        return {"error": "No inputs provided"}
-
+def predict(inputs):
+    """Request: {"data": {"inputs": [[0.1, 0.2, 0.3]]}}"""
     with torch.no_grad():
-        tensor = torch.tensor(inputs, dtype=torch.float32).to(device)
-        outputs = model(tensor)
-        predictions = outputs.argmax(dim=1).cpu().tolist()
-
-    return {"predictions": predictions}
+        out = _model(torch.tensor(inputs, dtype=torch.float32, device=_device))
+    return {"predictions": out.argmax(dim=1).cpu().tolist()}
 ```
 
-### TensorFlow/Keras Example
+### Validation and errors
+
+Return a structured error instead of raising when the input is wrong; an unhandled exception becomes a 500 and the detail is only in the instance logs.
 
 ```python
-# model.py
-import tensorflow as tf
-import numpy as np
-import os
+def predict(features):
+    if not isinstance(features, list) or not features:
+        return {"error": "features must be a non-empty list", "code": "INVALID_INPUT"}
+    try:
+        return {"predictions": _model.predict(features).tolist()}
+    except Exception as exc:          # log the detail, return a stable shape
+        print(f"prediction error: {exc}")
+        return {"error": "prediction failed", "code": "PREDICTION_ERROR"}
+```
 
-_model = None
+`print` output goes to the version's instance logs.
 
-def load_model():
-    global _model
-    if _model is None:
-        # Suppress TF warnings
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-        _model = tf.keras.models.load_model('keras_model.h5')
-    return _model
+## Publish from the UI
 
-def predict(data):
-    """
-    Predict using TensorFlow/Keras model.
-    """
-    model = load_model()
+1. **Deployments** > **Endpoints** > **Create Domino Endpoint**.
+2. Name, description, file and function.
+3. Compute environment to build the image from (packaging rules in [SKILL.md](./SKILL.md)).
+4. Scaling: number of instances and endpoint hardware tier ([SCALING.md](./SCALING.md)); a GPU tier exists only if your administrator configured one.
+5. **Request Type**: **Sync** or **Async**.
+6. Publish. The status moves through building and starting to **Running**.
 
-    inputs = data.get('inputs', [])
-    if not inputs:
-        return {"error": "No inputs provided"}
+Endpoint environment variables: on the endpoint, **Settings** > **Environment variables** (values up to 64 K). Only endpoint owners and editors can set them; restart running versions to pick up changes. Project and user variables are not injected into endpoints.
 
-    X = np.array(inputs)
-    predictions = model.predict(X)
+## Publish with the API
 
-    return {
-        "predictions": predictions.tolist(),
-        "shape": list(predictions.shape)
+`POST /api/modelServing/v1/modelApis` creates the endpoint and its first version in one call. Required: `name`, `description`, `environmentId`, `isAsync`, `strictNodeAntiAffinity`, `environmentVariables` (may be `[]`) and `version` with `projectId`, `source`, `logHttpRequestResponse`, `monitoringEnabled`. Optional: `hardwareTierId`, `replicas`, `resourceQuotaId`, `bundleId`.
+
+```bash
+TOKEN=$(curl -s http://localhost:8899/access-token)   # in a run; outside Domino use a PAT or service-account token
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  "$DOMINO_API_HOST/api/modelServing/v1/modelApis" -d '{
+    "name": "iris-classifier",
+    "description": "RandomForest on iris",
+    "environmentId": "'"$ENVIRONMENT_ID"'",
+    "isAsync": false,
+    "strictNodeAntiAffinity": false,
+    "environmentVariables": [],
+    "replicas": 2,
+    "version": {
+      "projectId": "'"$DOMINO_PROJECT_ID"'",
+      "source": {"type": "File", "file": "model.py", "function": "predict", "excludeFiles": []},
+      "logHttpRequestResponse": false,
+      "monitoringEnabled": false
     }
+  }'
 ```
 
-## Deploying via Domino UI
+When `DOMINO_API_PROXY` is set, send the same request to `$DOMINO_API_PROXY/api/...` with no `Authorization` header. `source.type` is `File` (`file` + `function`) or `Registry` (`registeredModelName` + `registeredModelVersion`). The response is the `ModelApi` object; its `id` is the model ID used in prediction URLs. Poll `GET /api/modelServing/v1/modelApis/{id}` until `activeVersion.deployment.status` is `Running` (the `deployment` key is absent until a deployment exists). The full REST lifecycle (new versions, archive, logs, list filters) is in `domino-model-serving`. `python-domino` offers `model_publish(file, function, environment_id, name, description)` and `model_version_publish(model_id, file, function, environment_id, description)` on a client built with `Domino("owner/project")`; see `domino-python-sdk`.
 
-### Step-by-Step
+## Request JSON
 
-1. Navigate to your project
-2. Go to **Publish** → **Model APIs**
-3. Click **+ New Model**
-4. Fill in configuration:
-   - **Name**: Descriptive name (e.g., `fraud-detector`)
-   - **Description**: What the model does
-   - **File**: Python file containing function (e.g., `model.py`)
-   - **Function**: Function name (e.g., `predict`)
-   - **Environment**: Select compute environment
-   - **Hardware Tier**: Select resources (CPU/GPU)
-5. Click **Publish**
+| Function signature | Request body |
+|--------------------|--------------|
+| `predict(x, y, z)` | `{"data": {"x": 1, "y": 2, "z": 3}}` or `{"parameters": [1, 2, 3]}` |
+| `predict(d)` using `d["x"]` | `{"parameters": [{"x": 1, "y": 2, "z": 3}]}` |
+| `predict(x, **kwargs)` | `{"data": {"x": 1, "y": 2, "z": 3}}` |
 
-### Environment Variables
+JSON to Python: object to dict, array to list, string to str, integer to int, real to float, true/false to True/False, null to None. The return value is serialized back to JSON.
 
-Add environment variables in the UI:
+## Call a synchronous endpoint
 
-```
-MODEL_PATH=/mnt/artifacts/model.pkl
-MODEL_VERSION=1.0
-DEBUG=false
-```
+Restricted endpoints: HTTP Basic with the endpoint access token as **both** username and password (not a Bearer header). Unrestricted endpoints: no credentials.
 
-Access in code:
 ```python
 import os
-model_path = os.environ.get('MODEL_PATH', 'model.pkl')
-```
-
-## Deploying via API
-
-### Using Domino Python Client
-
-```python
-from domino import Domino
-
-domino = Domino(
-    host="https://your-domino.com",
-    api_key="your-api-key"
-)
-
-# Create model endpoint
-model = domino.model_publish(
-    file="model.py",
-    function="predict",
-    environment_id="env-123",
-    name="my-classifier",
-    description="Classification model"
-)
-
-print(f"Model ID: {model['id']}")
-print(f"Model URL: {model['url']}")
-```
-
-## Calling Endpoints
-
-Domino supports both synchronous (real-time) and asynchronous (long-running) request types.
-
-### Synchronous Requests (Real-time)
-
-For quick predictions that return immediately:
-
-```python
 import requests
 
-# Synchronous endpoint URL format
-url = "{DOMINO_URL}/models/{MODEL_ID}/latest/model"
+DOMINO_URL = os.environ["DOMINO_URL"]        # deployment URL from "Calling your endpoint" on the Overview tab
+MODEL_ID = os.environ["MODEL_ID"]
+TOKEN = os.environ["MODEL_ACCESS_TOKEN"]      # Settings > Invocation; keep it out of source and browser bundles
 
-# Authentication options:
-# Option 1: Using auth parameter (token, token)
-response = requests.post(
-    url,
-    auth=("{MODEL_ACCESS_TOKEN}", "{MODEL_ACCESS_TOKEN}"),
-    json={"data": {"start": 1, "stop": 100}}
+resp = requests.post(
+    f"{DOMINO_URL}/models/{MODEL_ID}/latest/model",
+    auth=(TOKEN, TOKEN),
+    json={"data": {"features": [[5.1, 3.5, 1.4, 0.2]]}},
 )
-
-# Option 2: Using Bearer token in header
-headers = {
-    "Content-Type": "application/json",
-    "Authorization": "Bearer YOUR_API_TOKEN"
-}
-response = requests.post(url, json={"data": {"features": [1.0, 2.0, 3.0]}}, headers=headers)
-
-result = response.json()
-print(result)
+resp.raise_for_status()
+print(resp.json()["result"])
 ```
 
-### Asynchronous Requests (Long-running)
+```bash
+curl -s -u "$MODEL_ACCESS_TOKEN:$MODEL_ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"data": {"features": [[5.1, 3.5, 1.4, 0.2]]}}' "$DOMINO_URL/models/$MODEL_ID/latest/model"
+```
 
-For predictions that take longer to process:
+The JSON body carries the function's return value under `result`.
+
+## Call an asynchronous endpoint
+
+Async endpoints queue the request and you poll for the result. Limits: request and response bodies up to 10 KB (pass large inputs and outputs by reference, for example an object-store path), a request stays alive for 30 minutes after pickup, a prediction may execute more than once (make the function idempotent) and ordering is not guaranteed. Auth is Bearer with the endpoint access token.
 
 ```python
-import requests
 import time
+import requests
 
-DOMINO_URL = "https://your-domino.com"
-MODEL_ID = "abc123"
-MODEL_ACCESS_TOKEN = "your_token"
+base = f"{DOMINO_URL}/api/modelApis/async/v1/{MODEL_ID}"
+headers = {"Authorization": f"Bearer {TOKEN}"}
 
-# Step 1: Submit async request
-response = requests.post(
-    f"{DOMINO_URL}/api/modelApis/async/v1/{MODEL_ID}",
-    headers={
-        "Authorization": f"Bearer {MODEL_ACCESS_TOKEN}",
-        "Content-Type": "application/json"
-    },
-    json={"parameters": {"input_file": "s3://example/filename.ext"}}
-)
+created = requests.post(base, headers=headers, json={"parameters": {"input_file": "s3://bucket/batch.parquet"}})
+created.raise_for_status()
+prediction_id = created.json()["asyncPredictionId"]
 
-# Get prediction ID
-prediction_id = response.json()["predictionId"]
-print(f"Prediction ID: {prediction_id}")
-
-# Step 2: Poll for results
+delay = 1
 while True:
-    status_response = requests.get(
-        f"{DOMINO_URL}/api/modelApis/async/v1/{MODEL_ID}/{prediction_id}",
-        headers={"Authorization": f"Bearer {MODEL_ACCESS_TOKEN}"}
-    )
-    status = status_response.json()
-
-    if status["status"] == "COMPLETED":
-        print(f"Result: {status['result']}")
+    status = requests.get(f"{base}/{prediction_id}", headers=headers)
+    if status.status_code >= 500:            # transient; retry with backoff
+        time.sleep(delay)
+        delay = min(delay * 2, 60)
+        continue
+    status.raise_for_status()
+    body = status.json()
+    if body["status"] == "succeeded":
+        print(body["result"])
         break
-    elif status["status"] == "FAILED":
-        print(f"Error: {status['error']}")
+    if body["status"] == "failed":
+        print(body["errors"])
         break
-    else:
-        print(f"Status: {status['status']}")
-        time.sleep(5)  # Wait before polling again
+    time.sleep(delay)                        # "queued"
+    delay = min(delay * 2, 60)
 ```
 
-### Request Parameter Formats
+Statuses are `queued`, `succeeded` and `failed`. Async endpoints are not available on remote data planes. Full client with retries: https://docs.domino.ai/cloud/platform-capabilities/features/model-deployment/async-example-client.
 
-Depending on your function signature, format requests differently:
+## Versions
 
-```python
-# For function: my_function(x, y, z)
-# Named parameters
-{"data": {"x": 1, "y": 2, "z": 3}}
-# Or positional
-{"parameters": [1, 2, 3]}
+- New version: open the endpoint, **Versions**, publish again with the updated file and function. Project files are re-read at build time; a running version never sees later file changes.
+- Routing (**Settings** > **Deployment**): Basic routing points `/models/<modelId>/latest/model` at the newest successful version and stops the previous one; Advanced routing keeps a promoted version at `/models/<modelId>/labels/prod/model` and lets you promote `latest` without downtime.
+- Stop or start a version from the **Actions** menu on the Versions tab. Domino recommends stopping the previous version before deploying a retrained one.
+- Scheduled retraining: in a scheduled Job, select the endpoint under **Update Domino Endpoint**; the project files after the Job become a new version.
+- Via the API: `POST /api/modelServing/v1/modelApis/{modelApiId}/versions` with `projectId`, `source`, `logHttpRequestResponse`, `monitoringEnabled` (optional `environmentId`, `commitId`, `shouldDeploy`). Details in `domino-model-serving`.
 
-# For function: my_function(dict)
-{"parameters": [{"x": 1, "y": 2, "z": 3}]}
+## Access control
 
-# For function: my_function(x, **kwargs)
-{"data": {"x": 1, "y": 2, "z": 3}}
-```
+- **Settings** > **Access and Sharing**: Public (anyone on the deployment can discover and view) or Private (collaborators only). Endpoint collaborators are Viewers, Editors or Owners; project Contributors can create endpoints and become their owner.
+- **Settings** > **Invocation**: Unrestricted (no token) or Restricted (token required). Generate, name, revoke and regenerate access tokens here.
 
-### JavaScript/React
+## Remote data planes, volumes, spot instances
 
-```javascript
-async function predict(features) {
-    const response = await fetch(process.env.MODEL_API_URL, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${process.env.MODEL_API_TOKEN}`,
-        },
-        body: JSON.stringify({ data: { features } }),
-    });
-
-    if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
-    }
-
-    return response.json();
-}
-```
-
-### cURL
-
-```bash
-curl -X POST \
-  "https://your-domino.com/models/abc123/latest/model" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_API_TOKEN" \
-  -d '{"data": {"features": [1.0, 2.0, 3.0]}}'
-```
-
-## Version Management
-
-### Creating New Version
-
-1. Update your model file
-2. Go to Model API → Versions
-3. Click **+ New Version**
-4. Select updated file/function
-5. Publish
-
-### Switching Active Version
-
-```bash
-# Use specific version
-curl -X POST "https://domino.com/models/abc123/v/2/model" ...
-
-# Use latest
-curl -X POST "https://domino.com/models/abc123/latest/model" ...
-```
-
-### Blue-Green Deployment
-
-1. Deploy new version as v2
-2. Test v2 endpoint directly
-3. Once validated, update clients to use v2
-4. Deprecate v1
-
-## Error Handling
-
-### In Endpoint Function
-
-```python
-def predict(data):
-    try:
-        # Validate input
-        if not data or 'features' not in data:
-            return {
-                "error": "Missing 'features' in input",
-                "code": "INVALID_INPUT"
-            }
-
-        features = data['features']
-
-        # Type checking
-        if not isinstance(features, list):
-            return {
-                "error": "Features must be a list",
-                "code": "TYPE_ERROR"
-            }
-
-        # Make prediction
-        model = load_model()
-        prediction = model.predict([features])
-
-        return {"prediction": prediction.tolist()}
-
-    except Exception as e:
-        # Log error for debugging
-        print(f"Prediction error: {str(e)}")
-        return {
-            "error": "Internal prediction error",
-            "code": "PREDICTION_ERROR"
-        }
-```
-
-### Client-Side Handling
-
-```python
-response = requests.post(url, json=data, headers=headers)
-
-if response.status_code == 200:
-    result = response.json()
-    if "error" in result:
-        print(f"Model error: {result['error']}")
-    else:
-        print(f"Prediction: {result['prediction']}")
-elif response.status_code == 401:
-    print("Authentication failed")
-elif response.status_code == 503:
-    print("Model temporarily unavailable")
-else:
-    print(f"Request failed: {response.status_code}")
-```
-
-## Best Practices
-
-### 1. Cache Model Loading
-
-```python
-# Good: Load once
-_model = None
-def load_model():
-    global _model
-    if _model is None:
-        _model = load_from_disk()
-    return _model
-
-# Bad: Load every request
-def predict(data):
-    model = load_from_disk()  # Slow!
-```
-
-### 2. Input Validation
-
-```python
-def predict(data):
-    # Validate early
-    if not isinstance(data, dict):
-        return {"error": "Input must be a dictionary"}
-
-    features = data.get('features')
-    if features is None:
-        return {"error": "Missing 'features' key"}
-
-    if len(features) != 4:
-        return {"error": f"Expected 4 features, got {len(features)}"}
-```
-
-### 3. Response Consistency
-
-```python
-# Always return consistent structure
-def predict(data):
-    try:
-        result = model.predict(data['features'])
-        return {
-            "success": True,
-            "prediction": result,
-            "error": None
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "prediction": None,
-            "error": str(e)
-        }
-```
-
-### 4. Log for Debugging
-
-```python
-import logging
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-def predict(data):
-    logger.info(f"Received request: {data}")
-
-    result = model.predict(data['features'])
-
-    logger.info(f"Prediction: {result}")
-    return {"prediction": result}
-```
+- To deploy on a remote data plane, pick a hardware tier belonging to that data plane from the **Deployment Target** list. Async requests and integrated model monitoring are not supported there.
+- Sync endpoints can mount Kubernetes `hostPath` volumes: **Settings** > **Advanced** > **Add Volume** (name, mount path, host path, read-only), as configured by your administrator.
+- Endpoints can run on spot node pools (preview) by selecting a spot hardware tier; an interruption degrades or stops the endpoint until capacity returns.

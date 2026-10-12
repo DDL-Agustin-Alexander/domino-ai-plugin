@@ -1,336 +1,293 @@
-# Domino Flows Examples
+# Domino Flows examples
 
-Complete, production-ready flow examples for Domino Flows.
+Applies to Domino 6.3 and Domino Cloud. Every API used here is documented at https://docs.domino.ai/cloud/platform-capabilities/features/flows/define-flows and `.../define-flow-artifacts`. Paths assume a Git-based project (`/mnt/code`, `/mnt/data/<dataset>`); in a DFS project use `/mnt` and `/domino/datasets/local/<dataset>`. Hardware tier and environment ids are placeholders; look yours up as described in [FLOW-BASICS.md](./FLOW-BASICS.md).
 
-> ⚠️ **Critical**: Use `DominoJobTask` + `DominoJobConfig`. Native `@task` decorators are NOT supported.
+## Example 1: data pipeline (load, clean, features)
 
-## Example 1: Data Processing Pipeline
-
-### Flow Definition (`flows/data_pipeline.py`)
+`flows/data_pipeline.py`:
 
 ```python
+from typing import TypeVar
 from flytekit import workflow
+from flytekit.types.file import FlyteFile
 from flytekitplugins.domino.task import DominoJobConfig, DominoJobTask
+
+CSV = FlyteFile[TypeVar("csv")]
 
 load_task = DominoJobTask(
-    name="Load Data",
-    domino_job_config=DominoJobConfig(
-        Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/flows/stages/load.py'",
-    ),
-    inputs={"source_path": str, "dataset_version": str},
-    outputs={"o0": str},
+    name="Load data",
+    domino_job_config=DominoJobConfig(Command="python flows/stages/load.py"),
+    inputs={"source_path": str},
+    outputs={"raw": CSV},
     use_latest=True,
 )
-
 clean_task = DominoJobTask(
-    name="Clean Data",
-    domino_job_config=DominoJobConfig(
-        Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/flows/stages/clean.py'",
-    ),
-    inputs={"load_output": str},
-    outputs={"o0": str},
+    name="Clean data",
+    domino_job_config=DominoJobConfig(Command="python flows/stages/clean.py"),
+    inputs={"raw": CSV, "max_missing": float},
+    outputs={"clean": CSV},
     use_latest=True,
 )
-
 feature_task = DominoJobTask(
-    name="Create Features",
-    domino_job_config=DominoJobConfig(
-        Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/flows/stages/features.py'",
-    ),
-    inputs={"clean_output": str},
-    outputs={"o0": str},
+    name="Build features",
+    domino_job_config=DominoJobConfig(Command="python flows/stages/features.py"),
+    inputs={"clean": CSV},
+    outputs={"features": CSV, "row_count": int},
     use_latest=True,
 )
 
 @workflow
-def data_pipeline(
-    source_path: str = "/mnt/data/raw.csv",
-    dataset_version: str = "1.0",
-) -> str:
-    load_output = load_task(source_path=source_path, dataset_version=dataset_version)
-    clean_output = clean_task(load_output=load_output)
-    features_output = feature_task(clean_output=clean_output)
-    return features_output
+def data_pipeline(source_path: str = "/mnt/data/raw/transactions.csv", max_missing: float = 0.2) -> CSV:
+    raw = load_task(source_path=source_path)
+    clean = clean_task(raw=raw["raw"], max_missing=max_missing)
+    features = feature_task(clean=clean["clean"])
+    return features["features"]
 ```
 
-### Stage Script (`flows/stages/load.py`)
+`flows/stages/load.py`:
 
 ```python
-import json, os
+from pathlib import Path
 import pandas as pd
 
-INPUTS = "/workflow/inputs"
-OUTPUTS = "/workflow/outputs"
-
-def main():
-    source_path = open(f"{INPUTS}/source_path").read().strip()
-    dataset_version = open(f"{INPUTS}/dataset_version").read().strip()
-
-    df = pd.read_csv(source_path)
-
-    # Save to shared location (e.g., /mnt/artifacts/ or /mnt/data/)
-    output_path = "/mnt/artifacts/loaded_data.parquet"
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    df.to_parquet(output_path, index=False)
-
-    result = {
-        "output_path": output_path,
-        "row_count": len(df),
-        "dataset_version": dataset_version,
-    }
-    os.makedirs(OUTPUTS, exist_ok=True)
-    with open(f"{OUTPUTS}/o0", "w") as f:
-        f.write(json.dumps(result))
-
-if __name__ == "__main__":
-    main()
+source_path = Path("/workflow/inputs/source_path").read_text().strip()
+df = pd.read_csv(source_path)
+Path("/workflow/outputs").mkdir(parents=True, exist_ok=True)
+df.to_csv("/workflow/outputs/raw", index=False)
+print(f"loaded {len(df)} rows from {source_path}")
 ```
 
-## Example 2: Model Training Pipeline
-
-### Flow Definition (`flows/training_pipeline.py`)
+`flows/stages/clean.py`:
 
 ```python
-from flytekit import workflow
-from flytekitplugins.domino.task import DominoJobConfig, DominoJobTask
-
-prepare_task = DominoJobTask(
-    name="Prepare Training Data",
-    domino_job_config=DominoJobConfig(
-        Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/flows/stages/prepare.py'",
-    ),
-    inputs={"data_path": str, "test_size": float},
-    outputs={"o0": str},
-    use_latest=True,
-)
-
-train_task = DominoJobTask(
-    name="Train Model",
-    domino_job_config=DominoJobConfig(
-        Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/flows/stages/train.py'",
-        # Override hardware for GPU training:
-        # HardwareTierId="gpu-k8s",
-    ),
-    inputs={"prepare_output": str, "model_type": str},
-    outputs={"o0": str},
-    use_latest=True,
-)
-
-evaluate_task = DominoJobTask(
-    name="Evaluate Model",
-    domino_job_config=DominoJobConfig(
-        Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/flows/stages/evaluate.py'",
-    ),
-    inputs={"train_output": str},
-    outputs={"o0": str},
-    use_latest=True,
-)
-
-@workflow
-def training_pipeline(
-    data_path: str = "/mnt/data/features.parquet",
-    test_size: float = 0.2,
-    model_type: str = "xgboost",
-) -> str:
-    prepare_output = prepare_task(data_path=data_path, test_size=test_size)
-    train_output = train_task(prepare_output=prepare_output, model_type=model_type)
-    eval_output = evaluate_task(train_output=train_output)
-    return eval_output
-```
-
-### Stage Script (`flows/stages/train.py`)
-
-```python
-import json, os
-import mlflow
+from pathlib import Path
 import pandas as pd
-from xgboost import XGBRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score
 
-INPUTS = "/workflow/inputs"
-OUTPUTS = "/workflow/outputs"
-
-def main():
-    prepare_output = json.loads(open(f"{INPUTS}/prepare_output").read())
-    model_type = open(f"{INPUTS}/model_type").read().strip()
-
-    df = pd.read_parquet(prepare_output["train_path"])
-    X = df.drop(columns=["target"])
-    y = df["target"]
-
-    with mlflow.start_run() as run:
-        model = XGBRegressor(n_estimators=200, max_depth=6, learning_rate=0.1)
-        model.fit(X, y)
-
-        preds = model.predict(X)
-        r2 = r2_score(y, preds)
-        mlflow.log_metric("r2_score", r2)
-        mlflow.xgboost.log_model(model, "model")
-
-    result = {
-        "run_id": run.info.run_id,
-        "r2_score": r2,
-        "model_type": model_type,
-    }
-    os.makedirs(OUTPUTS, exist_ok=True)
-    with open(f"{OUTPUTS}/o0", "w") as f:
-        f.write(json.dumps(result))
-    print(f"Training complete: R²={r2:.4f}, run_id={run.info.run_id}")
-
-if __name__ == "__main__":
-    main()
+df = pd.read_csv("/workflow/inputs/raw")
+max_missing = float(Path("/workflow/inputs/max_missing").read_text())
+keep = df.columns[df.isna().mean() <= max_missing]
+df = df[keep].dropna()
+Path("/workflow/outputs").mkdir(parents=True, exist_ok=True)
+df.to_csv("/workflow/outputs/clean", index=False)
 ```
 
-## Example 3: Multi-Stage ML Pipeline (Full Reference)
-
-This is the Engine Forge 7-stage pipeline — a complete production example.
-
-### Flow Definition
+`flows/stages/features.py`:
 
 ```python
-"""7-stage engine design pipeline."""
-import logging
-from flytekit import workflow
-from flytekitplugins.domino.task import DominoJobConfig, DominoJobTask
+from pathlib import Path
+import numpy as np
+import pandas as pd
 
-logger = logging.getLogger(__name__)
-
-def _make_task(stage_num: int, name: str, inputs: dict, outputs: dict = None) -> DominoJobTask:
-    """Helper to create a stage task with consistent config."""
-    return DominoJobTask(
-        name=f"Stage {stage_num}: {name}",
-        domino_job_config=DominoJobConfig(
-            Command=f"bash -c 'PYTHONPATH=/mnt/code python /mnt/code/app/flow/stages/stage{stage_num}_{name.lower().replace(' ', '_')}.py'",
-        ),
-        inputs=inputs,
-        outputs=outputs or {"o0": str},
-        use_latest=True,
-    )
-
-ingest_task = DominoJobTask(
-    name="Stage 1: Ingest Data",
-    domino_job_config=DominoJobConfig(
-        Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/app/flow/stages/stage1_ingest.py'",
-    ),
-    inputs={"dataset_version": str, "component_id": str, "spec_json": str, "n_top": int},
-    outputs={"o0": str},
-    use_latest=True,
-)
-
-analyze_task = DominoJobTask(
-    name="Stage 2: Analyze Designs",
-    domino_job_config=DominoJobConfig(
-        Command="bash -c 'PYTHONPATH=/mnt/code python /mnt/code/app/flow/stages/stage2_analyze.py'",
-    ),
-    inputs={"snapshot": str},
-    outputs={"o0": str},
-    use_latest=True,
-)
-
-# ... stages 3-6 follow same pattern ...
-
-@workflow
-def engine_forge_pipeline(
-    component_id: str = "engine-bracket",
-    dataset_version: str = "1.0",
-    spec_json: str = '{"max_stress_mpa": 1200.0}',
-    n_top: int = 2,
-) -> str:
-    snapshot = ingest_task(
-        dataset_version=dataset_version,
-        component_id=component_id,
-        spec_json=spec_json,
-        n_top=n_top,
-    )
-    analysis_output = analyze_task(snapshot=snapshot)
-    # ... chain remaining stages ...
-    return analysis_output
+df = pd.read_csv("/workflow/inputs/clean")
+df["amount_log"] = np.log1p(df["amount"].clip(lower=0))
+out = Path("/workflow/outputs")
+out.mkdir(parents=True, exist_ok=True)
+df.to_csv(out / "features", index=False)
+(out / "row_count").write_text(str(len(df)))
 ```
 
-## Running Flows
-
-### Trigger Remotely
+Launch:
 
 ```bash
-# Always commit and push first — jobs run against remote repo state
-git add -A && git commit -m "..." && git push
-
-# Trigger the flow
-PYTHONPATH=/mnt/code pyflyte run --remote \
-    app/flow/my_flow.py my_pipeline \
-    --arg1 "value1" \
-    --arg2 42
+git add flows && git commit -m "data pipeline" && git push
+pyflyte run --remote --name data-pipeline-1 flows/data_pipeline.py data_pipeline \
+  --source_path /mnt/data/raw/transactions.csv --max_missing 0.1
 ```
 
-### Monitor Execution
+## Example 2: training pipeline with Flow Artifacts, MLflow and parallel evaluation
+
+`flows/training_pipeline.py`:
 
 ```python
-from flytekit.remote import FlyteRemote
-from flytekit.configuration import Config
-import time
-
-remote = FlyteRemote(
-    config=Config.auto(),   # reads ~/.flyte/config.yaml
-    default_project="<your-project-id>",
-    default_domain="development",
+from typing import TypeVar
+from flytekit import workflow
+from flytekit.types.file import FlyteFile
+from flytekitplugins.domino.helpers import Input, Output, run_domino_job_task
+from flytekitplugins.domino.artifact import (
+    Artifact, DATA, MODEL, REPORT, ExportArtifactToDatasetsSpec, run_launch_export_artifacts_task,
 )
 
-PHASES = {0:"UNDEFINED",1:"QUEUED",2:"RUNNING",3:"SUCCEEDING",4:"SUCCEEDED",
-          5:"FAILING",6:"FAILED",7:"ABORTED",8:"TIMED_OUT"}
+CSV = FlyteFile[TypeVar("csv")]
+PKL = FlyteFile[TypeVar("pkl")]
+DataArtifact = Artifact(name="Training splits", type=DATA)
+ModelArtifact = Artifact(name="Churn model", type=MODEL)
+ReportArtifact = Artifact(name="Evaluation", type=REPORT)
 
-exec_id = "my-execution-name"   # from pyflyte run output
-for _ in range(60):
-    execution = remote.fetch_execution(name=exec_id)
-    remote.sync(execution, sync_nodes=True)
-    phase = PHASES[execution.closure.phase]
-
-    node_statuses = {
-        nid: PHASES[ne.closure.phase]
-        for nid, ne in execution.node_executions.items()
-    }
-    print(f"{phase}: {node_statuses}")
-
-    if phase in ("SUCCEEDED", "FAILED", "ABORTED"):
-        break
-    time.sleep(30)
+@workflow
+def training_pipeline(features_path: str, test_size: float = 0.2) -> ModelArtifact.File(name="model.pkl"):
+    split = run_domino_job_task(
+        flyte_task_name="Split",
+        command="python flows/stages/split.py",
+        inputs=[Input(name="features_path", type=str, value=features_path),
+                Input(name="test_size", type=float, value=test_size)],
+        output_specs=[Output(name="train", type=DataArtifact.File(name="train.csv")),
+                      Output(name="test", type=DataArtifact.File(name="test.csv"))],
+        use_project_defaults_for_omitted=True,
+        cache=True, cache_version="1.0",          # same inputs and code => reuse the split
+    )
+    train = run_domino_job_task(
+        flyte_task_name="Train",
+        command="python flows/stages/train.py",
+        inputs=[Input(name="train", type=CSV, value=split["train"])],
+        output_specs=[Output(name="model", type=PKL)],
+        hardware_tier_id="large-k8s",             # id from GET /api/hardwaretiers/v1/hardwaretiers
+        use_project_defaults_for_omitted=True,
+    )
+    # Both evaluations depend only on train and split, so they run in parallel
+    run_domino_job_task(
+        flyte_task_name="Evaluate metrics",
+        command="python flows/stages/evaluate.py",
+        inputs=[Input(name="model", type=PKL, value=train["model"]),
+                Input(name="test", type=CSV, value=split["test"])],
+        output_specs=[Output(name="metrics", type=ReportArtifact.File(name="metrics.json"))],
+        use_project_defaults_for_omitted=True,
+    )
+    run_domino_job_task(
+        flyte_task_name="Plot ROC",
+        command="python flows/stages/plot.py",
+        inputs=[Input(name="model", type=PKL, value=train["model"]),
+                Input(name="test", type=CSV, value=split["test"])],
+        output_specs=[Output(name="roc", type=ReportArtifact.File(name="roc.png"))],
+        use_project_defaults_for_omitted=True,
+    )
+    # Copy the split files into a Domino Dataset once the run finishes (separate export execution)
+    run_launch_export_artifacts_task(
+        spec_list=[ExportArtifactToDatasetsSpec(artifact=DataArtifact, dataset_id="681d3030ae3a706ef9c7f08b")],
+        environment_name="Domino Standard Environment",
+        hardware_tier_id="small-k8s",
+        use_project_defaults_for_omitted=True,
+    )
+    return train["model"]
 ```
 
-### Debug Failed Stage
+`flows/stages/split.py`:
 
 ```python
-for node_id, node_exec in execution.node_executions.items():
-    phase = PHASES[node_exec.closure.phase]
-    if phase in ("FAILED", "FAILING"):
-        for te in (node_exec.task_executions or []):
-            full_te = remote.client.get_task_execution(te.id)
-            if full_te.closure.error:
-                # Full error message includes Python traceback from the job
-                print(f"=== {node_id} error ===")
-                print(full_te.closure.error.message)
+from pathlib import Path
+import pandas as pd
+from sklearn.model_selection import train_test_split
+
+features_path = Path("/workflow/inputs/features_path").read_text().strip()
+test_size = float(Path("/workflow/inputs/test_size").read_text())
+df = pd.read_csv(features_path)
+train, test = train_test_split(df, test_size=test_size, random_state=42, stratify=df["churned"])
+Path("/workflow/outputs").mkdir(parents=True, exist_ok=True)
+train.to_csv("/workflow/outputs/train", index=False)
+test.to_csv("/workflow/outputs/test", index=False)
 ```
 
-## Data Sharing Between Stages
-
-Since each stage is an isolated Domino Job, persistent data must use shared storage:
-
-| Storage | Path | Use Case |
-|---------|------|----------|
-| Domino Artifacts | `/mnt/artifacts/` | Model files, reports (persisted) |
-| Domino Datasets | `/mnt/data/<name>/` | Read-only reference data |
-| Flow messages | `/workflow/inputs|outputs/` | Small JSON metadata between stages |
-
-**Pattern**: Write large files to `/mnt/artifacts/`, pass the path as a JSON string through `/workflow/outputs/o0`.
+`flows/stages/train.py` (logs to the Experiment Manager; see `domino-experiment-tracking` for naming rules):
 
 ```python
-# Stage 2 writes parquet to artifacts, passes path via flow
-output_path = "/mnt/artifacts/analysis_results.parquet"
-df_results.to_parquet(output_path)
-result = {"results_path": output_path, "row_count": len(df_results)}
-with open(f"{OUTPUTS}/o0", "w") as f:
-    f.write(json.dumps(result))
+import os
+import pickle
+from pathlib import Path
+import mlflow
+import pandas as pd
+from sklearn.ensemble import GradientBoostingClassifier
 
-# Stage 3 reads from artifacts using the path
-analysis_output = json.loads(open(f"{INPUTS}/analysis_output").read())
-df = pd.read_parquet(analysis_output["results_path"])
+df = pd.read_csv("/workflow/inputs/train")
+X, y = df.drop(columns=["churned"]), df["churned"]
+
+mlflow.set_experiment(f"churn-{os.environ['DOMINO_PROJECT_NAME']}-{os.environ['DOMINO_STARTING_USERNAME']}")
+with mlflow.start_run(run_name=f"flow-job-{os.environ.get('DOMINO_RUN_NUMBER', '')}"):
+    model = GradientBoostingClassifier().fit(X, y)
+    mlflow.log_metric("train_accuracy", model.score(X, y))
+    mlflow.sklearn.log_model(model, "model")
+
+Path("/workflow/outputs").mkdir(parents=True, exist_ok=True)
+with open("/workflow/outputs/model", "wb") as f:
+    pickle.dump(model, f)
 ```
+
+`flows/stages/evaluate.py`:
+
+```python
+import json
+import pickle
+from pathlib import Path
+import pandas as pd
+from sklearn.metrics import accuracy_score, roc_auc_score
+
+model = pickle.load(open("/workflow/inputs/model", "rb"))
+df = pd.read_csv("/workflow/inputs/test")
+X, y = df.drop(columns=["churned"]), df["churned"]
+metrics = {"accuracy": accuracy_score(y, model.predict(X)),
+           "roc_auc": roc_auc_score(y, model.predict_proba(X)[:, 1])}
+Path("/workflow/outputs").mkdir(parents=True, exist_ok=True)
+Path("/workflow/outputs/metrics").write_text(json.dumps(metrics))
+```
+
+Launch:
+
+```bash
+pyflyte run --remote flows/training_pipeline.py training_pipeline --features_path /mnt/data/features/latest.csv
+```
+
+Flow Artifacts show up under the run with lineage; DATA artifacts can also be assigned to a Dataset from the UI (**Examine Flow Artifacts** in the docs). The export task launches a separate execution that waits for the run to finish, so its node may appear early in the graph.
+
+## Example 3: production pinning and an approval gate
+
+Replace `use_latest`/`use_project_defaults_for_omitted` with explicit settings before putting a flow on a schedule, and gate deployment on a human check.
+
+```python
+from datetime import timedelta
+from typing import TypeVar
+from flytekit import approve, workflow
+from flytekit.types.file import FlyteFile
+from flytekitplugins.domino.task import DominoJobConfig, DominoJobTask
+# GitRef, DatasetSnapshot, EnvironmentRevisionSpecification and EnvironmentRevisionType are provided by
+# flytekitplugins.domino; confirm their import path in your environment (see FLOW-BASICS.md).
+
+CSV = FlyteFile[TypeVar("csv")]
+PKL = FlyteFile[TypeVar("pkl")]
+
+pinned = dict(
+    MainRepoGitRef=GitRef(Type="commitId", Value="4e6f2ee71e3bd64eaa90ce826c7d523b29f179cd"),
+    EnvironmentId="66b5324c495c6c124cfb0a28",
+    EnvironmentRevisionSpec=EnvironmentRevisionSpecification(EnvironmentRevisionType.SomeRevision, "4"),
+    HardwareTierId="large-k8s",
+    DatasetSnapshots=[DatasetSnapshot(Id="6615af2820a4", Version=3)],
+    VolumeSizeGiB=20,
+)
+
+@workflow
+def release_pipeline(features_path: str) -> PKL:
+    train = DominoJobTask(
+        name="Train (pinned)",
+        domino_job_config=DominoJobConfig(Command="python flows/stages/train.py", **pinned),
+        inputs={"train": str},
+        outputs={"model": PKL},
+        retries=1,
+        timeout=timedelta(hours=2),
+    )
+    trained = train(train=features_path)
+
+    # The run pauses here until someone approves in the Flows UI (Resume); rejecting stops it
+    approved_model = approve(trained["model"], "Release approval", timeout=timedelta(hours=24))
+
+    package = DominoJobTask(
+        name="Package for deployment",
+        domino_job_config=DominoJobConfig(Command="python flows/stages/package.py", **pinned),
+        inputs={"model": PKL},
+        outputs={"bundle": PKL},
+    )
+    return package(model=approved_model)["bundle"]
+```
+
+To run it nightly, create a scheduled Job in the project with the command:
+
+```bash
+pyflyte run --remote flows/release_pipeline.py release_pipeline --features_path /mnt/data/features/latest.csv
+```
+
+Each scheduled run registers the current definition (a new version only if the code changed) and starts an execution; monitor it under **Flows**, and the individual Jobs under **Jobs**.
+
+## Example 4: iterate on one node
+
+```bash
+# Launch once
+pyflyte run --remote --name exp-7 flows/training_pipeline.py training_pipeline --features_path /mnt/data/features/latest.csv
+```
+
+Then in the Flows UI open run `exp-7`, click the **Train** node and **Rerun Node** with a different input, or **Re-run** the whole flow with a task override (different hardware tier or environment) without touching the code. When a transient failure (spot pre-emption, timeout) kills a node, **Recover** continues from the failed node and reuses the finished outputs. Once the code changes, launch from the CLI again so a new version is registered.
