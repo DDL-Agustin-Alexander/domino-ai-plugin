@@ -11,6 +11,7 @@
 #                             (legacy API, not in any published spec)
 
 from typing import Any, Callable, Dict, List
+import base64
 import functools
 import hashlib
 import os
@@ -319,10 +320,26 @@ def _api_json(method: str, path: str, **kwargs: Any) -> Any:
                           f"login page or another site.") from None
 
 
+_CLIENT_NAME = ""   # the MCP client's name from initialize, once a tool call has run
+
+
+def _capture_client_name() -> None:
+    """Remember which MCP host is connected (one host per stdio process)."""
+    global _CLIENT_NAME
+    if _CLIENT_NAME:
+        return
+    try:
+        params = mcp.get_context().session.client_params
+        _CLIENT_NAME = ((params.clientInfo.name if params and params.clientInfo else "") or "").lower()
+    except Exception:
+        _CLIENT_NAME = ""
+
+
 def _threaded(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Run a blocking tool implementation in a worker thread so the stdio event loop stays free."""
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        _capture_client_name()
         return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
     return wrapper
 
@@ -478,17 +495,36 @@ def _listed_in_directory(user_name: str, project_name: str, path: str) -> bool:
     return any(f.get("path") == path for f in (files or []))
 
 
-_MAX_FILE_BYTES = 2 * 1024 * 1024
+_MAX_RETURN_BYTES = 2 * 1024 * 1024   # largest file content a tool returns to the model
 
 
-def _decode_text(content: bytes, path: str) -> str:
-    if len(content) > _MAX_FILE_BYTES:
-        raise DominoError(f"{path} is {len(content)} bytes; this server reads files up to "
-                          f"{_MAX_FILE_BYTES} bytes")
+def _text_or_none(raw: bytes) -> str | None:
+    """The content as text when it is UTF-8, else None (binary)."""
     try:
-        return content.decode("utf-8")
+        return raw.decode("utf-8")
     except UnicodeDecodeError:
-        raise DominoError(f"{path} is not UTF-8 text; this server only syncs text files") from None
+        return None
+
+
+def _content_fields(raw: bytes, text: str | None, prefix: str = "") -> Dict[str, Any]:
+    """{"content"} for text, {"content_base64", "encoding"} for binary, under the return cap."""
+    if len(raw) > _MAX_RETURN_BYTES:
+        return {f"{prefix}content_omitted": f"{len(raw)} bytes; this server returns file content up to {_MAX_RETURN_BYTES} bytes"}
+    if text is not None:
+        return {f"{prefix}content": text}
+    return {f"{prefix}content_base64": base64.b64encode(raw).decode("ascii"), f"{prefix}encoding": "base64"}
+
+
+def _bytes_from_args(text: str | None, content_base64: str | None, text_arg: str) -> bytes:
+    """The upload bytes from exactly one of a text argument and a base64 argument."""
+    if (text is None) == (content_base64 is None):
+        raise DominoError(f"Pass exactly one of {text_arg} (text) or content_base64 (binary, base64-encoded)")
+    if content_base64 is not None:
+        try:
+            return base64.b64decode(content_base64, validate=True)
+        except (ValueError, TypeError):
+            raise DominoError("content_base64 is not valid base64") from None
+    return text.encode("utf-8")
 
 
 def _read_state(user_name: str, project_name: str, path: str, project_id: str) -> Dict[str, Any]:
@@ -503,12 +539,13 @@ def _read_state(user_name: str, project_name: str, path: str, project_id: str) -
     resp = _read_remote_file(project_id, commit_id, path)
     if resp.status_code == 200:
         raw = resp.content
-        return {"exists": True, "commit_id": commit_id, "content": _decode_text(raw, path), "key": _file_key(raw)}
+        return {"exists": True, "commit_id": commit_id, "raw": raw, "content": _text_or_none(raw),
+                "key": _file_key(raw), "size": len(raw)}
     if resp.status_code == 403:
         if _listed_in_directory(user_name, project_name, path):
             raise DominoError(f"Could not read {path} in {user_name}/{project_name} although it exists "
                               f"({_describe_http_error('GET', 'file content', resp)}). Nothing was changed.")
-    return {"exists": False, "commit_id": commit_id, "content": None, "key": None}
+    return {"exists": False, "commit_id": commit_id, "raw": None, "content": None, "key": None, "size": 0}
 
 
 # Domino's project-file reads (latest commit, file content) lag a write by up to about 20 seconds
@@ -670,6 +707,124 @@ def _summarize_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# Waiting for a Job happens on the server because hosts block `sleep` and a status call returns
+# at once. One call waits at most _WAIT_CAP seconds (Claude Code allows hours per MCP call and
+# moves a call past two minutes to a background task); Codex ends a tool call after 60 s by
+# default (`tool_timeout_sec`), so under Codex a call waits at most _WAIT_CAP_CODEX seconds and
+# the model calls again. Polling backs off from 3 s to 10 s between status reads.
+_WAIT_CAP = 600
+_WAIT_CAP_CODEX = 50
+_POLL_FIRST, _POLL_STEP, _POLL_MAX = 3.0, 2.0, 10.0
+
+
+def _wait_cap() -> int:
+    return _WAIT_CAP_CODEX if "codex" in _CLIENT_NAME else _WAIT_CAP
+
+
+def _get_job(job_id: str) -> Dict[str, Any]:
+    body = _api_json("GET", f"/api/jobs/beta/jobs/{job_id}") or {}   # Public API
+    return _summarize_job(body.get("job") or {})
+
+
+def _poll_job(job_id: str, wait_seconds: int) -> Dict[str, Any]:
+    """The job summary, after waiting up to wait_seconds (capped per host) for it to complete."""
+    budget = max(0, min(int(wait_seconds or 0), _wait_cap()))
+    start = time.monotonic()
+    deadline = start + budget
+    interval = _POLL_FIRST
+    result = _get_job(job_id)
+    while not result.get("is_completed") and time.monotonic() < deadline:
+        time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+        interval = min(_POLL_MAX, interval + _POLL_STEP)
+        result = _get_job(job_id)
+    result["waited_seconds"] = int(round(time.monotonic() - start))
+    if not result.get("is_completed"):
+        result["message"] = (f"Job is still {result.get('status') or 'in progress'} after "
+                             f"{result['waited_seconds']} s. Call check_domino_job_run_status again "
+                             f"with run_id={job_id} and wait_seconds (up to {_wait_cap()} per call) "
+                             f"to keep waiting; do not use shell sleep.")
+    return result
+
+
+_RESULT_TAIL_LINES, _RESULT_TAIL_CHARS = 100, 8000
+
+
+def _stdout_tail(job_id: str, user_name: str, project_name: str) -> Dict[str, Any]:
+    """The last lines of a completed job's stdout, for run_domino_job(wait_seconds=...)."""
+    logs = _job_logs(job_id, "stdOut")
+    text = _filter_domino_stdout("\n".join(logs["lines"]))
+    lines = text.splitlines()
+    truncated = len(lines) > _RESULT_TAIL_LINES or len(text) > _RESULT_TAIL_CHARS
+    tail = "\n".join(lines[-_RESULT_TAIL_LINES:])[-_RESULT_TAIL_CHARS:]
+    out: Dict[str, Any] = {"results": tail, "results_truncated": truncated}
+    if truncated:
+        out["results_note"] = "Only the end of the output is shown; call check_domino_job_run_results for all of it."
+    link = _mlflow_link(text, user_name, project_name)
+    if link:
+        out.update(link)
+    return out
+
+
+_hardware_tiers_cache: List[Dict[str, Any]] = []
+
+
+def _list_all(path: str, key: str) -> List[Dict[str, Any]]:
+    """Every item of a paginated Public API list (offset/limit, until an empty page)."""
+    items: List[Dict[str, Any]] = []
+    offset = 0
+    for _ in range(100):
+        body = _api_json("GET", path, params={"offset": offset, "limit": 100}) or {}
+        page = body.get(key) or []
+        if not page:
+            break
+        items.extend(page)
+        offset += len(page)
+        total = (body.get("metadata") or {}).get("totalCount")
+        if isinstance(total, int) and offset >= total:
+            break
+    return items
+
+
+def _resolve_hardware_tier(value: str) -> str:
+    """The id of a hardware tier given its id or name. Domino silently falls back to the project
+    default for an unknown id, so the value is checked against GET /api/hardwaretiers/v1/hardwaretiers."""
+    wanted = value.strip()
+    if not wanted:
+        raise DominoError("hardware_tier must not be empty")
+    global _hardware_tiers_cache
+    if not _hardware_tiers_cache:
+        _hardware_tiers_cache = _list_all("/api/hardwaretiers/v1/hardwaretiers", "hardwareTiers")   # Public API
+    tiers = [x for x in _hardware_tiers_cache if not (x.get("flags") or {}).get("isArchived")]
+    for tier in tiers:
+        if tier.get("id") == wanted:
+            return wanted
+    for tier in tiers:
+        if (tier.get("name") or "").lower() == wanted.lower():
+            return tier["id"]
+    available = ", ".join(f"{x.get('id')} ({x.get('name')})" for x in tiers[:40])
+    raise DominoError(f"Hardware tier {wanted!r} not found (Domino would silently run the Job on the "
+                      f"project default). Use an id or name from: {available}")
+
+
+def _resolve_environment_id(value: str) -> str:
+    """The id of a compute environment given its id or name, checked against the Public API list."""
+    wanted = value.strip()
+    if not wanted:
+        raise DominoError("environment_id must not be empty")
+    envs = [x for x in _list_all("/api/environments/beta/environments", "environments") if not x.get("archived")]   # Public API
+    for env in envs:
+        if env.get("id") == wanted:
+            return wanted
+    matches = [env for env in envs if (env.get("name") or "").lower() == wanted.lower()]
+    if len(matches) == 1:
+        return matches[0]["id"]
+    if len(matches) > 1:
+        raise DominoError(f"Several environments are named {wanted!r}; pass the id of one of: "
+                          + ", ".join(f"{e.get('id')} (owner {((e.get('owner') or {}).get('username'))})" for e in matches))
+    available = ", ".join(f"{e.get('id')} ({e.get('name')})" for e in envs[:40])
+    raise DominoError(f"Environment {wanted!r} not found. Use an id or name from: {available}")
+
+
 # ---------------------------------------------------------------------------------------------
 # Tools: jobs
 # ---------------------------------------------------------------------------------------------
@@ -724,37 +879,48 @@ def check_domino_job_run_results(run_id: str, user_name: str | None = None,
 @mcp.tool()
 @_threaded
 def check_domino_job_run_status(run_id: str, user_name: str | None = None,
-                                project_name: str | None = None) -> Dict[str, Any]:
+                                project_name: str | None = None,
+                                wait_seconds: int = 0) -> Dict[str, Any]:
     """
-    Checks the status of a job run to determine if it is finished, in progress or failed. A run can
-    take a minute or more, so call this repeatedly until is_completed is true before reading
-    results with check_domino_job_run_results.
+    Checks the status of a job run and, with wait_seconds, waits on the server until it finishes.
+    A Job takes one to several minutes (a cold hardware tier alone takes 1-3 minutes to reach
+    Running). To wait for a Job, call check_domino_job_run_status(run_id, wait_seconds=300)
+    and repeat while is_completed is still false; never use shell sleep or rapid polling.
 
     Args:
         run_id (str): The run id (= job id) of the job run to return the status of
         user_name (str, optional): Kept for compatibility; the job id alone identifies the job.
         project_name (str, optional): Kept for compatibility.
+        wait_seconds (int): How long this call may wait for the job to complete (0 returns at
+            once). Capped per call at 600 s, or 50 s under Codex whose tool calls end after 60 s;
+            when the cap is reached the current status comes back with "message": call again.
 
     Returns:
-        {"job_id", "run_id", "number", "title", "run_command", "status", "is_completed", ...}.
-        status is Domino's executionStatus, for example Queued, Preparing, Running, Succeeded,
-        Failed, Stopped.
+        {"job_id", "run_id", "number", "title", "run_command", "status", "is_completed",
+         "waited_seconds", ...}. status is Domino's executionStatus, for example Queued,
+        Preparing, Running, Succeeded, Failed, Stopped. Read the output with
+        check_domino_job_run_results once is_completed is true.
     """
     encoded_run_id = _validate_url_parameter(run_id, "run_id")
-    body = _api_json("GET", f"/api/jobs/beta/jobs/{encoded_run_id}") or {}   # Public API
-    return _summarize_job(body.get("job") or {})
+    return _poll_job(encoded_run_id, wait_seconds)
 
 
 @mcp.tool()
 @_threaded
 def run_domino_job(user_name: str, project_name: str, run_command: str, title: str,
-                   git_branch: str | None = None) -> Dict[str, Any]:
+                   git_branch: str | None = None, hardware_tier: str | None = None,
+                   environment_id: str | None = None, wait_seconds: int = 0) -> Dict[str, Any]:
     """
     Runs a command as a Job on the Domino platform, typically a script such as
     'python my_script.py --arg1 val1'. The command runs against the project's latest files: for a
     DFS project the synced files; for a Git-based project the repository's default branch
     (pushed commits only) unless git_branch names another branch. Files uploaded by this server
     moments ago are waited for (Domino file reads lag a write by about 20 s) before the Job starts.
+
+    To run a Job and get its result in one call, pass wait_seconds (for example 300): the call
+    waits on the server and returns the final status and the end of the stdout. If the Job is
+    not finished when the call returns, continue with check_domino_job_run_status(run_id,
+    wait_seconds=300); never use shell sleep.
 
     Args:
         user_name (str): The user name of the project owner.
@@ -764,25 +930,49 @@ def run_domino_job(user_name: str, project_name: str, run_command: str, title: s
         title (str): A title that helps identify the job later. Example: 'running training.py'
         git_branch (str, optional): For a Git-based project, the branch to run from instead of
             the default branch.
+        hardware_tier (str, optional): Hardware tier id (for example 'small-k8s') or name from
+            GET /api/hardwaretiers/v1/hardwaretiers; checked before the Job starts because
+            Domino silently uses the project default for an unknown id. Omit for the default.
+        environment_id (str, optional): Compute environment id (or name) from
+            GET /api/environments/beta/environments. Omit for the project default.
+        wait_seconds (int): Wait on the server for the Job to complete, up to this many seconds
+            (capped at 600 per call, 50 under Codex). 0 returns as soon as the Job is queued.
 
     Returns:
-        {"job_id", "run_id", "number", "status", ...} of the new job. Poll
-        check_domino_job_run_status with run_id until is_completed is true.
+        {"job_id", "run_id", "number", "status", "is_completed", ...} of the new job, plus
+        "hardware_tier" and "environment_id" when given. With wait_seconds: "waited_seconds",
+        and once completed "results" (end of the stdout) and "results_truncated".
     """
     if not run_command or not run_command.strip():
         raise DominoError("run_command must not be empty")
     info = _project_info(user_name, project_name)
     project_id = info["id"]
-    _await_project_writes(user_name, project_name, info)   # files uploaded moments ago must be at the head
     payload: Dict[str, Any] = {"projectId": project_id, "runCommand": run_command.strip(), "title": title}
     if git_branch:
         payload["mainRepoGitRef"] = {"refType": "branches", "value": git_branch}
+    if hardware_tier:
+        payload["hardwareTier"] = _resolve_hardware_tier(hardware_tier)
+    if environment_id:
+        payload["environmentId"] = _resolve_environment_id(environment_id)
+    _await_project_writes(user_name, project_name, info)   # files uploaded moments ago must be at the head
     body = _api_json("POST", "/api/jobs/v1/jobs", json=payload) or {}   # Public API (NewJobV1)
     result = _summarize_job(body.get("job") or {})
-    result["message"] = (f"Started job {result.get('number')} ({result.get('job_id')}) in "
-                         f"{user_name}/{project_name}. Poll check_domino_job_run_status with "
-                         f"run_id until is_completed is true, then read "
-                         f"check_domino_job_run_results.")
+    if "hardwareTier" in payload:
+        result["hardware_tier"] = payload["hardwareTier"]
+    if "environmentId" in payload:
+        result["environment_id"] = payload["environmentId"]
+    job_id = result.get("job_id")
+    if wait_seconds and job_id:
+        result.update(_poll_job(job_id, wait_seconds))
+        if result.get("is_completed"):
+            result.update(_stdout_tail(job_id, user_name, project_name))
+            result["message"] = (f"Job {result.get('number')} ({job_id}) finished with status "
+                                 f"{result.get('status')} after {result.get('waited_seconds')} s.")
+        return result
+    result["message"] = (f"Started job {result.get('number')} ({job_id}) in "
+                         f"{user_name}/{project_name}. Wait for it with "
+                         f"check_domino_job_run_status(run_id, wait_seconds=300) until is_completed "
+                         f"is true, then read check_domino_job_run_results.")
     return result
 
 
@@ -925,18 +1115,17 @@ def list_domino_project_files(user_name: str, project_name: str, path: str = "/"
     }
 
 
-def _written(key: str, content: str) -> Dict[str, Any]:
+def _written(key: str, data: bytes) -> Dict[str, Any]:
     """A cache entry for a file this process just wrote (see _WRITE_VISIBILITY_TIMEOUT)."""
-    return {"key": key, "content": content, "written_at": time.monotonic(), "visible": False}
+    return {"key": key, "raw": data, "written_at": time.monotonic(), "visible": False}
 
 
-def _upload(user_name: str, project_name: str, path: str, content: str) -> Dict[str, Any]:
+def _upload(user_name: str, project_name: str, path: str, data: bytes) -> Dict[str, Any]:
     encoded_user_name = _validate_url_parameter(user_name, "user_name")
     encoded_project_name = _validate_url_parameter(project_name, "project_name")
     encoded_path = "/".join(urllib.parse.quote(seg, safe="") for seg in path.split("/"))
-    data = content.encode("utf-8")
     # Legacy v1 API, not in any published spec: the Public API has no upload route for DFS
-    # project files.
+    # project files. The body is the raw bytes (text or binary).
     resp = _api("PUT", f"/v1/projects/{encoded_user_name}/{encoded_project_name}/{encoded_path}",
                 data=data, headers={"Content-Type": "application/octet-stream"})
     try:
@@ -952,21 +1141,21 @@ def _upload(user_name: str, project_name: str, path: str, content: str) -> Dict[
     }
 
 
-def _upload_file(user_name: str, project_name: str, file_path: str, file_content: str,
+def _upload_file(user_name: str, project_name: str, file_path: str, data: bytes,
                  overwrite: bool) -> Dict[str, Any]:
     path = _normalize_project_path(file_path)
     info = _require_dfs_project(user_name, project_name)
     if not overwrite:
         remote = _remote_state(user_name, project_name, path, info)
         if remote["exists"]:
-            if remote["content"] == file_content:
+            if remote["key"] == _file_key(data):
                 return {"success": True, "action": "no_change", "path": path, "key": remote["key"],
                         "message": "File content identical to remote, no upload needed"}
             raise DominoError(f"{path} already exists in {user_name}/{project_name} with different "
                               f"content (key {remote['key']}). Use smart_sync_file to compare and "
                               f"merge, or pass overwrite=True to replace it.")
-    result = _upload(user_name, project_name, path, file_content)
-    _file_version_cache[(user_name, project_name, path)] = _written(result["key"], file_content)
+    result = _upload(user_name, project_name, path, data)
+    _file_version_cache[(user_name, project_name, path)] = _written(result["key"], data)
     return result
 
 
@@ -976,25 +1165,30 @@ def upload_file_to_domino_project(
     user_name: str,
     project_name: str,
     file_path: str,
-    file_content: str,
-    overwrite: bool = False
+    file_content: str | None = None,
+    overwrite: bool = False,
+    content_base64: str | None = None
 ) -> Dict[str, Any]:
     """
-    Uploads a text file to a DFS (non-git) Domino project. Creates the file if it does not exist.
-    Refuses to replace an existing file unless overwrite=True; prefer smart_sync_file, which
-    detects conflicts instead of overwriting. Refuses Git-based projects (commit and push there).
+    Uploads a file of any type to a DFS (non-git) Domino project. Creates the file if it does
+    not exist. Refuses to replace an existing file unless overwrite=True; prefer smart_sync_file,
+    which detects conflicts instead of overwriting. Refuses Git-based projects (commit and push
+    there). For a file on disk (a model artifact, an image) use sync_local_file_to_domino.
 
     Args:
         user_name (str): The username of the project owner (e.g., 'etan_lightstone')
         project_name (str): The name of the Domino project (e.g., 'diabetes_dfs_proj')
         file_path (str): The path where the file should be saved in the project (e.g., 'scripts/train.py')
-        file_content (str): The content of the file to upload
+        file_content (str, optional): The content of a text file
+        content_base64 (str, optional): The content of a binary file, base64-encoded (pass
+            exactly one of file_content and content_base64)
         overwrite (bool): Replace the file if it already exists (default False).
 
     Returns:
         {"success": True, "path", "size", "key", "lastModified"} on success.
     """
-    return _upload_file(user_name, project_name, file_path, file_content, overwrite)
+    data = _bytes_from_args(file_content, content_base64, "file_content")
+    return _upload_file(user_name, project_name, file_path, data, overwrite)
 
 
 @mcp.tool()
@@ -1005,8 +1199,8 @@ def download_file_from_domino_project(
     file_path: str
 ) -> Dict[str, Any]:
     """
-    Downloads a text file's content from a Domino project at its latest commit. Works with DFS
-    (non-git) projects.
+    Downloads a file's content from a Domino project at its latest commit (text as "content",
+    binary as "content_base64"). Works with DFS (non-git) projects.
 
     IMPORTANT: This function remembers the version you downloaded. When you later use
     smart_sync_file to upload changes, it detects whether someone else modified the file in
@@ -1019,19 +1213,21 @@ def download_file_from_domino_project(
         file_path (str): The path of the file to download (e.g., 'scripts/train.py')
 
     Returns:
-        {"success": True, "path", "content", "key", "commitId"}; key is the version identifier
-        used for conflict detection.
+        {"success": True, "path", "content" or "content_base64", "size", "key", "commitId"};
+        key is the version identifier used for conflict detection. Files over 2 MiB are
+        recorded for conflict detection but their content is not returned.
     """
     path = _normalize_project_path(file_path)
     remote = _remote_state(user_name, project_name, path)   # Public API
     if not remote["exists"]:
         raise DominoError(f"{path} does not exist in {user_name}/{project_name} at commit "
                           f"{remote['commit_id']}. Use list_domino_project_files to see what exists.")
-    _file_version_cache[(user_name, project_name, path)] = {"key": remote["key"], "content": remote["content"]}
+    _file_version_cache[(user_name, project_name, path)] = {"key": remote["key"], "raw": remote["raw"]}
     return {
         "success": True,
         "path": path,
-        "content": remote["content"],
+        **_content_fields(remote["raw"], remote["content"]),
+        "size": remote["size"],
         "key": remote["key"],
         "commitId": remote["commit_id"],
     }
@@ -1047,9 +1243,10 @@ def sync_local_file_to_domino(
     overwrite: bool = False
 ) -> Dict[str, Any]:
     """
-    Reads a local text file and uploads it to a DFS (non-git) Domino project. Refuses to replace
-    an existing remote file unless overwrite=True; use smart_sync_file for conflict detection.
-    Refuses Git-based projects (commit and push there).
+    Reads a local file of any type (text, model artifacts such as .joblib or .pkl, images) and
+    uploads it unchanged to a DFS (non-git) Domino project. Refuses to replace an existing remote
+    file unless overwrite=True; use smart_sync_file for conflict detection. Refuses Git-based
+    projects (commit and push there).
 
     Args:
         user_name (str): The username of the project owner (e.g., 'etan_lightstone')
@@ -1063,19 +1260,17 @@ def sync_local_file_to_domino(
         Upload result on success.
     """
     try:
-        with open(local_file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
+        with open(local_file_path, 'rb') as f:
+            data = f.read()
     except FileNotFoundError:
         raise DominoError(f"Local file not found: {local_file_path}") from None
-    except UnicodeDecodeError:
-        raise DominoError(f"{local_file_path} is not UTF-8 text; this server only syncs text files") from None
     except OSError as e:
         raise DominoError(f"Failed to read local file: {e}") from None
 
     if domino_file_path is None:
         domino_file_path = os.path.basename(local_file_path)
 
-    return _upload_file(user_name, project_name, domino_file_path, content, overwrite)
+    return _upload_file(user_name, project_name, domino_file_path, data, overwrite)
 
 
 @mcp.tool()
@@ -1084,11 +1279,12 @@ def smart_sync_file(
     user_name: str,
     project_name: str,
     file_path: str,
-    content: str,
-    force_overwrite: bool = False
+    content: str | None = None,
+    force_overwrite: bool = False,
+    content_base64: str | None = None
 ) -> Dict[str, Any]:
     """
-    Syncs a text file to a DFS (non-git) Domino project with conflict detection. Refuses
+    Syncs a file of any type to a DFS (non-git) Domino project with conflict detection. Refuses
     Git-based projects (commit and push there).
 
     This is the RECOMMENDED way to upload files when working with shared projects. It never
@@ -1109,14 +1305,18 @@ def smart_sync_file(
         user_name (str): The username of the project owner
         project_name (str): The name of the Domino project
         file_path (str): The path where the file should be saved
-        content (str): The new content to upload
+        content (str, optional): The new content of a text file
+        content_base64 (str, optional): The new content of a binary file, base64-encoded (pass
+            exactly one of content and content_base64)
         force_overwrite (bool): Replace the remote file whatever its current content.
 
     Returns:
         On success: {"success": True, "action": "created"|"uploaded"|"no_change"|"force_overwritten", "key"}
-        On conflict: {"conflict": True, "message", "remote_content", "remote_key", "your_base_key"?,
+        On conflict: {"conflict": True, "message", "remote_content" (text) or
+                      "remote_content_base64" (binary), "remote_key", "your_base_key"?,
                       "original_content"?, "suggestion"}
     """
+    data = _bytes_from_args(content, content_base64, "content")
     path = _normalize_project_path(file_path)
     cache_key = (user_name, project_name, path)
     cached = _file_version_cache.get(cache_key)
@@ -1124,8 +1324,8 @@ def smart_sync_file(
     remote = _remote_state(user_name, project_name, path, info)   # Public API, latest commit
 
     def _do_upload(action: str, **extra: Any) -> Dict[str, Any]:
-        result = _upload(user_name, project_name, path, content)
-        _file_version_cache[cache_key] = _written(result["key"], content)
+        result = _upload(user_name, project_name, path, data)
+        _file_version_cache[cache_key] = _written(result["key"], data)
         return {"success": True, "action": action, "path": path, "key": result["key"],
                 "size": result["size"], "message": f"{action}: {path}", **extra}
 
@@ -1134,13 +1334,16 @@ def smart_sync_file(
         return _do_upload("created")
 
     # Identical content needs no upload, whatever the history.
-    if remote["content"] == content:
-        _file_version_cache[cache_key] = {"key": remote["key"], "content": content}
+    if remote["key"] == _file_key(data):
+        _file_version_cache[cache_key] = {"key": remote["key"], "raw": remote["raw"]}
         return {"success": True, "action": "no_change", "path": path, "key": remote["key"],
                 "message": "File content identical to remote, no upload needed"}
 
     if force_overwrite:
         return _do_upload("force_overwritten", previous_remote_key=remote["key"])
+
+    remote_fields = {**_content_fields(remote["raw"], remote["content"], "remote_"),
+                     "remote_key": remote["key"], "remote_size": remote["size"]}
 
     # Case 2: the file exists but this session has no baseline for it.
     if cached is None:
@@ -1149,9 +1352,8 @@ def smart_sync_file(
             "message": (f"'{path}' already exists in {user_name}/{project_name} with different "
                         f"content and you have not downloaded it in this session. Nothing was "
                         f"uploaded."),
-            "remote_content": remote["content"],
-            "remote_key": remote["key"],
-            "suggestion": ("Review remote_content, merge it with your version if needed, then call "
+            **remote_fields,
+            "suggestion": ("Review the remote content, merge it with your version if needed, then call "
                            "smart_sync_file again with force_overwrite=True to upload your final "
                            "version (or download_file_from_domino_project first to set a baseline)."),
         }
@@ -1162,12 +1364,13 @@ def smart_sync_file(
             "conflict": True,
             "message": f"Remote file '{path}' changed since you last downloaded it. Nothing was uploaded.",
             "your_base_key": cached["key"],
-            "remote_key": remote["key"],
-            "remote_content": remote["content"],
-            "original_content": cached.get("content", ""),
+            **remote_fields,
             "suggestion": ("Someone modified this file. Review the remote changes, merge if needed, "
                            "then call smart_sync_file again with force_overwrite=True."),
         }
+        base_raw = cached.get("raw")
+        if isinstance(base_raw, (bytes, bytearray)):
+            result.update(_content_fields(bytes(base_raw), _text_or_none(bytes(base_raw)), "original_"))
         if remote.get("lagging_own_write"):
             result["note"] = (f"The remote read still shows the version from before your own upload "
                               f"after {int(_WRITE_VISIBILITY_TIMEOUT)} s; Domino file reads normally "
