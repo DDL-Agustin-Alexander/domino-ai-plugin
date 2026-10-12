@@ -1,283 +1,81 @@
 ---
 name: domino-launchers
-description: Create Domino Launchers - parameterized web forms for self-service job execution. Enable business users to run analyses, generate reports, and trigger batch predictions without coding. Covers parameter types, email notifications, result delivery, and access control. Use when building self-service data products or enabling non-technical users.
+description: Create and run Domino Launchers - self-service web forms that pass text, select, multi-select, date, checkbox and uploaded-file inputs to a script that runs as a Domino Job. Covers the launcher wizard, the command placeholder syntax, how arguments reach the script, result files and email delivery, roles, and finding launcher runs through the Jobs API. Use when building self-service reports, batch scoring forms, or data-product UIs for non-technical users.
+compatibility: Domino 6.3 and Domino Cloud. Requires DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token.
 ---
 
-# Domino Launchers Skill
+# Domino Launchers
 
-## Description
-This skill helps users create and use Domino Launchers - web forms that allow non-technical users to run parameterized jobs and receive results.
+Applies to Domino 6.3 and Domino Cloud.
 
-## Activation
-Activate this skill when users want to:
-- Create self-service data products
-- Build parameterized job interfaces
-- Enable business users to run analyses
-- Generate reports on demand
-- Share reproducible workflows
+A Launcher is a web form built in the Domino UI. When a consumer submits it, Domino starts a **Job** with the form values substituted into a command line, so every run is tracked, reproducible and auditable like any other Job. Results reach the consumer by email and through the Jobs dashboard. Launchers are defined only in the UI: there is no YAML or file-based launcher definition, and the Public API has no launcher routes (see "API" below).
 
-## What is a Launcher?
+Docs: https://docs.domino.ai/cloud/platform-capabilities/features/launchers (same path under `/6.3/`).
 
-A Launcher is:
-- **Web Form**: UI for entering parameters
-- **Job Trigger**: Runs a script with user inputs
-- **Results Delivery**: Sends output via email/dashboard
-- **Self-Service**: Business users can run without coding
+## Build a Launcher
 
-## Use Cases
+1. In the Project go to **Deployments > Launchers > New Launcher**.
+2. Give it a name and description (the description is the help text consumers see).
+3. Enter the **command**. It is the Job command with one `${name}` placeholder per form field; hard-coded arguments can be mixed in:
+   ```shell
+   generate_report.py --start ${start_date} --end ${end_date} --region ${region}
+   launcher.R ${A} ${B}
+   ```
+4. Add one input control per placeholder. The available types are **Text**, **Select** (one item), **Multi-select**, **Date**, **Checkbox** (yes/no) and **Upload files**. There is no numeric type: accept a number as Text and validate it in the script.
+5. Choose the hardware tier (on a Nexus deployment this also selects the data plane the Job runs in) and the environment, then save.
 
-- **Report Generation**: Parameterized business reports
-- **Batch Predictions**: Score data on demand
-- **Data Exports**: Custom data extracts
-- **Analysis Requests**: Ad-hoc analytics
-- **Model Testing**: Test models with different inputs
+### How values reach the script
 
-## Creating a Launcher
+- Each value is wrapped in single quotes, so spaces and shell characters survive but environment variables inside a value are not expanded.
+- **Upload files** passes the path of the uploaded file; uploaded files are stored as Project results (keep them well under a few GB).
+- **Multi-select** passes the chosen options as one comma-separated string.
+- Positional order follows the command, so parse with `sys.argv` / `argparse` in Python or `commandArgs(trailingOnly = TRUE)` in R. Worked scripts: [EXAMPLES.md](./EXAMPLES.md).
 
-### Via Domino UI
-1. Go to your project
-2. Navigate to **Deployments** > **Launchers**
-3. Click **New Launcher**
-4. Configure:
-   - **Name**: Descriptive name
-   - **Description**: What the launcher does
-   - **Command**: Script to run
-   - **Parameters**: Input fields
-   - **Hardware Tier**: Resources
-   - **Environment**: Compute environment
+MPI compute clusters cannot be attached to Launcher runs.
 
-### Launcher Script (Python)
-```python
-# generate_report.py
-import argparse
-import pandas as pd
+## Results and notifications
 
-# Parse launcher parameters
-parser = argparse.ArgumentParser()
-parser.add_argument('--start-date', required=True)
-parser.add_argument('--end-date', required=True)
-parser.add_argument('--region', default='all')
-args = parser.parse_args()
+Launcher output is Job output: every file the script creates or modifies is captured as a result and shown on the Job, and images or HTML are rendered in the results view.
 
-# Generate report
-df = generate_report(args.start_date, args.end_date, args.region)
+- DFS Project: write results anywhere under the Project root (`/mnt`); in a Git-based Project write them under `/mnt/artifacts/results/` so they are attached to the email and shown as results.
+- An `email.html` (Project root on DFS, `/mnt/artifacts/` on Git-based) becomes the body of the success email; `<head><title>` sets the subject. If you add a `.dominoresults` file to limit attachments, list `email.html` in it.
+- Everyone on the launcher's notification list receives the email; the run also appears in **Jobs** with its inputs and results.
+- Notebooks: a command that names an `.ipynb` file executes the notebook and saves it; use `jupyter nbconvert` in a wrapper script for HTML or PDF.
 
-# Save results (will be available to launcher user)
-df.to_csv('/mnt/results/report.csv', index=False)
-df.to_html('/mnt/results/report.html', index=False)
-```
+Details and patterns: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/jobs/customize-job-results and [EXAMPLES.md](./EXAMPLES.md).
 
-### Launcher Script (R)
-```r
-# launcher.R
-args <- commandArgs(trailingOnly = TRUE)
-a <- as.integer(args[1])
-b <- as.integer(args[2])
+## Run a Launcher
 
-if (is.na(a)) {
-  print("A is not a number")
-} else if (is.na(b)) {
-  print("B is not a number")
-} else {
-  paste("The sum of", a, "and", b, "is:", a + b)
-}
-```
+Consumers open **Deployments > Launchers**, click the launcher, fill in the form and run it. Collaborators with the **Contributor** or **Launcher User** role can run launchers; **Results Consumers** can only view results. Manage roles under Project **Settings > Access and Sharing**.
 
-Command: `launcher.R ${A} ${B}`
+## Copy a Launcher between Projects
 
-### Launcher Command
-```bash
-# Python script with named arguments
-python generate_report.py --start-date ${start_date} --end-date ${end_date} --region ${region}
+Open the launcher, click the gear icon > **Edit** > **Switch to JSON Edit Mode** to view or paste the JSON definition. The docs state this editor is available only in private (self-managed) deployments; on Domino Cloud rebuild the launcher in the wizard.
 
-# Python script with positional arguments
-my_script.py -x=1 ${file} ${start_date}
+## API
 
-# R script with positional arguments
-launcher.R ${A} ${B}
-```
+Neither public spec (`https://docs.domino.ai/api-specs/6.3/public-api.json`, `.../cloud/public-api.json`) contains a launcher route, so launchers cannot be created or run through the Public API. What you can do:
 
-**Note:** Parameter values are enclosed in single quotes, preserving special characters. File parameters pass the file path. Multi-select parameters pass comma-separated values.
+- Find launcher runs: `GET /api/jobs/beta/jobs?projectId=...` returns each run as a Job whose `runLauncherId` field is set; `GET /api/jobs/beta/jobs/{jobId}` and `.../logs` give status and logs (see [domino-jobs](../domino-jobs/SKILL.md)).
+- Fetch a result file: take `job.commitDetails.outputCommitId` from the Job and call `GET /api/projects/v1/projects/{projectId}/files/{commitId}/{path}/content` (path URL-encoded, response is the raw file).
+- Starting a launcher programmatically exists only in the Domino Internal API (`POST /v4/projects/{projectId}/launcherJob/{launcherId}`; internal API, may change between Domino versions, documented per deployment at `https://<domino-domain>/docs`). Prefer `POST /api/jobs/v1/jobs` with the same command and explicit arguments when automation is the goal.
 
-## Parameter Types
+Authentication for these calls: [domino-api-intro](../domino-api-intro/SKILL.md).
 
-### Text Input
-```yaml
-name: customer_name
-type: text
-label: Customer Name
-required: true
-default: ""
-```
+## Best practices
 
-### Dropdown/Select
-```yaml
-name: region
-type: select
-label: Region
-options:
-  - North America
-  - Europe
-  - Asia Pacific
-default: North America
-```
-
-### Date Picker
-```yaml
-name: start_date
-type: date
-label: Start Date
-required: true
-```
-
-### Number
-```yaml
-name: quantity
-type: number
-label: Quantity
-min: 1
-max: 1000
-default: 100
-```
-
-### File Upload
-```yaml
-name: input_file
-type: file
-label: Input File
-accept: .csv,.xlsx
-```
-
-## Generating Results
-
-Files written to `/mnt/results/` become the run's results, and an `email.html` there becomes the notification body. Patterns (multi-format output, HTML email, papermill notebooks) and a full scoring-launcher example: [EXAMPLES.md](./EXAMPLES.md).
-
-## Notifications
-
-### Email Configuration
-Configure notification recipients:
-1. In launcher settings
-2. Add email addresses
-3. Results sent automatically on completion
-
-### Email Contents
-- Link to results in Domino
-- Attached files (if enabled)
-- Custom HTML body (if email.html created)
-
-## Access Control
-
-### Who Can Run Launchers
-- **Contributors**: Can create and run launchers
-- **Launcher Users**: Can run launchers only
-- **Results Consumers**: Can view results only
-
-### Setting Permissions
-1. Go to Project Settings
-2. Add users with appropriate roles
-3. Share launcher URL with users
-
-## Running a Launcher
-
-### Via UI
-1. Go to launcher page
-2. Fill in parameters
-3. Click **Run**
-4. Wait for results (email notification)
-
-### Via API
-```python
-import requests, os
-
-TOKEN = requests.get("http://localhost:8899/access-token").text.strip()
-BASE = os.environ["DOMINO_API_HOST"]
-
-response = requests.post(
-    f"{BASE}/v4/launchers/{{launcher_id}}/run",
-    headers={"Authorization": f"Bearer {TOKEN}"},
-    json={
-        "parameters": {
-            "start_date": "2024-01-01",
-            "end_date": "2024-01-31",
-            "region": "North America"
-        }
-    }
-)
-
-run_id = response.json()["runId"]
-```
-
-## Viewing Results
-
-### Via Email
-Results link sent to configured recipients.
-
-### Via Jobs Dashboard
-Each launcher run creates a job:
-1. Go to **Jobs** in project
-2. Find the launcher job
-3. View results in job details
-
-### Programmatic Access
-```python
-# Get launcher run results
-results = domino.runs_get_results(run_id)
-```
-
-## Best Practices
-
-### 1. Clear Parameter Names
-Use descriptive labels users understand.
-
-### 2. Input Validation
-```python
-# Validate inputs in script
-if args.end_date < args.start_date:
-    raise ValueError("End date must be after start date")
-```
-
-### 3. Progress Logging
-```python
-print("Loading data...")
-print(f"Processing {len(df)} records...")
-print("Generating report...")
-print("Complete!")
-```
-
-### 4. Error Handling
-```python
-try:
-    process_data()
-except Exception as e:
-    # Save error message as result
-    with open('/mnt/results/error.txt', 'w') as f:
-        f.write(f"Error: {str(e)}")
-    raise
-```
-
-### 5. Documentation
-Include help text in launcher description.
+- Validate inputs in the script and fail with a clear message; a non-zero exit marks the run failed and triggers the failure email.
+- Print progress to stdout; it is shown in the Job logs.
+- Keep the command idempotent so consumers can re-run with different inputs.
+- Test the script as a plain Job first with the same arguments.
 
 ## Troubleshooting
 
-### Launcher Fails
-- Check script runs manually first
-- Verify file paths are correct
-- Review job logs for errors
-
-### No Email Received
-- Check email addresses configured
-- Verify email server settings (admin)
-- Check spam folder
-
-### Wrong Results
-- Verify parameter passing
-- Check variable substitution syntax
-- Test with known inputs
+- **Run fails immediately**: run the command as a Job with literal values; check that every `${name}` has a matching control and that file paths are relative to the working directory (`/mnt` on DFS, `/mnt/code` on Git-based Projects).
+- **Wrong or empty arguments**: remember the single-quoting; do not rely on `$VAR` expansion inside a value.
+- **No email**: check the notification list on the launcher and the Project notification preferences; the email is sent on completion only.
+- **Results missing from email**: Git-based Project outputs belong under `/mnt/artifacts/results/`; a `.dominoresults` file restricts attachments to what it lists.
 
 ## Reference files
 
-- [EXAMPLES.md](./EXAMPLES.md) — result-file, `email.html`, and papermill patterns plus a complete scoring launcher (script and parameter configuration). Read when writing a launcher script or its result delivery.
-
-## Documentation Reference
-- [Use Launchers](https://docs.dominodatalab.com/en/latest/user_guide/f4e1e3/use-launchers/)
+- [EXAMPLES.md](./EXAMPLES.md): argument parsing in Python and R, result and `email.html` patterns, a complete scoring launcher.

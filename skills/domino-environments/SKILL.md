@@ -1,270 +1,95 @@
 ---
 name: domino-environments
-description: Create and customize Domino Compute Environments - Docker containers defining tools, packages, and configurations. Covers Dockerfile customization, package installation, IDE configuration, DSE (Domino Standard Environments), and troubleshooting build failures. Use when installing dependencies, customizing environments, or fixing environment issues.
+description: Create and customize Domino Compute Environments - the Docker images that Workspaces, Jobs, Apps and endpoints run in. Covers Domino Standard, Core, Minimal, GPU and cluster environments, creating an environment from an existing one or a custom image, Dockerfile instructions, pre/post scripts, environment variables, Pluggable Workspace Tools, revisions and build propagation, requirements.txt versus preloaded packages, the environments REST API, and build troubleshooting. Use when installing dependencies, adding IDEs or tools, or fixing environment build failures.
+compatibility: Domino 6.3 and Domino Cloud. Requires DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token.
 ---
 
-# Domino Compute Environments Skill
+# Domino Compute Environments
 
-## Description
-This skill helps users create, customize, and manage Domino Compute Environments - Docker-based containers that define the tools, packages, and configurations for workspaces, jobs, and other executions.
+Applies to Domino 6.3 and Domino Cloud.
 
-## Activation
-Activate this skill when users want to:
-- Create or customize a compute environment
-- Install packages or dependencies
-- Configure Dockerfile instructions
-- Understand environment best practices
-- Troubleshoot environment build issues
+An Environment is a Docker image plus Domino metadata (workspace tools, scripts, variables, supported clusters). Each build creates a numbered **revision**; executions use the environment's **Active** revision unless they pin another. Containers run as the `ubuntu` user; files Domino tracks live under `/mnt`.
 
-## What is a Compute Environment?
+Docs: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environments (same paths under `/6.3/`).
 
-A Domino Compute Environment is a Docker container image that contains:
-- Operating system and base tools
-- Programming languages (Python, R)
-- IDEs (Jupyter, VS Code, RStudio)
-- Libraries and packages
-- Custom configurations
+## Domino-provided environments
 
-## Domino Standard Environments (DSEs)
+| Environment | Image (`quay.io/domino/...`, tag changes per release) | Use |
+|---|---|---|
+| Domino Standard Environment (DSE) | `domino-standard-environment` (`-no-assistants` variant) | Python, R, Jupyter, JupyterLab, VS Code, RStudio, coding assistants |
+| Domino Core Environment (DCE) | `domino-core-environment` | minimal base for custom builds; Jupyter and JupyterLab only |
+| Domino Minimal Environment (DME) | `domino-minimal-environment` | lighter DSE |
+| Domino GPU Environment (DGE) | `domino-gpu-environment` | CUDA and GPU libraries for GPU tiers |
+| Cluster environments | `domino-{spark,ray,dask,mpi}-environment` (execution), `{spark,ray,dask,mpi}-cluster-environment` (nodes) | [domino-distributed-computing](../domino-distributed-computing/SKILL.md); a DSE cannot be a cluster node |
 
-Domino provides pre-built environments with common tools:
+Exact tags and partner images: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environments/manage-compute-environments/8-compute-environment-catalog (no language versions are documented; check with `python --version`).
 
-| Environment | Includes |
-|-------------|----------|
-| Domino Standard Environment | Python 3.9, R 4.1, Jupyter, VS Code |
-| Domino Spark Environment | Spark 3.x, PySpark |
-| Domino Ray Environment | Ray for distributed computing |
-| Domino GPU Environment | CUDA, cuDNN, GPU libraries |
+## Create an environment (UI)
 
-## Creating a Custom Environment
+**Govern > Environments > + Create Environment**: name, description, then the base:
 
-### Via Domino UI
-1. Go to **Environments** in Domino
-2. Click **Create Environment**
-3. Configure:
-   - **Name**: Descriptive name
-   - **Base Image**: Start from DSE or custom image
-   - **Dockerfile Instructions**: Add customizations
-4. Click **Build**
+- **Start from an existing Environment** with **Active (auto-rebuilds)** (follows the base's active revision) or a pinned revision.
+- **Start from a custom base image**: an image URI; keep **Automatically make compatible with Domino** unless it is already a Domino image (the option disappears when a cluster type is selected).
 
-### Dockerfile Instructions
+Then **Supported Clusters** (cluster-node environments only), **Visibility** (Private, an Organization, or Global for admins), the revision toggle, and **Create Environment** or **Customize before building**. Later: open the environment > **Edit Definition** > **Build**. Base image and supported clusters cannot be changed afterwards; duplicate instead. Archive from the environment menu (not while it is a Project default).
 
-Add instructions to customize the environment. Do NOT include `FROM` statement.
+Project default: Project **Settings > Hardware & Environment**.
+
+## Edit Definition
+
+**Dockerfile Instructions**: no `FROM` (Domino adds it), no access to Project files or user variables at build time, 127-layer limit. Install as root and switch back:
 
 ```dockerfile
-# Install system packages
-RUN apt-get update && apt-get install -y \
-    libpq-dev \
-    graphviz \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Python packages
-RUN pip install --no-cache-dir \
-    pandas==2.0.0 \
-    scikit-learn==1.3.0 \
-    tensorflow==2.13.0
-
-# Install R packages
-RUN R -e "install.packages(c('tidyverse', 'caret'), repos='https://cloud.r-project.org')"
-
-# Set environment variables
-ENV MODEL_PATH=/mnt/artifacts/model.pkl
-```
-
-## Package Installation Methods
-
-### Method 1: Dockerfile Instructions (Recommended)
-Best for packages that should always be available.
-
-```dockerfile
-RUN pip install pandas numpy scikit-learn
-```
-
-**Pros**: Fast startup, consistent environment
-**Cons**: Requires environment rebuild for changes
-
-### Method 2: requirements.txt
-Packages installed at execution startup.
-
-```text
-# requirements.txt in project root
-pandas>=2.0.0
-numpy>=1.24.0
-scikit-learn>=1.3.0
-```
-
-**Pros**: No rebuild needed, per-project customization
-**Cons**: Slower startup
-
-### Method 3: Pre/Post-run Scripts
-Custom scripts that run at execution start.
-
-```bash
-#!/bin/bash
-# pre-run.sh
-pip install -q custom-package
-```
-
-### Method 4: Runtime Installation
-Install during execution (temporary).
-
-```python
-!pip install package-name
-```
-
-## Dockerfile Best Practices
-
-### Combine RUN Commands
-```dockerfile
-# Good: Single layer
-RUN pip install pandas numpy scikit-learn matplotlib
-
-# Bad: Multiple layers
-RUN pip install pandas
-RUN pip install numpy
-RUN pip install scikit-learn
-```
-
-### Clean Up
-```dockerfile
-RUN apt-get update && apt-get install -y \
-    package1 \
-    package2 \
-    && rm -rf /var/lib/apt/lists/*
-```
-
-### Pin Versions
-```dockerfile
-# Good: Reproducible
-RUN pip install pandas==2.0.0 scikit-learn==1.3.0
-
-# Bad: May break
-RUN pip install pandas scikit-learn
-```
-
-### Use --no-cache-dir
-```dockerfile
-RUN pip install --no-cache-dir package-name
-```
-
-## Environment Variables
-
-### Set in Dockerfile
-```dockerfile
-ENV MY_VAR=value
-ENV DATA_PATH=/mnt/data
-```
-
-### Set in Domino UI
-1. Go to Environment settings
-2. Add environment variables
-3. Variables available in all executions
-
-### Access in Code
-```python
-import os
-value = os.environ.get('MY_VAR', 'default')
-```
-
-## GPU Environments
-
-### CUDA Setup
-```dockerfile
-# Ensure base image has CUDA
-# Add GPU-specific packages
-RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-```
-
-### TensorFlow GPU
-```dockerfile
-RUN pip install tensorflow[and-cuda]
-```
-
-### Verify GPU Access
-```python
-import torch
-print(f"CUDA available: {torch.cuda.is_available()}")
-print(f"GPU count: {torch.cuda.device_count()}")
-```
-
-## IDE Configuration
-
-### Custom Jupyter Config
-```dockerfile
-RUN mkdir -p /home/domino/.jupyter && \
-    echo "c.NotebookApp.token = ''" >> /home/domino/.jupyter/jupyter_notebook_config.py
-```
-
-### VS Code Extensions
-Pre-install extensions:
-```dockerfile
-RUN code-server --install-extension ms-python.python
-```
-
-## Environment Revisions
-
-Domino tracks environment versions:
-- Each build creates a new revision
-- Can roll back to previous revisions
-- Executions can specify which revision to use
-
-### View Revisions
-Go to Environment > **Revisions** tab
-
-### Use Specific Revision
-Select revision when launching workspace or job.
-
-## Troubleshooting Builds
-
-### Build Fails
-1. Check Dockerfile syntax
-2. Verify base image exists
-3. Check network access for package downloads
-4. Review build logs for specific errors
-
-### Common Errors
-
-**Package not found**:
-```dockerfile
-# Wrong
-RUN pip install sklearn
-
-# Right
-RUN pip install scikit-learn
-```
-
-**Permission denied**:
-```dockerfile
-# Run as root if needed
 USER root
-RUN apt-get update && apt-get install -y package
-USER domino
+RUN apt-get update && apt-get install -y --no-install-recommends libpq-dev graphviz \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir pandas==2.2.2 scikit-learn==1.5.1
+RUN R --no-save -e "install.packages(c('tidyverse','caret'), repos='https://cloud.r-project.org')" \
+    && chown -R ubuntu:ubuntu /usr/local/lib/R/site-library
+ENV MODEL_PATH=/mnt/artifacts/model.pkl
+USER ubuntu
 ```
 
-**Timeout during build**:
-- Reduce number of packages
-- Use pre-built wheels
-- Check network connectivity
+One `pip install` per set of packages, pinned versions, `&&` to merge layers, `ARG NAME` + `ENV NAME=$NAME` to carry a variable into the build. Private Git packages: install at runtime via `requirements.txt`, never with credentials in the Dockerfile.
 
-### Test Locally
-```bash
-# Build and test locally before adding to Domino
-docker build -t test-env -f Dockerfile .
-docker run -it test-env python -c "import pandas; print(pandas.__version__)"
-```
+**Pluggable Workspace Tools**: YAML defining the IDEs offered at launch; [WORKSPACE-TOOLS.md](./WORKSPACE-TOOLS.md).
 
-## Best Practices Summary
+**Scripts** (bash, run as root at execution time, never on cluster nodes), in order: pre-setup, `requirements.txt` install, post-setup and pre-run, your execution, post-run after it stops. Use the pre-run script for per-launch setup such as `code-server --install-extension ...` or RStudio preferences.
 
-1. **Start from DSE**: Use Domino Standard Environment as base
-2. **Minimize layers**: Combine RUN commands
-3. **Pin versions**: Ensure reproducibility
-4. **Document changes**: Comment Dockerfile instructions
-5. **Test before building**: Verify packages work together
-6. **Clean up**: Remove cache and temporary files
-7. **Regular updates**: Keep packages current for security
+**Environment variables**: visible in every execution; precedence environment < Project < user. Never use names starting with `DOMINO_` (reserved); no secrets in Dockerfile `ENV`. **Enable VPN Networking** and a revision note complete the form.
 
-## Documentation Reference
-- [Customize your Environment](https://docs.dominodatalab.com/en/latest/user_guide/5dd2c1/customize-your-environment/)
-- [Add packages to Environments](https://docs.dominodatalab.com/en/latest/user_guide/bfa148/add-packages-to-environments/)
-- [Domino Standard Environments](https://docs.dominodatalab.com/en/latest/user_guide/0d73c6/domino-standard-environments/)
-- [Best Practices for Environments](https://docs.dominodatalab.com/en/cloud/user_guide/0e4da9/best-practices-for-domino-environments/)
+## Packages: where to install
+
+| Method | When | Cost |
+|---|---|---|
+| Dockerfile `RUN pip install ...` | anything used regularly | one build; fastest starts |
+| `requirements.txt` in `DOMINO_WORKING_DIR` (`/mnt` DFS, `/mnt/code` Git-based) | per-Project extras | reinstalled every start |
+| `install.R` + `source('install.R')` | R equivalents | per session |
+| Package Persistence (Workspaces) | interactive installs kept across sessions | enable on the revision; custom images need `uv` and `renv` |
+| `!pip install --user ...` in a notebook | one-off | lost on restart |
+
+Keep images small (few global environments, DCE base for custom builds); every dependency-file package costs startup time on each run.
+
+## Revisions
+
+- Each build is a revision with build logs (**Revisions** tab > three dots). **Auto-assign next new revision as Active** on uses the latest successful build; off pins the Active revision so you can test first.
+- Environments based on **Active (auto-rebuilds)** rebuild when the base's Active revision changes (build propagation, chained through the **Dependency Tree** tab). Archived environments are not rebuilt.
+- Workspaces and Jobs can pin a revision (a non-active choice shows **Not Recommended**). API: `environmentRevisionSpec` = `ActiveRevision`, `LatestRevision` or `SomeRevision(<revisionId>)`.
+- Revisions may declare CPU architectures (`amd64`, `arm64`); a mismatched hardware tier is rejected (v2 API, Cloud).
+
+## REST API
+
+Both specs: `GET /api/environments/beta/environments` (list), `GET /api/environments/v1/environments/{environmentId}`, `POST /api/environments/beta/environments`, `POST .../beta/environments/{environmentId}/revisions`, `PATCH .../revisions/{revisionId}` (restricted flag), `DELETE /api/environments/v1/environments/{environmentId}` (archive). Cloud only (beta create routes are deprecated there): `POST /api/environments/v2/environments`, `POST .../v2/environments/{environmentId}/revisions`, `PUT .../v1/environments/{environmentId}/name` and `/description`. Bodies and the version check: [API.md](./API.md). Authentication: [domino-api-intro](../domino-api-intro/SKILL.md).
+
+## Troubleshooting builds
+
+- **Permission denied**: `USER root` before the command, `USER ubuntu` after; `chown -R ubuntu:ubuntu` directories the user must write.
+- **Package not found**: wrong name (`scikit-learn`, not `sklearn`), missing apt dependency, or no network from the builder (use an internal mirror).
+- **Build never finishes / killed**: too many layers or packages; split into base and derived environments; read the revision's build log.
+- **IDE missing at launch**: no Pluggable Workspace Tools entry or start script ([WORKSPACE-TOOLS.md](./WORKSPACE-TOOLS.md)).
+- **Old revision used**: the Active revision is pinned, or the Project is restricted.
+
+## Reference files
+
+- [WORKSPACE-TOOLS.md](./WORKSPACE-TOOLS.md): Pluggable Workspace Tools YAML, native tool start scripts, VS Code extensions, RStudio preferences, jupyter-server-proxy, SSH.
+- [API.md](./API.md): environments REST routes, request bodies, version differences.
