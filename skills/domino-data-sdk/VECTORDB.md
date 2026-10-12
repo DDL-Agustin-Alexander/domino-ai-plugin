@@ -14,14 +14,19 @@ in this library; use the UI code snippet for it.
 ## Prerequisites
 
 1. A Pinecone Data Source (created with the Pinecone API key; environment name and project ID
-   only for legacy pod-based indexes), added to the Project.
-2. The Pinecone client, 3.x or later. The PyPI package is `pinecone`; `pinecone-client` is the
-   deprecated former name and must be uninstalled first (the two conflict). The docs page still
-   shows `pinecone-client`; the helpers work with either as long as the API is 3.x.
+   are needed only when the Data Source is used from `pinecone-client<3.0.0`), added to the
+   Project.
+2. The Pinecone client at a version the Domino helpers support: **3.x through 8.x**. From
+   `pinecone` 9.0.0 (May 2026) `Pinecone.Index()` rejects every keyword except `pool_threads`
+   with `TypeError`, and `domino_pinecone3x_index_params` passes `host` and
+   `additional_headers`, so an unpinned install (10.0.0 today) breaks the recipe below. The PyPI
+   package is `pinecone`; `pinecone-client` (frozen at 6.0.0, which also works) is the deprecated
+   former name and must be uninstalled first because the two conflict. The docs page still shows
+   `pinecone-client`.
 
 ```dockerfile
 USER root
-RUN python -m pip install pinecone dominodatalab-data
+RUN python -m pip install "pinecone>=3,<9" "dominodatalab-data>=6.7.4"
 USER ubuntu
 ```
 
@@ -77,7 +82,7 @@ index.delete(delete_all=True, namespace="test")
 
 ```python
 def embed(text: str) -> list[float]:
-    ...   # your embedding model; call hosted LLMs through AI Gateway (domino-ai-gateway skill)
+    ...   # your embedding model; call hosted LLMs through AI Gateway (domino-llm-access skill)
 
 def retrieve(question: str, top_k: int = 5) -> list[str]:
     hits = index.query(vector=embed(question), top_k=top_k, include_metadata=True)
@@ -101,6 +106,7 @@ Trace the pipeline with the domino-genai-tracing skill when it runs as an agent 
 |---|---|
 | Connection refused or timeout | `DOMINO_DATA_API_GATEWAY` is set and reachable; you are inside a Domino execution |
 | 401 or 403 from the gateway | The Pinecone Data Source is added to the Project and its stored key is valid |
-| Index not found | `index_name` matches `pc.list_indexes()`; legacy indexes need environment name and project ID on the Data Source |
-| `ImportError` for `Pinecone` | `pinecone` (3.x+) installed and `pinecone-client` removed |
+| Index not found | `index_name` matches `pc.list_indexes()`; a `pinecone-client<3.0.0` setup needs environment name and project ID on the Data Source |
+| `TypeError: Pinecone.Index() got unexpected keyword arguments: ['additional_headers', 'host']` | `pinecone` 9.x or later installed; pin `pinecone>=3,<9` |
+| `ImportError` for `Pinecone` | `pinecone` (3.x or later) installed and `pinecone-client` removed |
 | Dimension mismatch | Embedding model output size versus index dimension |

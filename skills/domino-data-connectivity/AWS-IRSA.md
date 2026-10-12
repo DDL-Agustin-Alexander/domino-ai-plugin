@@ -8,7 +8,7 @@ Support for the equivalent.
 | Option | Identity | Workload types | Where documented |
 |---|---|---|---|
 | AWS credential propagation (SAML) | The user's own IAM roles, chosen by the identity provider | Workspaces and Jobs started by the user | https://docs.domino.ai/6.3/admin/identity-and-access/authentication/sso/aws-credential-propagation |
-| IAM-authenticated Data Sources | Role attached to the Data Source | Workspaces and Jobs (not scheduled Jobs or endpoints) | https://docs.domino.ai/cloud/admin/data-administration/external-data#iam-authentication-for-aws-data-sources |
+| IAM-authenticated Data Sources | The user's SAML-propagated AWS role, read from `AWS_SHARED_CREDENTIALS_FILE` (requires credential propagation; 6.3 admins add `AWSIAMRole` to `com.cerebro.domino.datasource.<Type>Config.enabledAuthTypes`, Cloud asks Domino Support) | Workspaces and Jobs (not scheduled Jobs or endpoints) | https://docs.domino.ai/6.3/admin/data-administration/external-data#iam-authentication-for-aws-data-sources |
 | IRSA through Domsed (blueprint) | A Kubernetes service account mapped per Domino user, trusted by IAM roles in any account | Workspace, Batch (Job), Scheduled; selectable by label | https://domino.ai/resources/blueprints/aws-irsa, code in https://github.com/dominodatalab/domino-blueprints (IRSA-README.md, advanced-credential-propagation/irsa) |
 | EKS Pod Identity (blueprint) | A static service account mapped per Domino service account | Same as IRSA; EKS only | https://domino.ai/resources/blueprints/advanced-credential-propagation-aws-eks, code in advanced-credential-propagation/eks-pod-identity |
 
@@ -17,17 +17,23 @@ Support for the equivalent.
 With SSO enabled, Domino exchanges the user's SAML assertion for temporary role credentials
 (`sts:AssumeRoleWithSAML`) and refreshes them during the session.
 
-Admin setup, summarised from the docs page above:
+Follow the docs page end to end; its key steps are:
 
 1. Federate the AWS account with the identity provider; create a SAML identity provider in IAM.
 2. Create each role with `SAML 2.0 federation` as the trusted entity, then edit its trust policy
    to allow both `sts:AssumeRoleWithSAML` from the provider and `sts:AssumeRole` from the role's
    own ARN (Domino refreshes credentials mid-session, so the role must be able to assume itself).
-3. Have the identity provider emit `https://aws.amazon.com/SAML/Attributes/Role`
+3. Create a permissions policy allowing `sts:AssumeRole` and `sts:AssumeRoleWithSAML` on the
+   role's ARN and attach it to the role.
+4. Have the identity provider emit `https://aws.amazon.com/SAML/Attributes/Role`
    (`<provider-arn>,<role-arn>`, multi-valued), `.../RoleSessionName` and `.../SessionDuration`.
-4. In Keycloak, add `Attribute Importer` mappers for those three attributes to user attributes
-   `aws-roles`, `aws-role-session-name`, `aws-session-duration`.
-5. In **Admin > Platform Settings > Configuration Records** set
+5. In Keycloak, on the SAML identity provider turn **Store Tokens** and **Store Tokens
+   Readable** on (Domino needs the users' SAML assertions), and add `Attribute Importer` mappers
+   for the three attributes to user attributes `aws-roles`, `aws-role-session-name` and
+   `aws-session-duration`.
+6. On the `domino-play` client add a mapper named `identity-provider-mapper` of type
+   User Session Note, note `identity_provider`, token claim `idpbroker`.
+7. In **Admin > Platform Settings > Configuration Records** set
    `com.cerebro.domino.auth.aws.sts.enabled=true`, `com.cerebro.domino.auth.aws.sts.region`
    (for example `us-west-2`) and `com.cerebro.domino.auth.aws.sts.defaultSessionDuration`
    (for example `1h`), then restart services. Users log out and in again.
@@ -95,7 +101,10 @@ Domino manages pod identity.
    ```
 
    Attach a least-privilege permissions policy to the role (named buckets and prefixes, named
-   SageMaker endpoints; no `*` resources).
+   SageMaker endpoints; no `*` resources). Hardening beyond the blueprint, per AWS's IRSA
+   guidance: use `StringEquals` on `sub` and add
+   `"oidc.eks.<REGION>.amazonaws.com/id/<OIDC_ID>:aud": "sts.amazonaws.com"` so only tokens
+   minted for STS can assume the role.
 
 4. Apply the Domsed mutation in `domino-platform`. This is the blueprint's
    `user-identity-based-irsa.yaml`, with the user mappings and region edited:
@@ -189,11 +198,13 @@ The second role's trust policy names the first role's ARN as principal for `sts:
 Same Domsed mechanism, but the identity comes from EKS Pod Identity associations instead of
 OIDC federation, so it is EKS-only and keyed on Domino service accounts rather than users:
 
-1. Create Domino service accounts (https://docs.domino.ai/6.3/admin/identity-and-access/manage-users/service-accounts)
+1. Install the **EKS Pod Identity Agent** add-on on the cluster and give the node role
+   `eks-auth:AssumeRoleForPodIdentity` (AWS prerequisites, called out in the blueprint).
+2. Create Domino service accounts (https://docs.domino.ai/6.3/admin/identity-and-access/manage-users/service-accounts)
    and one static Kubernetes service account each in `domino-compute`.
-2. Create Pod Identity associations from each Kubernetes service account to its IAM role; the
+3. Create Pod Identity associations from each Kubernetes service account to its IAM role; the
    role trusts `pods.eks.amazonaws.com` for `sts:AssumeRole` and `sts:TagSession`.
-3. Apply a `Mutation` with the same `labelSelectors` and a `cloudWorkloadIdentity` block whose
+4. Apply a `Mutation` with the same `labelSelectors` and a `cloudWorkloadIdentity` block whose
    `user_mappings` map Domino service-account names to the Kubernetes service accounts. No
    projected volume or environment variables are needed; the Pod Identity agent injects them.
 

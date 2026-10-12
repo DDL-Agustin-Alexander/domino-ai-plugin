@@ -25,9 +25,13 @@ import os
 root = os.environ["DOMINO_DATASETS_DIR"]
 git_based = os.environ.get("DOMINO_IS_GIT_BASED") == "true"
 local_root = root if git_based else f"{root}/local"                       # this Project's Datasets
-imported_root = "/mnt/imported/data" if git_based else root                 # shared Datasets
+# shared Datasets: /mnt/imported/data beside /mnt/data, or the DFS root itself
+imported_root = os.path.join(os.path.dirname(root), "imported", "data") if git_based else root
 default_dataset = f"{local_root}/{os.environ['DOMINO_PROJECT_NAME']}"
 ```
+
+The roots are deployment settings (`/mnt` and `/domino/datasets` by default), which is why the
+code derives them from `DOMINO_DATASETS_DIR` instead of hardcoding.
 
 Verified in live Workspaces (2026-10-12): a Git-based Project `my-project` has
 `DOMINO_DATASETS_DIR=/mnt/data` and its default Dataset at `/mnt/data/my-project`; a DFS Project
@@ -115,7 +119,9 @@ neither is a Dataset.
 ## Read-write or read-only
 
 - Live Dataset directories follow the user's Dataset role: Owner and Editor read-write, Reader
-  read-only. Roles are granted per Dataset, independently of Project roles.
+  read-only. Roles are granted per Dataset, independently of Project roles. For a Dataset
+  shared from another Project the docs disagree with themselves (the path list says read-only,
+  the tree says by role); check before writing: `os.access(path, os.W_OK)`.
 - Every snapshot directory (numbered or tagged) is read-only.
 - An execution pinned to one snapshot mounts that snapshot read-only at the live path
   (`/mnt/data/<name>` or `/domino/datasets/local/<name>`) and mounts nothing under

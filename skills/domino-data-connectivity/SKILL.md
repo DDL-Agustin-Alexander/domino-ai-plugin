@@ -31,16 +31,19 @@ Read `GET $DOMINO_API_HOST/version` (no auth) and look at `version`:
 - A Domino-hosted deployment (Domino Cloud reports a newer line, `6.4.0` on 2026-10-12): Domino
   operates the cluster. Use Data Sources and External Data Volumes (EDVs need a remote Data
   Plane on Cloud). IAM authentication, credential propagation, CSI drivers and Domsed mutations
-  are requested through Domino Support.
+  are requested through Domino Support; the admin pages for them exist only under `/6.3/`.
+
+The real distinction is whether your team administers the cluster; when a self-managed line
+newer than 6.3 ships, treat it like 6.3.
 
 ## Pick a mechanism
 
 | Need | Mechanism | Set up by | Source |
 |---|---|---|---|
 | Query a database or read/write an object store from code | **Data Source** connector (Snowflake, Redshift, S3, ADLS, Azure Blob, BigQuery, Databricks, Postgres, MySQL, MSSQL, Oracle, GCS, Pinecone, Qdrant and others). Credentials live in Domino's Vault-backed secret store as Individual or Service Account credentials | User, or admin pre-configures and shares | https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/data-source-connectors |
-| AWS stores without stored keys | **IAM authentication** for S3, Redshift, MySQL and PostgreSQL Data Sources; works in Workspaces and Jobs only (scheduled Jobs and endpoints need basic auth) | Admin, enabled by Domino Support | https://docs.domino.ai/cloud/admin/data-administration/external-data#iam-authentication-for-aws-data-sources |
+| AWS stores without stored keys | **IAM authentication** for S3, Redshift, MySQL and PostgreSQL Data Sources: the Data Source uses the user's SAML-propagated AWS role; Workspaces and Jobs only (scheduled Jobs and endpoints need basic auth) | 6.3: admin, after SSO and AWS credential propagation, adds `AWSIAMRole` to `com.cerebro.domino.datasource.<Type>Config.enabledAuthTypes`; Cloud: Domino Support | https://docs.domino.ai/6.3/admin/data-administration/external-data#iam-authentication-for-aws-data-sources |
 | Mount NFS, AWS EFS, SMB or any PVC-backed filesystem | **External Data Volume** at `/domino/edv/<name>` | Kubernetes admin labels a PVC; Domino admin registers it; users add it under **Data > External Data Volumes** | [EXTERNAL-DATA-VOLUMES.md](./EXTERNAL-DATA-VOLUMES.md) |
-| Each user's own AWS roles, from SSO | **AWS credential propagation** (SAML, `AssumeRoleWithSAML`): a refreshed credentials file at `/var/lib/domino/home/.aws/credentials`, named by `AWS_SHARED_CREDENTIALS_FILE` | Admin: identity-provider mappers plus configuration records on 6.3; Domino Support on Cloud | https://docs.domino.ai/6.3/admin/identity-and-access/authentication/sso/aws-credential-propagation |
+| Each user's own AWS roles, from SSO | **AWS credential propagation** (SAML, `AssumeRoleWithSAML`): a refreshed credentials file at `/var/lib/domino/home/.aws/credentials`, named by `AWS_SHARED_CREDENTIALS_FILE` | Admin: identity-provider settings and mappers plus configuration records on 6.3; not documented for Cloud, ask Domino Support | https://docs.domino.ai/6.3/admin/identity-and-access/authentication/sso/aws-credential-propagation |
 | IAM roles for every workload type, per user or service account, cross-account | **IRSA through Domsed** or **EKS Pod Identity** (blueprints) | Platform team with Domino Professional Services | [AWS-IRSA.md](./AWS-IRSA.md) |
 | An S3 bucket as a browsable local filesystem | **Mountpoint for Amazon S3 CSI driver** registered as a Generic EDV (blueprint) | Kubernetes and Domino admins | [S3-MOUNTPOINT.md](./S3-MOUNTPOINT.md) |
 | Each user's Entra ID identity against Blob, ADLS Gen2, Databricks or Azure SQL | **Azure Entra user-token propagation** through Keycloak token exchange (blueprint) | Keycloak admin with Domino Professional Services | [AZURE-CREDENTIALS.md](./AZURE-CREDENTIALS.md) |

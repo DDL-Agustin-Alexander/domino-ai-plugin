@@ -57,10 +57,6 @@ with open("out.csv", "wb") as out:
     f.download_fileobj(out)
 ```
 
-Lower-level calls on the client take the unique name directly:
-`client.list_files(dataset_unique_name, prefix, page_size)` returns a list of path strings and
-`client.get_file_url(dataset_unique_name, file_name)` returns the signed URL.
-
 ## Read a snapshot or a subfolder
 
 `DatasetConfig` has two fields, `snapshot_id` and `subfolder`. Without an override the
@@ -104,18 +100,25 @@ dataset = DatasetClient(token=token).get_dataset("dataset-training-data-6503324f
 
 ## Errors
 
+`domino_data.datasets` defines `DominoError` and `UnauthenticatedError` but raises neither;
+the errors come from the underlying `data_sources` client and from `httpx`:
+
 ```python
-from domino_data.datasets import DominoError, UnauthenticatedError
 import httpx
+from domino_data.data_sources import UnauthenticatedError
 
 try:
-    content = dataset.get("missing.txt")
+    dataset = client.get_dataset("dataset-training-data-6503324fa1eb367359734bfd")
+except Exception as e:
+    print(f"unknown Dataset or no access: {e}")            # bare Exception from the library
+
+try:
+    files = dataset.list_files(prefix="data/")
+    content = dataset.get("data/missing.txt")
 except UnauthenticatedError:
-    print("no valid Domino token")
+    print("401 from the Data Source proxy for 60 seconds")
 except httpx.HTTPStatusError as e:
     print(f"HTTP {e.response.status_code} fetching the file")   # 404 for a missing path
-except DominoError as e:
-    print(f"dataset error: {e}")
 ```
 
 ## Practices

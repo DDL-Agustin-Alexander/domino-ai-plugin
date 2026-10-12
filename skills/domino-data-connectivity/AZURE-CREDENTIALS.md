@@ -13,8 +13,25 @@ package, published as a Professional Services blueprint.
 
 Applies to self-managed Domino 6.3, where your team administers Keycloak at
 `https://<domino-domain>/auth/`. On Domino Cloud, request it through Domino Support. For
-service (non-user) identities the blueprint README points to Azure Workload Identity instead;
-it has no published guide.
+service (non-user) identities, the companion "Azure authorization" blueprint
+(https://domino.ai/resources/blueprints/azure-authorization, code in
+`advanced-credential-propagation/azure-ad-advanced-auth`) maps Domino users or service
+accounts to Azure Workload Identity through a Domsed `Mutation` with
+`cloudWorkloadIdentity: cloud_type: azure`; code then uses Azure's own
+`WorkloadIdentityCredential`. This file covers the user-token path only.
+
+Two properties of the `domino_aad` package shape everything below (read from the 0.0.4 wheel):
+
+- **One token per identity provider.** `DominoCredential("<alias>").get_token(...)` ignores the
+  scopes it is given and returns the token Keycloak exchanged for that alias. An Entra access
+  token has one audience, so each Azure resource (Storage, SQL, Databricks) needs its own
+  Keycloak identity provider with its own Default Scopes and its own alias.
+- **No refresh after the first hour.** The credential caches the token it obtained at
+  construction with a 3600-second expiry; when that passes it re-requests but discards the
+  result, so calls keep presenting the stale token. Construct a new `DominoCredential` for each
+  unit of work and never keep one for longer than an hour (the blueprint owners have been told).
+  Consent prompts use `input()`, so a Job whose user has not consented fails with `EOFError`;
+  consent once from a Workspace first.
 
 Prefer the documented alternatives when they fit: an Azure Blob, ADLS or Databricks **Data
 Source** (https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/data-source-connectors)
@@ -27,9 +44,10 @@ keeps a key or service principal in Domino's secret store and needs no Keycloak 
 2. The first time a user asks for a token in a Workspace, the `domino_aad` package prints an
    Entra consent URL. After consent, Entra returns an access token and an offline refresh token;
    Keycloak stores the refresh token and the user never sees it.
-3. On later calls, `domino_aad` performs a Keycloak internal-to-external token exchange and
-   returns a fresh access token. Consent lasts as long as the refresh token, which the tenant
-   controls; when it expires the user is prompted again.
+3. Each new `DominoCredential` performs a Keycloak internal-to-external token exchange
+   (`$DOMINO_API_PROXY/exchange-token?external_idp=<alias>`) and gets a current access token.
+   Consent lasts as long as the refresh token, which the tenant controls; when it expires the
+   user is prompted again.
 
 ## Setup (Keycloak and Entra admins)
 
@@ -54,15 +72,19 @@ Connect v1.0**):
 4. Under **Mappers**, add an `Attribute Importer` mapping claim `email` to user attribute
    `email`.
 5. Under **Default Scopes**, enter the scopes to request, for example
-   `offline_access https://storage.azure.com/user_impersonation`. The second scope must match
-   the API permission you granted; add one per target service.
+   `offline_access https://storage.azure.com/user_impersonation`. The resource scope must match
+   the API permission you granted. One resource per provider: for Azure SQL create a second
+   provider (alias `azsql`, say) with `offline_access https://database.windows.net/user_impersonation`,
+   and so on for each resource.
 
 ### Token exchange permission
 
-Follow the Keycloak guide for internal-to-external token exchange
-(https://www.keycloak.org/docs/latest/securing_apps/#internal-token-to-external-token-exchange)
-to allow the `domino-play` client to exchange tokens with the new identity provider; in the
-client-policy step, `domino-play` is the client.
+Follow the Keycloak token-exchange guide (https://www.keycloak.org/securing-apps/token-exchange)
+to allow the `domino-play` client to exchange tokens with each new identity provider; in the
+client-policy step, `domino-play` is the client. Internal-to-external exchange is part of
+Keycloak's legacy token exchange (V1), which Keycloak marks deprecated and does not enable by
+default; Domino's bundled Keycloak exposes it through `$DOMINO_API_PROXY/exchange-token`, so
+confirm with Domino before relying on it.
 
 ### Workload package
 
@@ -79,8 +101,10 @@ USER ubuntu
 
 `DominoCredential("<idp-alias>")` is an Azure `TokenCredential`; pass it wherever an Azure SDK
 client takes `credential=`. The alias is the Keycloak identity-provider alias (`azstorage` in
-the blueprint). On the first call it prints a consent URL; open it, grant access, return to the
-Workspace and press Enter.
+the blueprint), and it decides which resource the token is for; the scope the Azure SDK asks
+for is ignored. On the first call it prints a consent URL; open it, grant access, return to the
+Workspace and press Enter. Create the credential inside the function that uses it rather than
+once per process (no refresh after an hour, see above).
 
 ```python
 from domino_aad import DominoCredential
@@ -105,14 +129,16 @@ content = fs.get_file_client("sales/2026/sales.csv").download_file().readall().d
 df = pd.read_csv(StringIO(content))
 ```
 
-Azure SQL through pyodbc needs a token for the database scope; the Keycloak provider must
-request that scope too (`https://database.windows.net/.default`):
+Azure SQL through pyodbc needs a token whose audience is the database service, so it comes from
+a separate identity provider configured with the `https://database.windows.net/user_impersonation`
+scope (alias `azsql` here); `get_token()` takes no scope because the alias already fixes it:
 
 ```python
 import struct
 import pyodbc
 
-token = creds.get_token("https://database.windows.net/.default").token.encode("utf-16-le")
+sql_creds = DominoCredential("azsql")
+token = sql_creds.get_token().token.encode("utf-16-le")
 token_struct = struct.pack(f"<I{len(token)}s", len(token), token)
 conn = pyodbc.connect(
     "DRIVER={ODBC Driver 18 for SQL Server};SERVER=myserver.database.windows.net;DATABASE=mydb;",
@@ -147,7 +173,8 @@ settings for audit, keep client-secret lifetimes short and apply Conditional Acc
 | Symptom | Check |
 |---|---|
 | Consent URL appears on every call | **Store Tokens** / **Stored Tokens Readable** off, or `offline_access` missing from the provider's default scopes |
-| Token exchange denied | The `domino-play` client lacks the token-exchange permission for this provider |
+| `EOFError` in a Job | The user has not consented for this alias; run the code once in a Workspace and complete the consent URL |
+| Token exchange denied | The `domino-play` client lacks the token-exchange permission for this provider, or legacy token exchange is not enabled in Keycloak |
 | `AuthorizationPermissionMismatch` | The user's Azure RBAC role or scope; role propagation can take a few minutes |
-| Wrong or missing scope in the token | The provider's **Default Scopes** and the application's API permissions must both include the target API |
-| Token expired | Refresh token expired in the tenant; the user consents again |
+| Azure rejects the token's audience (`InvalidAuthenticationToken`, `AADSTS500011`-style errors) | The alias points at a provider for a different resource; one provider per resource, matching the application's API permissions |
+| Token expired after about an hour of use | `DominoCredential` does not refresh; construct a new one. If a fresh one also fails, the refresh token expired in the tenant and the user consents again |

@@ -113,21 +113,38 @@ client = DataSourceClient(token_file="/path/to/token")            # alternate to
 API key, which is deprecated; do not recommend them. Data Sources with Individual credentials
 need the current user to have entered theirs under **Data > Data Sources**.
 
+Credential precedence in 6.7.4 differs per call path: Domino API calls (`get_datasource`) use
+`token`, then the `DOMINO_API_PROXY` JWT, then `DOMINO_TOKEN_FILE`, then the API key; Data
+Source proxy HTTP calls (listing, signed URLs) use `token`, then the API key, then the proxy
+JWT, then the token file; Flight queries send the API key and the JWT together when both
+exist. In a run that still injects `DOMINO_USER_API_KEY`, listing and signing therefore go out
+with the legacy key.
+
 ## Errors
 
 ```python
+import httpx
 from domino_data.data_sources import DominoError, UnauthenticatedError
 
 try:
     df = ds.query("SELECT * FROM sales LIMIT 10").to_pandas()
-except UnauthenticatedError:
-    print("no valid Domino token for this execution")
 except DominoError as e:
-    print(f"query failed: {e}")     # message from the Data Source proxy, SQL errors included
+    print(f"query failed: {e}")     # any Flight/Arrow failure, SQL errors and auth included
+
+try:
+    keys = s3.list_objects(prefix="raw/")
+    data = s3.get("raw/missing.csv")
+except UnauthenticatedError:
+    print("401 from the Data Source proxy for 60 seconds")
+except httpx.HTTPStatusError as e:
+    print(f"HTTP {e.response.status_code} on transfer")   # 404 for a missing key
+except Exception as e:
+    print(f"listing or signing failed: {e}")              # the library raises bare Exception here
 ```
 
-`list_objects`, `get_key_url` and `query` retry `UnauthenticatedError` with exponential backoff
-for up to 60 seconds before raising.
+`get_datasource` raises a bare `Exception` for an unknown name or no access, and the client
+constructor raises one when no credential source exists. `query` never raises
+`UnauthenticatedError`; it retries 401s for up to 60 seconds and then raises `DominoError`.
 
 ## Performance
 

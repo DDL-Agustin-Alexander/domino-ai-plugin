@@ -17,22 +17,28 @@ deployment URL (domino-api-intro skill). Legacy user API keys are deprecated; do
 # inside a Workspace, Job or App
 curl -sS "$DOMINO_API_PROXY/api/datasetrw/v2/datasets?limit=50"
 
-# outside Domino
-curl -sS -H "Authorization: Bearer $DOMINO_TOKEN" "$DOMINO_API_HOST/api/datasetrw/v2/datasets?limit=50"
+# outside Domino: DOMINO_PAT holds a Personal Access Token or service-account token
+curl -sS -H "Authorization: Bearer $DOMINO_PAT" "$DOMINO_API_HOST/api/datasetrw/v2/datasets?limit=50"
 ```
 
 ```python
 import os
 import requests
 
-base = os.environ.get("DOMINO_API_PROXY") or os.environ["DOMINO_API_HOST"]
-headers = {} if os.environ.get("DOMINO_API_PROXY") else {"Authorization": f"Bearer {os.environ['DOMINO_TOKEN']}"}
+if os.environ.get("DOMINO_API_PROXY"):                 # in a run: the proxy adds the token
+    base, headers = os.environ["DOMINO_API_PROXY"], {}
+else:
+    base = os.environ["DOMINO_API_HOST"]
+    token = os.environ.get("DOMINO_PAT") or requests.get("http://localhost:8899/access-token").text
+    headers = {"Authorization": f"Bearer {token}"}   # PAT outside Domino; sidecar token in a run without the proxy
 r = requests.get(f"{base}/api/datasetrw/v2/datasets", headers=headers, params={"limit": 50})
 r.raise_for_status()
 ```
 
-Every response wraps the payload with `metadata` (`requestId`, `notices`, and on lists `offset`,
-`limit`, sometimes `totalCount`). Errors return `{"requestId": ..., "errors": ["..."]}`.
+Every 2xx response wraps the payload with `metadata` (`requestId`, `notices`; lists carry
+`offset` and `limit`, and the snapshot list `totalCount`, as observed on Domino 6.4.0). The spec
+describes errors as `{"code", "message"}` for 401 and 403 and `{"error"}` for 400, 404 and 500;
+a 404 on 6.4.0 was observed as `{"requestId": ..., "errors": ["..."]}`, so read either shape.
 
 ## Routes
 
@@ -42,11 +48,11 @@ Every response wraps the payload with `metadata` (`requestId`, `notices`, and on
 | `POST /api/datasetrw/v1/datasets` | Create | `{"name": "...", "description": "...", "projectId": "...", "grants": [...]}`; or `snapshotId` instead of `projectId` to copy a snapshot into a new Dataset; `name` required |
 | `GET /api/datasetrw/v1/datasets/{datasetId}` | Details | returns `id`, `name`, `description`, `projectId`, `createdAt`, `snapshotIds`, `tags` (tag name to snapshot ID) |
 | `PATCH /api/datasetrw/v1/datasets/{datasetId}` | Rename or re-describe | `{"name": "...", "description": "..."}` (either) |
-| `DELETE /api/datasetrw/v1/datasets/{datasetId}` | Mark for deletion | none; an admin performs the permanent delete |
+| `DELETE /api/datasetrw/v1/datasets/{datasetId}` | Delete a Dataset. Requires the PermanentDelete permission, which only admins hold, and may be irreversible after the deletion grace period; Owners mark for deletion in the UI instead. Never call without explicit user confirmation | none |
 | `GET /api/datasetrw/v1/datasets/{datasetId}/snapshots` | List snapshots | `offset`, `limit` (default 10); each has `id`, `datasetId`, `creatorId`, `createdAt`, `status` |
 | `POST /api/datasetrw/v1/datasets/{datasetId}/snapshots` | Create snapshot | `{"relativeFilePaths": ["/*"]}` for all files, or specific paths; returns `status: pending` |
 | `GET /api/datasetrw/v1/snapshots/{snapshotId}` | Snapshot details | `status` is one of `pending`, `active`, `failed`, `copying`, `markForDeletion`, `deletionInProgress`, `deleted` |
-| `POST /api/datasetrw/v1/datasets/{datasetId}/tags` | Tag a snapshot (remove first to move an existing tag) | `{"snapshotId": "...", "tagName": "..."}` |
+| `POST /api/datasetrw/v1/datasets/{datasetId}/tags` | Tag a snapshot. To move a tag, `DELETE` it first; behaviour when the name already exists is not documented | `{"snapshotId": "...", "tagName": "..."}` |
 | `DELETE /api/datasetrw/v1/datasets/{datasetId}/tags/{tagName}` | Remove a tag | none |
 | `GET /api/datasetrw/v1/datasets/{datasetId}/grants` | List grants | none |
 | `POST /api/datasetrw/v1/datasets/{datasetId}/grants` | Add a grant | `{"targetId": "<user-id>", "targetRole": "DatasetRwOwner" / "DatasetRwEditor" / "DatasetRwReader"}` |
@@ -87,7 +93,7 @@ import time
 
 snap = requests.post(f"{base}/api/datasetrw/v1/datasets/{dataset_id}/snapshots",
                      headers=headers, json={"relativeFilePaths": ["/*"]}).json()["snapshot"]
-while snap["status"] == "pending":
+while snap["status"] in ("pending", "copying"):
     time.sleep(5)
     snap = requests.get(f"{base}/api/datasetrw/v1/snapshots/{snap['id']}", headers=headers).json()["snapshot"]
 assert snap["status"] == "active", snap
@@ -98,9 +104,17 @@ requests.post(f"{base}/api/datasetrw/v1/datasets/{dataset_id}/tags", headers=hea
 Find a Dataset by name across Projects:
 
 ```python
-r = requests.get(f"{base}/api/datasetrw/v2/datasets", headers=headers,
-                 params={"limit": 200, "includeProjectInfo": "true"})
-match = next(d["dataset"] for d in r.json()["datasets"] if d["dataset"]["name"] == "training-data")
+def find_dataset(name, page=200):
+    offset = 0
+    while True:
+        r = requests.get(f"{base}/api/datasetrw/v2/datasets", headers=headers,
+                         params={"limit": page, "offset": offset, "includeProjectInfo": "true"})
+        r.raise_for_status()
+        rows = r.json()["datasets"]
+        match = next((d["dataset"] for d in rows if d["dataset"]["name"] == name), None)
+        if match or len(rows) < page:
+            return match          # None when nothing matches
+        offset += page
 ```
 
 Share with a user and mount in another Project:
@@ -112,15 +126,19 @@ requests.post(f"{base}/api/projects/v1/projects/{other_project_id}/shared-datase
               json={"datasetId": dataset_id}).raise_for_status()
 ```
 
-Snapshot limit hit: `POST .../snapshots` or an execution that writes a snapshot fails; list
-snapshots, `DELETE` is not available per snapshot in the Public API, so mark old ones for
-deletion in the UI and have an admin remove them, or raise the limit.
+Snapshot limit hit: an execution that writes a snapshot fails with an error (documented); what
+`POST .../snapshots` returns at the limit is not documented, so treat any non-2xx there as the
+limit until proven otherwise. There is no per-snapshot `DELETE` in the Public API: mark old
+snapshots for deletion in the UI and have an admin remove them, or raise the limit.
 
 ## python-domino
 
-The SDK wraps a subset: `datasets_list(project_id=None)`, `datasets_ids(project_id)`,
-`datasets_names(project_id)`, `datasets_create(dataset_name, dataset_description)`,
-`datasets_details(dataset_id)`, `datasets_update_details(dataset_id, dataset_name=None,
-dataset_description=None)`, `datasets_remove(dataset_ids)`, and `datasets_upload_files(...)`.
-It has no snapshot, tag, grant or shared-dataset methods; use the routes above. See the
-domino-python-sdk skill.
+The SDK wraps a subset through the legacy `/dataset` routes, which are not in the Public API:
+`datasets_list(project_id=None)`, `datasets_ids(project_id)`, `datasets_names(project_id)`,
+`datasets_create(dataset_name, dataset_description)` (always in the client's configured
+Project), `datasets_details(dataset_id)`, `datasets_update_details(dataset_id,
+dataset_name=None, dataset_description=None)`, `datasets_remove(dataset_ids)` and
+`datasets_upload_files(dataset_id, local_path_to_file_or_directory, file_upload_setting=None,
+max_workers=None, target_chunk_size=None, target_relative_path=None)`. It has no snapshot, tag,
+grant or shared-dataset methods; use the routes above for those. The domino-python-sdk skill
+covers the rest of the SDK.

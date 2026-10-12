@@ -6,8 +6,10 @@ at `/domino/edv/<name>` without FUSE privileges in the container.
 
 - Blueprint: https://domino.ai/resources/blueprints/transforming-s3-into-local-storage, code in
   https://github.com/dominodatalab/domino-blueprints/tree/main/mountpoint-s3
-- Driver: https://github.com/awslabs/mountpoint-s3-csi-driver (v2.8.0 released 2026-09-02;
-  pin a reviewed version)
+- Driver: https://github.com/awslabs/mountpoint-s3-csi-driver. The blueprint pins no version
+  and its manifests (`uid`, `gid`, `allow-other`) are from the v1 driver; this skill shows the
+  last v1 release, 1.15.0 (2025-06-25). The v2 line (2.8.0 on 2026-09-02) changes the
+  architecture and is not validated on Domino; see "Driver v2" below before choosing it.
 - EDV registration (product docs): https://docs.domino.ai/cloud/admin/data-administration/external-data/external-data-volumes
 - Mountpoint semantics and limits: https://docs.aws.amazon.com/AmazonS3/latest/userguide/mountpoint.html
 
@@ -74,10 +76,17 @@ helm repo add aws-mountpoint-s3-csi-driver https://awslabs.github.io/mountpoint-
 helm repo update
 helm upgrade --install aws-mountpoint-s3-csi-driver \
   aws-mountpoint-s3-csi-driver/aws-mountpoint-s3-csi-driver \
-  --version 2.8.0 \
+  --version 1.15.0 \
   --namespace domino-platform \
   --set node.serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::ACCOUNT_ID:role/MountpointS3Role
 ```
+
+**Driver v2.** Upstream's `docs/UPGRADING_TO_V2.md` describes the changes: Mountpoint runs in
+separate pods in the `mount-s3` namespace (logs via `kubectl logs -n mount-s3 ...`), scheduled
+after the workload with a preempting priority class, which upstream warns conflicts with node
+autoscalers such as Karpenter and Cluster Autoscaler; the driver sets `fsGroup`, permissions and
+`mountOptions` itself, so the `uid`/`gid`/`allow-other` flags below may be redundant. Test v2 on
+a non-production Domino cluster before adopting it.
 
 ### 3. PersistentVolume and labelled PersistentVolumeClaim
 
@@ -165,8 +174,10 @@ on close. Keep the bucket in the cluster's region.
 
 ```bash
 kubectl get pods -n domino-platform -l app=s3-csi-node          # one per node, Running
-kubectl logs -n domino-platform -l app=s3-csi-node --tail=200
+kubectl logs -n domino-platform -l app=s3-csi-node --tail=200   # v1: Mountpoint logs are here
 kubectl logs -n domino-platform -l app=s3-csi-controller --tail=200
+kubectl get pods -n mount-s3                                     # v2 only: one Mountpoint pod per volume
+kubectl logs -n mount-s3 -l s3.csi.aws.com/volume-name=mountpoints3-pv --tail=200   # v2 only
 kubectl get pv mountpoints3-pv; kubectl get pvc -n domino-compute mountpoints3-pvc   # both Bound
 ```
 

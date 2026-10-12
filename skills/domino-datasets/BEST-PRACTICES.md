@@ -65,8 +65,9 @@ with open(f"{root}/my-dataset/metadata/schema.json", "w") as f:
 ## Snapshot before you change data
 
 Take a snapshot before a transformation so the previous state stays readable at
-`snapshots/<name>/<n>` and can be tagged or copied into a new Dataset. From a Workspace
-terminal or CI, call the API through the proxy ([API.md](./API.md)):
+`snapshots/<name>/<n>` and can be tagged or copied into a new Dataset. From a Workspace or Job,
+call the API through the proxy (outside a run use a Personal Access Token instead; see
+[API.md](./API.md)):
 
 ```bash
 curl -sS -X POST "$DOMINO_API_PROXY/api/datasetrw/v1/datasets/$DATASET_ID/snapshots" \
@@ -120,13 +121,16 @@ Domino 6.3 enforces `com.cerebro.domino.dataset.quota.maxActiveSnapshotsPerDatas
 20) and `com.cerebro.domino.dataset.quota.maxDatasetsPerProject` while
 `com.cerebro.domino.dataset.quota.enabled` is `true` (configuration records,
 https://docs.domino.ai/6.3/admin/configuration/central-configuration#read-write-datasets). On
-Domino Cloud, Domino Support sets the limits. Behaviour at the limit, from
-https://docs.domino.ai/cloud/admin/data-administration/datasets#set-limits-on-dataset-usage:
+Domino Cloud, Domino Support sets the limits. Behaviour at the limit:
 
 - An execution whose Dataset configuration would write a new snapshot gets an error; before
-  more snapshots can be written you must delete old ones or raise the limit.
+  more snapshots can be written you must delete old ones or raise the limit
+  (https://docs.domino.ai/cloud/admin/data-administration/datasets#set-limits-on-dataset-usage).
 - A manual **Take Snapshot** in the UI warns that the limit is reached and, if you proceed,
-  marks the oldest snapshot for deletion. Nothing is deleted on its own.
+  marks the oldest snapshot for deletion (the 6.3 configuration reference for
+  `maxActiveSnapshotsPerDataset`). A marked snapshot stops mounting; nothing is permanently
+  deleted until an admin acts.
+- What `POST .../snapshots` returns at the limit is not documented; expect an error.
 - A Project can be exempted: **Settings > Hardware & Environment > Ignore Dataset Limits**.
 
 Deleting: an Owner marks a Dataset or snapshot for deletion, which excludes it from new

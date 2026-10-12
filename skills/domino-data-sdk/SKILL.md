@@ -1,7 +1,7 @@
 ---
 name: domino-data-sdk
 description: Use the domino-data Python library (PyPI dominodatalab-data, import domino_data) for programmatic data access inside Domino executions. Covers DataSourceClient for SQL queries and object-store reads and writes against Domino Data Sources, DatasetClient for reading Domino Dataset files and snapshots, TrainingSets for versioned training DataFrames, and the Pinecone helpers in domino_data.vectordb. Use when querying a Data Source from Python, downloading Dataset files by API, creating or loading TrainingSet versions, or connecting a Pinecone client through a Domino Data Source.
-compatibility: Domino 6.3 and Domino Cloud. Requires dominodatalab-data 6.7.4 or later (Python 3.10+). Inside a run the clients authenticate through DOMINO_API_PROXY automatically; outside a run pass token= a Personal Access Token.
+compatibility: Domino 6.3 and Domino Cloud. Requires dominodatalab-data 6.7.4 or later (Python 3.10+). Designed for Domino executions, where the clients authenticate through DOMINO_API_PROXY and reach the Data Source proxy automatically; outside a run the proxy hosts are not normally reachable.
 ---
 
 # Domino Data SDK (domino-data)
@@ -20,10 +20,12 @@ Pre-installed in Domino Standard Environments. In a custom environment Dockerfil
 
 ```dockerfile
 USER root
-RUN python -m pip install "dominodatalab[data]"
-# or pin the Data API alone: RUN python -m pip install dominodatalab-data==6.7.4
+RUN python -m pip install "dominodatalab[data]" "dominodatalab-data>=6.7.4"
 USER ubuntu
 ```
+
+The `[data]` extra alone only requires `dominodatalab-data>=0.1.0`, so name the floor
+explicitly or an older preinstalled copy stays.
 
 Two import styles work: `from domino_data.data_sources import DataSourceClient` (the package)
 or `from domino.data_sources import DataSourceClient` (python-domino re-exports it when the
@@ -40,7 +42,8 @@ The docs use the second form; this skill uses the first.
 | `domino_data.vectordb` | Parameters that route the `pinecone` client through a Domino Data Source | [VECTORDB.md](./VECTORDB.md) |
 
 The package also ships `domino_data.netapp_volumes`; the netapp-volumes skill covers that
-storage type. Feature Store was removed from Domino in 6.0 and is not part of this library.
+storage type. Feature Store is deprecated in Domino and was removed from this library in
+February 2026 (`clean up feature store`, before 6.7.4); it is not covered.
 
 ## Quick start
 
@@ -86,13 +89,13 @@ The UI generates copy-ready snippets for any Data Source or Dataset: **Data > Da
 
 ## Authentication
 
-Inside a Workspace, Job, scheduled Job, Launcher or App the clients authenticate on their own.
-`DataSourceClient()` and `DatasetClient()` try, in order: `token=` if you pass one;
-`DOMINO_API_PROXY` (a short-lived JWT fetched from `$DOMINO_API_PROXY/access-token` per
-request); `DOMINO_TOKEN_FILE` if that file exists; `DOMINO_USER_API_KEY` (legacy API key,
-deprecated, never rely on it). Hosts come from `DOMINO_API_PROXY`, else `DOMINO_API_HOST`, plus
-`DOMINO_DATASOURCE_PROXY_HOST` and `DOMINO_DATASOURCE_PROXY_FLIGHT_HOST` for the Data Source
-proxy; Domino injects all of them.
+Inside a Workspace, Job, scheduled Job, Launcher or App the clients authenticate on their own
+from `token=` (if you pass one), `DOMINO_API_PROXY` (a short-lived JWT fetched from
+`$DOMINO_API_PROXY/access-token`), `DOMINO_TOKEN_FILE` (if that file exists) and
+`DOMINO_USER_API_KEY` (legacy API key, deprecated, never rely on it). The precedence differs
+per call path; [DATA-SOURCES.md](./DATA-SOURCES.md) lists it. Hosts come from
+`DOMINO_API_PROXY`, else `DOMINO_API_HOST`, plus `DOMINO_DATASOURCE_PROXY_HOST` and
+`DOMINO_DATASOURCE_PROXY_FLIGHT_HOST` for the Data Source proxy; Domino injects all of them.
 
 - **Domino endpoints (model APIs)** get no automatic token. Store a service-account token as
   an environment variable on the endpoint and pass it: `DataSourceClient(token=os.environ["DOMINO_SA_TOKEN"])`.
@@ -107,29 +110,27 @@ Docs: https://docs.domino.ai/cloud/reference/api/data_api/authentication.
 
 ## Errors
 
-`domino_data.data_sources` and `domino_data.datasets` raise `DominoError` (base) and
-`UnauthenticatedError`; listing, URL-signing and query calls retry authentication failures
-with exponential backoff for up to 60 seconds before raising. TrainingSets raise
-`ServerException` (message plus the server's `errors` list) and `SchemaMismatchException`
-(the DataFrame lacks a declared column). Query failures surface as `DominoError` carrying the
-proxy's message.
+What 6.7.4 actually raises (examples in the reference files):
 
-```python
-from domino_data.data_sources import DominoError, UnauthenticatedError
+- Client construction with no credential source, and `get_datasource` on a non-200: a bare
+  `Exception` with the message.
+- `query()`: `domino_data.data_sources.DominoError` for any Flight or Arrow failure, SQL and
+  authentication errors included (401s are retried for up to 60 seconds first).
+- `list_objects`, `get_key_url`, Dataset `list_files`/`get_file_url`:
+  `domino_data.data_sources.UnauthenticatedError` after 60 seconds of 401s; bare `Exception`
+  otherwise.
+- Object and file transfers (`get`, `download*`, `put`, `upload*`): `httpx.HTTPStatusError`.
+- TrainingSets: `ServerException`, `SchemaMismatchException`, `ValueError` for a bad name.
 
-try:
-    df = ds.query("SELECT 1").to_pandas()
-except UnauthenticatedError:
-    raise SystemExit("no Domino token: run inside an execution or pass token=")
-except DominoError as e:
-    print(f"query failed: {e}")
-```
+`domino_data.datasets` defines its own `DominoError` and `UnauthenticatedError` but nothing
+raises them; catch the `data_sources` ones and `httpx.HTTPStatusError`.
 
 ## Practices
 
 1. Reuse one client per process; every `get_datasource` call is an API round trip.
 2. Use `page_size` on listings and `max_workers` on `download` for large objects (default 10).
-3. `to_parquet` streams the Arrow result to disk; `to_pandas` loads it all into memory.
+3. `to_parquet` and `to_pandas` both materialise the whole result in memory (`to_parquet`
+   keeps Arrow types); push filters and `LIMIT` into SQL for large results.
 4. Override connection settings per session with the `*Config` classes and `reset_config()`
    instead of creating duplicate Data Sources.
 5. Data Sources do not query nested objects; `UNNEST` in SQL first.
