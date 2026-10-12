@@ -5,13 +5,13 @@ description: "Domino Data Lab: API proxy auth, where to write code, artifacts an
 ---
 
 Domino Data Lab. When DOMINO_API_PROXY is set (Workspace, Job, App, endpoint), call $DOMINO_API_PROXY/<path> with no Authorization header; the proxy adds the user's token ($DOMINO_API_PROXY/access-token returns it). Outside Domino send a Personal Access Token as Authorization: Bearer <token>. API keys (X-Domino-Api-Key, DOMINO_USER_API_KEY) are deprecated. Never print or hard-code tokens.
-/mnt is the execution volume: small (10 GiB default), kept across a Workspace stop. Bulk and scratch go in a Dataset or Volume; all else is lost.
+DOMINO_WORKING_DIR (and /mnt/artifacts if Git-based) is small and kept across a stop. Bulk and scratch go in a Dataset or Volume; all else is lost.
 Check the docs: domino_docs MCP (search_domino, version Cloud or 6.3; query_docs_filesystem_domino) or https://docs.domino.ai/llms.txt (page URL + .md gives Markdown).
 If a docs page is wrong or incomplete, propose feedback and ask; only after a yes call domino_docs submit_feedback (path, feedback) with no credentials, hostnames, names, paths, data or code.
 
 ## Paths
 
-DOMINO_IS_GIT_BASED selects the row; DOMINO_WORKING_DIR, DOMINO_ARTIFACTS_DIR, DOMINO_DATASETS_DIR, DOMINO_IMPORTED_CODE_DIR and DOMINO_IMPORTED_DATA_DIR hold the actual mounts.
+DOMINO_IS_GIT_BASED selects the column; DOMINO_WORKING_DIR, DOMINO_ARTIFACTS_DIR (unset in DFS), DOMINO_DATASETS_DIR, DOMINO_IMPORTED_CODE_DIR and DOMINO_IMPORTED_DATA_DIR hold the actual mounts when set.
 
 | | Git-based (true) | DFS (false) |
 |-|-|-|
@@ -22,9 +22,9 @@ DOMINO_IS_GIT_BASED selects the row; DOMINO_WORKING_DIR, DOMINO_ARTIFACTS_DIR, D
 | Imported Git repos | /mnt/imported/code/<repo> | /repos/<repo> |
 | NetApp Volumes | /mnt/netapp-volumes/<name> | /domino/netapp-volumes/<name> |
 
-- Bulk data, checkpoints and scratch go in a Dataset or Volume (no Domino size cap), not in code or artifacts; the execution volume defaults to 10 GiB.
+- Bulk data, checkpoints and scratch go in a Dataset or Volume (no Domino size cap), not in code or artifacts; the execution volume is admin-set, often 10 GiB (df -h $DOMINO_WORKING_DIR).
 - Snapshots mount read-only under .../snapshots/<name>/; write to the live path.
-- A Workspace stop keeps /mnt only; home directory and installed packages are lost unless Package or Home Directory Persistence is on. Apps and endpoints never sync files back: write to a Dataset.
+- A Workspace stop keeps only the Code and Artifacts paths above; home directory and installed packages are lost unless Package or Home Directory Persistence is on. Apps and endpoints never sync files back: write to a Dataset.
 
 ## Environment variables
 
