@@ -39,6 +39,8 @@ Versions: `GET .../modelApis/{modelApiId}/versions` lists `ModelApiVersion` obje
 
 ## Create from project files
 
+The version is built from the Project's latest commit (or the `version.commitId` you pass), never from a Workspace's disk. In a DFS Project sync the Workspace first (**File Changes** > **Sync to Domino**) and confirm with `GET /api/projects/beta/projects/{projectId}/commits/latest`; in a Git-based Project commit and push the code and sync the artifacts. Include the model artifacts the function loads. Otherwise the build succeeds and the container crash-loops at start with `FileNotFoundError` (see `domino-model-endpoints`, "Sync or commit first").
+
 ```python
 body = {
     "name": "churn-scorer",
@@ -99,6 +101,16 @@ def wait_version_running(model_api_id, version_id, timeout_s=1800):
 
 `Running` is the documented ready state. The spec types `deployment.status` as a free string and does not enumerate the other values, so the helper prints them and keeps polling until the deadline; a status that stops changing is the cue to read the build and instance logs (below).
 
+`Running` is not a health check: a crash-looping container reports `Running` between restarts and the status later flips to `Starting` with `isPending: true`. After the helper returns, read the instance logs and reject the version if they contain `Traceback`, `FileNotFoundError`, `ModuleNotFoundError` or `no app loaded`; then make one test prediction (200 with your result shape; 503 means no healthy instance).
+
+```python
+logs = requests.get(f"{base}/api/modelServing/v1/modelApis/{model_api_id}/versions/{version_id}/instanceLogs",
+                    headers=headers, params={"tail": True, "maxResults": 200}).json().get("logs", [])
+text = "\n".join(str(line) for line in logs)
+if any(marker in text for marker in ("Traceback", "FileNotFoundError", "ModuleNotFoundError", "no app loaded")):
+    raise RuntimeError(f"version {version_id} is crash-looping; see instance logs")
+```
+
 ## Prediction URL
 
 ```python
@@ -107,7 +119,7 @@ sync_url = f"{deployment_url}/models/{model_api_id}/latest/model"
 async_url = f"{deployment_url}/api/modelApis/async/v1/{model_api_id}"
 ```
 
-Sync calls use `auth=(token, token)`; async calls use `Authorization: Bearer <token>`; the token is an endpoint access token (**Settings** > **Invocation**), not your API token. Request formats are in `domino-model-endpoints`.
+Sync calls use `auth=(token, token)`; async calls use `Authorization: Bearer <token>`; the token is an endpoint access token, not your API token. Neither value can be fetched by an agent: the deployment URL is external only (`DOMINO_API_HOST` and `DOMINO_API_PROXY` return 404 for `/models/...`, and no run variable holds it), and the access token is created and shown only in the UI (**Settings** > **Invocation**; the API returns token ids, never values, and a user bearer token or PAT gets 401 even on a Public endpoint). Ask the user for both, or have them use the **Tester** tab or set the endpoint to **Unrestricted**. Request formats are in `domino-model-endpoints`.
 
 ## New version
 

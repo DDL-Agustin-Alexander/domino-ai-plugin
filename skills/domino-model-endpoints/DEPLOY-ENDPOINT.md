@@ -12,7 +12,7 @@ Contract:
 
 - The file is a `.py` (or `.R`) file in the project; the function can have any name (set in the publish form).
 - Arguments map from the request JSON (see "Request JSON"). Return a literal, list or dict that is JSON-serializable. NumPy scalars and arrays are not; convert with `.item()` / `.tolist()`, and cast `Decimal` to `float`.
-- Anything the function needs (model files, lookup tables) must be in the project files or in the environment image.
+- Anything the function needs (model files, lookup tables) must be in the **committed** project files or in the environment image. The build takes the Project's latest commit (the version records it as `commitId`), never the Workspace disk; see "Sync or commit first" below.
 
 ### Scikit-learn
 
@@ -64,6 +64,15 @@ def predict(features):
 
 `print` output goes to the version's instance logs.
 
+## Sync or commit first
+
+The endpoint image is built from the Project's files at a commit, not from the Workspace file system. A file that exists only on the Workspace disk is absent from the image: the build succeeds, the version reaches `Running`, and the container then crash-loops with `FileNotFoundError: [Errno 2] No such file or directory: '/mnt/<username>/<project>/model.py'` followed by `*** no app loaded. GAME OVER ***` every 30 seconds or so, while the status alternates between `Running` and `Starting` and predictions return 503. Before publishing:
+
+- **DFS Project**: in the Workspace, **File Changes** > **Sync to Domino** (every file the function loads: the `.py`, model artifacts such as `.pkl` or `.joblib`, lookup files). From code, `python-domino` `files_upload(path, fileobj)` uploads one file (it uses the legacy `PUT /v1/projects/{owner}/{project}/{path}` route, Domino Internal API, may change between Domino versions; it takes a binary file object), and the bundled MCP server's `upload_file_to_domino_project` uploads text files. Then confirm the commit moved: `GET /api/projects/beta/projects/{projectId}/commits/latest`.
+- **Git-based Project**: commit and push the code; sync artifacts under `/mnt/artifacts` with **File Changes** > **Artifacts** > **Sync to Domino**. The version records the artifacts commit as `commitId` and pulls the repository at build time.
+
+Publish only after that. If a version is already crash-looping, sync the missing files and publish a new version; the running one never sees later file changes.
+
 ## Publish from the UI
 
 1. **Deployments** > **Endpoints** > **Create Domino Endpoint**.
@@ -99,7 +108,24 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   }'
 ```
 
-When `DOMINO_API_PROXY` is set, send the same request to `$DOMINO_API_PROXY/api/...` with no `Authorization` header. `source.type` is `File` (`file` + `function`) or `Registry` (`registeredModelName` + `registeredModelVersion`). The response is the `ModelApi` object; its `id` is the model ID used in prediction URLs. Poll `GET /api/modelServing/v1/modelApis/{id}` until `activeVersion.deployment.status` is `Running` (the `deployment` key is absent until a deployment exists). The full REST lifecycle (new versions, archive, logs, list filters) is in `domino-model-serving`. `python-domino` offers `model_publish(file, function, environment_id, name, description)` and `model_version_publish(model_id, file, function, environment_id, description)` on a client built with `Domino("owner/project")`; see `domino-python-sdk`.
+When `DOMINO_API_PROXY` is set, send the same request to `$DOMINO_API_PROXY/api/...` with no `Authorization` header. `source.type` is `File` (`file` + `function`) or `Registry` (`registeredModelName` + `registeredModelVersion`). The response is the `ModelApi` object; its `id` is the model ID used in prediction URLs. Poll `GET /api/modelServing/v1/modelApis/{id}` until `activeVersion.deployment.status` is `Running` and `isPending` is false (the `deployment` key is absent until a deployment exists), then run the health check below; `Running` alone is not proof that the endpoint works. The full REST lifecycle (new versions, stop and delete, logs, list filters) is in `domino-model-serving`. `python-domino` offers `model_publish(file, function, environment_id, name, description)` and `model_version_publish(model_id, file, function, environment_id, description)` on a client built with `Domino("owner/project")`; see `domino-python-sdk`.
+
+## Health check after publishing
+
+`Running` means a container started; a crash-looping container reports `Running` between restarts. Treat a version as healthy only when all of these hold:
+
+1. **Instance logs are clean.** `GET /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/instanceLogs?tail=true&maxResults=200` (or the version's **Logs** column) contains no `Traceback`, `FileNotFoundError`, `ModuleNotFoundError` or `no app loaded`. The version id is `activeVersion.id` on the Model API.
+2. **The status holds.** Re-read the status a minute later: `Running` with `isPending: false` both times. Alternating `Running` / `Starting` or `isPending: true` after a `Running` reading is a restart loop.
+3. **One real prediction succeeds.** The **Tester** tab needs no token; a client call needs the URL and token from the user (next section). HTTP 200 with your result shape is the pass; 503 means no healthy instance behind the route, 401 means the wrong credential or auth mode, 400 means the request shape does not match the function signature.
+
+```bash
+TOKEN=$(curl -s http://localhost:8899/access-token)
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$DOMINO_API_HOST/api/modelServing/v1/modelApis/$MODEL_ID/versions/$VERSION_ID/instanceLogs?tail=true&maxResults=200" \
+  | grep -E -m5 'Traceback|FileNotFoundError|ModuleNotFoundError|no app loaded' || echo "instance logs clean"
+```
+
+A missing file means the Project commit predates it: sync or commit, then publish a new version. A missing module means the package is not in the environment Dockerfile (endpoint hosts ignore `requirements.txt`).
 
 ## Request JSON
 
@@ -113,15 +139,22 @@ JSON to Python: object to dict, array to list, string to str, integer to int, re
 
 ## Call a synchronous endpoint
 
+Two inputs only the user can supply; do not try to derive them:
+
+- **The prediction URL.** It is the deployment's external URL plus `/models/{modelId}/latest/model`, shown on the endpoint's **Overview** tab under "Calling your endpoint". Inside a run, `DOMINO_API_HOST` and `DOMINO_API_PROXY` do not route `/models/...` (they return 404), and no injected variable holds the external URL, so the agent must be given it.
+- **The endpoint access token.** It is created and displayed only in the UI (**Settings** > **Invocation** > **Add Model Access Token**). No public or internal route creates or returns a token value: the API exposes token ids and timestamps only (`access.accessTokens[]`), and your own Domino bearer token or Personal Access Token is rejected with 401 even on a Public endpoint, because visibility (who can see it) and prediction authorization (who can call it) are separate settings.
+
+Ask the user for both before promising a prediction, and suggest they store them as project or user environment variables (`DOMINO_URL`, `MODEL_ID`, `MODEL_ACCESS_TOKEN`) so later runs can read them. Alternatives: the user runs the call from the **Tester** tab, or sets the endpoint to **Unrestricted** under **Settings** > **Invocation**, after which only the URL is needed.
+
 Restricted endpoints: HTTP Basic with the endpoint access token as **both** username and password (not a Bearer header). Unrestricted endpoints: no credentials.
 
 ```python
 import os
 import requests
 
-DOMINO_URL = os.environ["DOMINO_URL"]        # not injected by Domino: set it yourself from "Calling your endpoint" on the Overview tab
-MODEL_ID = os.environ["MODEL_ID"]
-TOKEN = os.environ["MODEL_ACCESS_TOKEN"]      # Settings > Invocation; keep it out of source and browser bundles
+DOMINO_URL = os.environ["DOMINO_URL"]        # external deployment URL, supplied by the user (Overview tab); not injected by Domino
+MODEL_ID = os.environ["MODEL_ID"]            # from the Overview tab or the create response
+TOKEN = os.environ["MODEL_ACCESS_TOKEN"]      # supplied by the user from Settings > Invocation; keep it out of source and browser bundles
 
 resp = requests.post(
     f"{DOMINO_URL}/models/{MODEL_ID}/latest/model",

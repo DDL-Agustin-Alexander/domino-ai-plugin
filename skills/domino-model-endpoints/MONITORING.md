@@ -58,7 +58,7 @@ With `DOMINO_API_PROXY` set, call `$DOMINO_API_PROXY/api/...` without the header
 
 ## Debugging workflow
 
-1. Confirm the version is **Running** (Versions tab; start it from the Actions menu if stopped).
+1. Confirm the version is **Running** and stays there (Versions tab; start it from the Actions menu if stopped). A status that alternates between `Running` and `Starting`, or a 503 from the prediction URL, means the container crash-loops: read the instance logs for `Traceback` and `no app loaded`. The usual cause is a file the function loads that was not in the Project commit; sync or commit it and publish a new version ("Health check after publishing" in [DEPLOY-ENDPOINT.md](./DEPLOY-ENDPOINT.md)).
 2. Reproduce with the **Tester** tab; a 400 usually means the request shape does not match the function signature (see "Request JSON" in [DEPLOY-ENDPOINT.md](./DEPLOY-ENDPOINT.md)).
 3. Read the instance logs around the failure time for the traceback.
 4. Compare CPU and memory with the previous version; a regression after a release points at the new code or a larger model.
