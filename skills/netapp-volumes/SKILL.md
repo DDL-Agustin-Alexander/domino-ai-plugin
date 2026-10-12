@@ -95,8 +95,10 @@ https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/datasets/v
 
 REST: `POST /remotefs/v1/snapshots` (`volumeId`, `description` as the commit message,
 `tagNames`), `POST /remotefs/v1/snapshots/{id}/tags`, `PUT /remotefs/v1/snapshots/{id}`,
-`POST /remotefs/v1/rpc/create-snapshot-from-run`, `/rpc/restore-snapshot`, `/rpc/delete-snapshot`
-([API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#snapshots)).
+`/rpc/restore-snapshot`, `/rpc/delete-snapshot`
+([API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#snapshots)). `/rpc/create-snapshot-from-run`
+is reserved for super users; to snapshot at the end of a job use
+`snapshotNetAppVolumesOnCompletion` instead.
 
 ## Roles
 

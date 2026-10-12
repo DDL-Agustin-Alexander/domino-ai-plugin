@@ -25,8 +25,6 @@ filesystems and slow reads. Mount path rules: [DATA-ACCESS.md](./DATA-ACCESS.md)
 - Only the most recently added tag on a snapshot is mounted; earlier tags on the same
   snapshot have no path. Move the tag or use the numbered path
   `snapshots/<name>/<version>`.
-- Mounts are chosen when the execution launches; if a tag was added later, start a new
-  execution (or restart the Workspace) and check again.
 - A pinned Dataset gets no tag mount; a pinned NetApp Volume keeps its tag mounts.
 
 ## No NetApp filesystems available
@@ -47,8 +45,8 @@ for your data plane; ask your Domino administrator
 - Inside a run, volume, filesystem and snapshot operations work only on
   `DOMINO_REMOTE_FILE_SYSTEM_HOSTPORT` with the `localhost:8899` access token as a
   bearer: `$DOMINO_API_PROXY` and the in-run `$DOMINO_API_HOST` return 404 for
-  `/remotefs/v1/*`, and the hostport without the header returns 401 (verified on Domino
-  Cloud 6.4.0). Outside Domino use the deployment URL with a PAT or service account
+  `/remotefs/v1/*`, and the hostport without the header returns 401 (verified on an
+  internal Domino test cluster, 6.4.0). Outside Domino use the deployment URL with a PAT or service account
   token. File operations need the `/webvfs` prefix outside Domino or the
   `data-webvfs-service.domino-compute:80` host inside a run
   ([API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#files)).

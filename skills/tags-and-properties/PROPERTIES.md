@@ -111,9 +111,10 @@ curl -s -X DELETE -H "$H" "$BASE/properties/<id>"
 # 204
 ```
 
-Deletion is a soft delete: the property's `status` enum is `active` or `deleted`, and
-deleted properties stop appearing in lists and value views. Whether stored values are
-retained is not stated in the spec; treat deletion as final.
+Deletion is a soft delete. Per the spec: "Existing property values are retained but no
+longer surfaced." The property's `status` becomes `deleted` (`GET /properties/{id}` still
+returns it), it leaves lists and value views, and there is no undelete route, so treat
+deletion as final in practice.
 
 ## Property groups
 

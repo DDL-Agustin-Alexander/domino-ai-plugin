@@ -6,22 +6,20 @@ mode per [SKILL.md](./SKILL.md#authentication) before retrying.
 
 ## Error bodies
 
-The Public API spec declares two error shapes:
+The specs declare several error shapes and live deployments do not always use the
+declared one, so read whichever of `errors`, `error` and `message` is present:
 
-```json
-{"errors": ["human-readable message", "..."], "requestId": "..."}
-```
+| Shape | Where the spec declares it | Seen live |
+|-------|----------------------------|-----------|
+| `{"errors": ["..."], "requestId": "..."}` | A few Nucleus responses (schema `Error`) | Nucleus 400 and 500 bodies on a 6.4.0 deployment used this shape |
+| `{"error": "..."}` | Most Nucleus `/api/...` 400/404/500 responses | |
+| `{"code": "...", "message": "..."}` (`ErrorV1`) | Nucleus 401/403 | |
+| `{"message": "..."}` | Taxonomy (`/api/taxonomy/v1`) and NetApp (`/remotefs/v1`) 400/401/403/404/409 | Taxonomy 400s |
+| `{"errors": [{"line": N, "message": "..."}]}` | Taxonomy `422` on `validate-file` / `import-from-file` | |
+| `{"message": "...", "success": false}` | Dataset and volume file services | |
 
-for Nucleus `/api/...` routes (schema `Error`), and
-
-```json
-{"message": "human-readable message"}
-```
-
-for the taxonomy (`/api/taxonomy/v1`) and NetApp (`/remotefs/v1`) services. Some V1
-schemas return `{"code": "...", "message": "..."}` (`ErrorV1`). Read the message before
-retrying. An HTML or empty body on a 5xx is an infrastructure failure, not a validation
-problem.
+Read the message before retrying. An HTML or empty body on a 4xx/5xx usually means the
+request never reached the service (wrong base URL or path), not a validation problem.
 
 ## HTTP status: retry or not
 

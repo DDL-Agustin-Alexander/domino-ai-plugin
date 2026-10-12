@@ -64,10 +64,12 @@ https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environ
 
 ## Routes
 
-Prefer Public API routes (`/api/...`, plus `/remotefs/v1`, `/datasetrw`, `/model-monitor`)
-from the published specs. `/v4/*` routes are the Domino Internal API: use them only when
-no Public API equivalent exists, and label them "internal API, may change between Domino
-versions" where they appear. Discovery: [API-SPECS.md](./API-SPECS.md).
+Prefer Public API routes (`/api/...`, plus `/remotefs/v1` and `/model-monitor`) from the
+published specs. `/v4/*` routes are the Domino Internal API: use them only when no Public
+API equivalent exists, and label them "internal API, may change between Domino versions"
+where they appear. The spec's `/datasetrw/...` snapshot-file routes did not answer on a
+6.4.0 deployment (only `/v4/datasetrw/...` did; [HOSTS.md](./HOSTS.md)), so read dataset
+files from the mount path or python-domino. Discovery: [API-SPECS.md](./API-SPECS.md).
 
 ## Reference files (this skill)
 

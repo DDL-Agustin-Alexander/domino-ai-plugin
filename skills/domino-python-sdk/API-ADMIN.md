@@ -32,17 +32,31 @@ print(me["userName"], me["id"])
 ### Roles
 
 ```
-GET  /api/users/v1/user/{userId}/roles
-POST /api/users/v1/user/{userId}/roles      body: {"roles": ["..."]}
+GET  /api/users/v1/user/{userId}/roles                    -> {"roles": [...], "metadata"}
+POST /api/users/v1/user/{userId}/roles      body: {"roles": ["..."]}   REPLACES the user's roles
 ```
 
-Admin only. There is no `PUT`.
+Needs the `SetUserSystemRoles` permission. There is no `PUT`, and `POST` is not additive:
+the spec says it sets "the complete list of roles for a user, replacing any previously
+assigned roles" and "any roles not listed will be revoked". To add a role, send the
+existing list plus the new one:
+
+```python
+roles = requests.get(f"{base_url}/api/users/v1/user/{user_id}/roles", headers=headers).json()["roles"]
+if "Librarian" not in roles:
+    requests.post(f"{base_url}/api/users/v1/user/{user_id}/roles", headers=headers,
+                  json={"roles": roles + ["Librarian"]})
+```
+
+Posting `{"roles": ["Librarian"]}` alone would strip every other role, including admin
+roles. Role names are deployment-defined; read them from the user's current list or the
+admin UI.
 
 ### Git credentials
 
 ```
 GET /api/users/beta/credentials/{userId}
-PUT /api/users/v1/user/{userId}/tokenCredentials/{credentialId}
+PUT /api/users/v1/user/{userId}/tokenCredentials/{credentialId}      GitHub and GitHub Enterprise PATs only (spec note)
 ```
 
 ### Deactivation
@@ -139,7 +153,8 @@ maps), `config` (map) and `permissions` (`isEveryone`, `userAndOrganizationIds`)
 types `config`, `visibleCredentials` and `secretCredentials` as free-form string maps
 ("a map of configuration name -> value"), so the keys depend on `dataSourceType`: copy them
 from an existing data source of the same type (`GET` one) or create the first one in the
-UI. Audit `eventKinds`: `AccessDataSource`, `CreateDataSource`,
+UI. `PATCH` by a non-admin updates only that user's individual credentials; an admin's
+`PATCH` updates the shared credentials (spec). `DELETE` needs ownership. Audit `eventKinds`: `AccessDataSource`, `CreateDataSource`,
 `DataSourceAssociatedToProject`, `DataSourceDissociatedFromProject`,
 `DataSourceChangeOfOwnership`, `DataSourceChangeOfPermissions`, `DeleteDataSource`
 (https://docs.domino.ai/cloud/admin/operations/audit-logs/monitor-data-source-logs).

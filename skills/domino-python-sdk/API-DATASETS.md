@@ -26,8 +26,8 @@ GET /api/datasetrw/v2/datasets
 | `offset`, `limit` | Pagination (`limit` defaults to 10) |
 
 Response: `{"datasets": [{"dataset": {...}, "projectInfo": {...}}], "metadata": {"offset", "limit", "totalCount", ...}}`.
-Note the nested `dataset` key. `GET /api/datasetrw/v1/datasets?projectId=...&offset=&limit=`
-is the simpler v1 list.
+Note the nested `dataset` key. `GET /api/datasetrw/v1/datasets` is marked deprecated in
+both specs ("Use getDatasetsV2"); use v2 with `projectIdsToInclude` instead.
 
 ```python
 page = requests.get(f"{base_url}/api/datasetrw/v2/datasets", headers=headers,
@@ -73,10 +73,11 @@ PATCH  /api/datasetrw/v1/datasets/{datasetId}                 body: {"name": "ne
 DELETE /api/datasetrw/v1/datasets/{datasetId}
 ```
 
-`DELETE` is a soft, cancellable delete: the dataset disappears from the v2 list at once,
-`GET` by id still returns it, and the internal lifecycle stays `DeletionInProgress` for
-some time (observed for more than ten minutes on Domino Cloud 6.4.0). Snapshot files are
-read through the dataset files service; on that deployment the `/datasetrw/...` routes in
+`DELETE` needs PermanentDelete access and is a soft, cancellable delete: the dataset
+disappears from the v2 list at once, `GET` by id still returns it, and the internal
+lifecycle stays `DeletionInProgress` for some time (observed for more than ten minutes
+on an internal Domino test cluster, 6.4.0). Snapshot files are read through the dataset
+files service; on that cluster, called from outside Domino, the `/datasetrw/...` routes in
 the spec answered 404 while the `/v4/datasetrw/...` forms worked (internal API, may change
 between Domino versions), so prefer the mount path or python-domino for file access.
 
@@ -91,7 +92,7 @@ GET  /api/datasetrw/v1/snapshots/{snapshotId}
 `relativeFilePaths` (required) lists the paths, relative to the dataset root, to include
 in the snapshot
 (https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/datasets/version-data-with-snapshots).
-Use `["*"]` for every file; verified on Domino Cloud 6.4.0, where `["/*"]` returns 200 and
+Use `["*"]` for every file; verified on an internal Domino test cluster (6.4.0), where `["/*"]` returns 200 and
 the snapshot then goes to `failed`. Nested paths (`sub/b.txt`) work. Only one snapshot
 copy runs at a time; a second POST while one is `pending` returns 400. Tags are added
 separately (below). Response: `{"snapshot": {"id", "datasetId", "createdAt", "creatorId",
@@ -157,9 +158,10 @@ The job object from [API-JOBS.md](./API-JOBS.md) lists the actual mounts under
 Writing to the mount path inside a Workspace or Job is the normal way to add data.
 From outside an execution, python-domino `datasets_upload_files(dataset_id, local_path, ...)`
 performs the chunked upload against the dataset files service
-([SDK-EXAMPLES.md](./SDK-EXAMPLES.md#datasets)); the `/datasetrw/datasets/{datasetId}/snapshot/file/*`
-routes it uses are in the spec but form a multi-step resumable protocol, so use the SDK
-rather than calling them directly.
+([SDK-EXAMPLES.md](./SDK-EXAMPLES.md#datasets)). It calls the
+`/v4/datasetrw/datasets/{datasetId}/snapshot/file/*` routes (internal API, may change
+between Domino versions; the spec lists the same protocol under `/datasetrw/...`), a
+multi-step resumable upload, so use the SDK rather than calling them directly.
 
 ## python-domino
 

@@ -84,14 +84,21 @@ More workflows (hierarchy, discovery, autocomplete, properties): [WORKFLOWS.md](
 ## Rules and gotchas
 
 - `tagIds` on `GET /entities` and `entityIds` on `GET /entity-tags` are array parameters:
-  repeat them (`?tagIds=A&tagIds=B`). Filter by type with `entityTypes` (plural) on
-  `/entities` and `/tags/{tagId}/entities`.
+  repeat them (`?tagIds=A&tagIds=B`). `/entities` returns entities that carry **all** of
+  the given tags (AND). Filter by type with `entityTypes` (plural) on `/entities` and
+  `/tags/{tagId}/entities`.
 - A namespace with `allowMultipleAssignments: false` (the default) holds one tag per
   entity; applying another tag from it replaces the existing one.
 - Tag and namespace `status` is `active` or `deprecated`. Deprecate (via `PUT`) to stop
   new assignments without touching existing ones.
-- `DELETE /namespaces/{id}` and the bulk-delete routes remove tags and their assignments
-  without confirmation; confirm with the user first. Pin tag ids, not labels, in automation.
+- `DELETE /tags/{id}` and `POST /tags/bulk-delete` remove the tags **and their
+  assignments** without confirmation. `DELETE /namespaces/{id}` removes the namespace and
+  its tags but, per the spec, **fails if any tag still has entity assignments**: untag
+  first or deprecate the namespace instead. Confirm destructive calls with the user. Pin
+  tag ids, not labels, in automation.
+- `POST /rpc/copy-entity-tags` and `/rpc/copy-property-values` are marked "Internal,
+  service-account only" in the spec and **replace** the target's tags or values; they are
+  not user workflows.
 - `GET /config` returns the limits: `maxDepth`, `maxLabelLength`,
   `maxSelectAllowedValuesCount`, `maxSelectAllowedValueLength`.
 
