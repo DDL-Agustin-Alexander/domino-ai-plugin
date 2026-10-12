@@ -21,15 +21,16 @@ All Public API families below are served on the same base URL: `$DOMINO_API_PROX
 | Model APIs, deployments, registry | `/api/modelServing/v1`, `/api/registeredmodels/v1`, `/v2` | [domino-model-serving](../domino-model-serving/SKILL.md), [domino-model-endpoints](../domino-model-endpoints/SKILL.md), [API-MODELS](../domino-python-sdk/API-MODELS.md) |
 | Governance | `/api/governance/v1` | [domino-governance](../domino-governance/SKILL.md) |
 | Extensions | `/api/extensions/beta` | [domino-extensions](../domino-extensions/SKILL.md) |
-| Workspaces | `/api/projects/v1/.../workspaces/{id}/sessions`, `/api/workspace/v1` | [domino-workspaces](../domino-workspaces/SKILL.md) |
+| Workspaces | `/api/projects/v1/.../workspaces/{id}/sessions`; `/api/workspace/v1` (Cloud only) | [domino-workspaces](../domino-workspaces/SKILL.md) |
 | Environments | `/api/environments/beta`, `/v1`, `/v2` (Cloud) | [domino-environments](../domino-environments/SKILL.md), [API-ENVIRONMENTS](../domino-python-sdk/API-ENVIRONMENTS.md) |
 | Users, orgs, service accounts, PATs, hardware tiers, cost, audit trail | `/api/users/v1`, `/api/organizations/v1`, `/api/serviceAccounts/v1`, `/api/pat/v1`, `/api/hardwaretiers/v1`, `/api/cost/v1`, `/api/audittrail/v1` | [API-ADMIN](../domino-python-sdk/API-ADMIN.md) |
 
 ## LLM access
 
 Calling external LLM providers through Domino is covered by the `domino-llm-access`
-skill. On Domino 6.3 the AI Gateway routes (`/api/aigateway/v1/*`) exist in the 6.3 spec;
-Domino Cloud has removed them, so nothing under `/api/aigateway` is callable there.
+skill (shipped as `domino-ai-gateway` until that rename lands in this release). On
+Domino 6.3 the AI Gateway routes (`/api/aigateway/v1/*`) exist in the 6.3 spec; Domino
+Cloud has removed them, so nothing under `/api/aigateway` is callable there.
 
 GenAI endpoint management (`/api/gen-ai/beta/endpoints`) is in both specs; see
 [domino-model-endpoints](../domino-model-endpoints/SKILL.md).

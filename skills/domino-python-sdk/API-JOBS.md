@@ -23,18 +23,19 @@ Request body (`projectId` and `runCommand` are the only required fields):
 |-------|------|-------|
 | `projectId` | string | **Required** |
 | `runCommand` | string | **Required**. The command, for example `python train.py --epochs 100` |
-| `hardwareTier` | string | Hardware tier **id** (for example `small-k8s`); project default when omitted. List ids with `GET /api/hardwaretiers/v1/hardwaretiers` |
+| `title` | string | Name of the job as shown in the Jobs list |
+| `hardwareTier` | string | Hardware tier **id** (for example `small-k8s`); project default when omitted. List ids with `GET /api/hardwaretiers/v1/hardwaretiers` (needs the ViewHardwareTiers permission) or python-domino `hardware_tiers_list()` (tiers usable by the project) |
 | `environmentId` | string | Environment id; project default when omitted |
 | `environmentRevisionSpec` | string | `ActiveRevision`, `LatestRevision` or `SomeRevision(<revisionId>)` |
-| `commitId` | string | Commit to run against (DFS projects) |
-| `mainRepoGitRef` | object | `{"refType": "head" or "branch" or "tag" or "commit", "value": "..."}` (`refType` required) |
+| `commitId` | string | DFS commit to run against; defaults to the project's head. Applies only to the project's internal DFS history: it cannot pin a commit on a Git-based project's main repository (use `mainRepoGitRef` with `commitId` for that) |
+| `mainRepoGitRef` | object | `{"refType": "head" | "branches" | "tags" | "commitId", "value": "..."}` (`refType` required; `value` for all but `head`). These are the spec's values for jobs; the project-repository `defaultRef` uses a different set |
 | `externalVolumeMountIds` | string[] | External data volume ids |
 | `netAppVolumeIds` | string[] | NetApp volume ids; see [netapp-volumes](../netapp-volumes/API-NETAPP-VOLUMES.md) |
 | `snapshotDatasetsOnCompletion`, `snapshotNetAppVolumesOnCompletion` | boolean | Snapshot mounted datasets / volumes when the job ends |
 | `computeCluster` | object | `clusterType` (`dask`, `mpi`, `ray`, `slurm`, `spark`), `computeEnvironmentId`, `workerCount`, `workerHardwareTier` required; optional `masterHardwareTierId`, `maxWorkerCount`, `workerStorageMB`, `computeEnvironmentRevisionSpec` |
 | `capacityType` | string | |
 
-There is no `title`, `hardwareTierId`, `isDirectHardwareTierId` or `commandToRun` field.
+There is no `hardwareTierId`, `isDirectHardwareTierId` or `commandToRun` field.
 
 ```python
 response = requests.post(
@@ -43,6 +44,7 @@ response = requests.post(
     json={
         "projectId": os.environ["DOMINO_PROJECT_ID"],
         "runCommand": "python train.py --epochs 100 --lr 0.001",
+        "title": "Hyperparameter experiment",
         "hardwareTier": "small-k8s",
     },
 )
@@ -52,10 +54,11 @@ print(job["id"], job["number"], job["status"]["executionStatus"])
 ```
 
 Response (`200`): `{"job": {...}, "metadata": {"requestId", "notices"}}`. The job object
-has `id`, `number`, `runCommand`, `status` (`executionStatus`, `isCompleted`,
+has `id`, `number`, `title`, `runCommand`, `status` (`executionStatus`, `isCompleted`,
 `isArchived`, `isScheduled`), `stageTimes`, `commitDetails` (`inputCommitId`,
 `outputCommitId`), `datasetMounts`, `externalVolumeMounts`, `netAppVolumeMounts`,
-`gitRepos`, `projects`, `dominoStats`, `startedById`, `computeCluster`, `usage`.
+`gitRepos`, `projects`, `dominoStats`, `tags`, `goalIds`, `startedById`,
+`computeCluster`, `usage`.
 
 ## List jobs
 
@@ -101,15 +104,15 @@ GET /api/jobs/beta/jobs/{jobId}/logs
 
 | Parameter | Notes |
 |-----------|-------|
-| `logType` | `stdOut`, `stdErr`, `prepareOutput` or `complete` |
-| `limit` | Max log messages |
-| `latestTimeNano` | Return only messages after this time; take it from `metadata.pagination.latestTimeNano` of the previous page |
+| `logType` | `stdOut`, `stdErr`, `prepareOutput` or `complete` (case-insensitive) |
+| `limit` | Max log lines; never more than 10,000 per call |
+| `latestTimeNano` | Epoch nanoseconds to start from; take it from `metadata.pagination.latestTimeNano` of the previous page |
 
 ```python
 logs = requests.get(f"{base_url}/api/jobs/beta/jobs/{job_id}/logs",
                     headers=headers, params={"logType": "stdOut", "limit": 500}).json()
-for line in logs["logs"]["logContent"]:
-    print(line)
+for entry in logs["logs"]["logContent"]:          # each entry: {"log", "logType", "size", ...}
+    print(entry["log"])
 print("complete:", logs["logs"]["isComplete"])
 ```
 
@@ -129,8 +132,13 @@ def wait_for_job(job_id, timeout=3600, poll_interval=30):
     raise TimeoutError(f"Job {job_id} did not complete within {timeout}s")
 
 job = wait_for_job(job["id"])
-print("final:", job["status"]["executionStatus"])   # Succeeded, Failed, Stopped
+print("final:", job["status"]["executionStatus"])   # Succeeded, Failed, Stopped or Error
 ```
+
+Terminal outcomes per https://docs.domino.ai/cloud/platform-capabilities/core-concepts/jobs/job-states:
+`Succeeded`, `Stopped` (manually stopped), `Failed` (a problem with your code) and
+`Error` (a problem outside your code). Treat anything other than `Succeeded` as a
+failure in automation.
 
 ## Stop a job
 
@@ -144,11 +152,12 @@ The Public API has no stop route. Options:
 ## Job tags
 
 ```
-POST   /api/jobs/v1/jobs/{jobId}/tags          body: {"tagName": "best-model", "projectId": "<project-id>"}
-DELETE /api/jobs/v1/jobs/{jobId}/tags/{tagId}
+POST   /api/jobs/v1/jobs/{jobId}/tags                          body: {"tagName": "best-model", "projectId": "<project-id>"}
+DELETE /api/jobs/v1/jobs/{jobId}/tags/{tagId}?projectId=<project-id>
 ```
 
-Both `tagName` and `projectId` are required.
+`tagName` and `projectId` are required on create; `projectId` is a required query
+parameter on delete. The create response is `{"tag": {"id", "name", "createdAt", "creatorId"}, "metadata"}`.
 
 ## Job goals
 

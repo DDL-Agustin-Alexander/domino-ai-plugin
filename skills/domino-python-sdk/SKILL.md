@@ -42,15 +42,24 @@ resolves credentials in this order (from the docs page above): `api_proxy`, `aut
 `DOMINO_TOKEN_FILE`, `DOMINO_USER_API_KEY`. Never pass `api_key=` or rely on
 `DOMINO_USER_API_KEY`; both are deprecated.
 
-Inside a Domino execution no arguments are needed: the constructor reads
-`DOMINO_API_HOST` and `DOMINO_API_PROXY` from the environment.
+Inside a Domino execution with `DOMINO_API_PROXY` set, no credential argument is needed:
+the constructor reads `DOMINO_API_HOST` and `DOMINO_API_PROXY` from the environment. If
+the proxy is not set, pass the short-lived access token explicitly; otherwise the client
+falls back to `DOMINO_TOKEN_FILE` and then the deprecated `DOMINO_USER_API_KEY`.
 
 ```python
 import os
+import requests
 from domino import Domino
 
-domino = Domino(f"{os.environ['DOMINO_PROJECT_OWNER']}/{os.environ['DOMINO_PROJECT_NAME']}")
+project = f"{os.environ['DOMINO_PROJECT_OWNER']}/{os.environ['DOMINO_PROJECT_NAME']}"
+if os.environ.get("DOMINO_API_PROXY"):
+    domino = Domino(project)
+else:
+    domino = Domino(project, auth_token=requests.get("http://localhost:8899/access-token").text.strip())
 ```
+
+`domino.authenticate(auth_token=...)` refreshes the token on a long-running client.
 
 Outside Domino, pass the deployment URL and a Personal Access Token or service account
 token; `auth_token` is sent as `Authorization: Bearer`:

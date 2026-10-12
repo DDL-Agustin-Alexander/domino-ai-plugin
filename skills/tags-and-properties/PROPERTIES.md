@@ -68,21 +68,20 @@ projects according to the copy policy ([PROPERTY-VALUES.md](./PROPERTY-VALUES.md
 
 ## Create
 
-`label`, `type` and `allowedEntities` are required.
+`label`, `type` and `allowedEntities` are required; `description`, `groupName` and
+`allowedValues` are optional.
 
 ```bash
 curl -s -X POST -H "$H" -H "Content-Type: application/json" \
-  -d '{"label":"Budget","groupName":"Finance","type":"number","allowedEntities":["project"]}' \
+  -d '{"label":"Budget","groupName":"Finance","description":"Approved budget in USD","type":"number","allowedEntities":["project"]}' \
   "$BASE/properties"
-# 201 -> {"id","label","type","groupName","allowedEntities","allowedValues","status":"active",...}
+# 201 -> {"id","label","description","type","groupName","allowedEntities","allowedValues","status":"active",...}
 
 curl -s -X POST -H "$H" -H "Content-Type: application/json" \
   -d '{"label":"Review Status","type":"select","allowedEntities":["project","model"],
        "allowedValues":[{"value":"Draft"},{"value":"In Review"},{"value":"Approved"}]}' \
   "$BASE/properties"
 ```
-
-The published schema has no `description` field on properties.
 
 ## Get and list
 
@@ -95,12 +94,12 @@ curl -s -H "$H" "$BASE/properties?entityType=project&search=budget&sort=label&or
 
 ## Update
 
-`label` and `allowedEntities` are required; `groupName` and `allowedValues` are
-optional; `type` cannot be sent.
+`label` and `allowedEntities` are required; `description`, `groupName` and
+`allowedValues` are optional; `type` cannot be sent.
 
 ```bash
 curl -s -X PUT -H "$H" -H "Content-Type: application/json" \
-  -d '{"label":"Budget (USD)","groupName":"Finance","allowedEntities":["project","app"]}' \
+  -d '{"label":"Budget (USD)","description":"Approved annual budget","groupName":"Finance","allowedEntities":["project","app"]}' \
   "$BASE/properties/<id>"
 # 200 -> updated property
 ```
@@ -112,7 +111,8 @@ curl -s -X DELETE -H "$H" "$BASE/properties/<id>"
 # 204
 ```
 
-Deleted properties stop appearing in lists and value views. Whether stored values are
+Deletion is a soft delete: the property's `status` enum is `active` or `deleted`, and
+deleted properties stop appearing in lists and value views. Whether stored values are
 retained is not stated in the spec; treat deletion as final.
 
 ## Property groups

@@ -19,14 +19,15 @@ https://docs.domino.ai/cloud/reference/api/domino-api-authentication#authenticat
 
 ## Pagination
 
-Every list route in the Public API spec takes `offset` and `limit` query parameters.
-The envelope differs by service:
+Most list routes in the Public API spec take `offset` and `limit` query parameters
+(`limit` usually defaults to 10). The envelope differs by service:
 
 | Service | Response shape |
 |---------|----------------|
 | Nucleus `/api/...` lists (projects, jobs, users, environments, datasets, hardware tiers) | `{"<items-key>": [...], "metadata": {"requestId", "notices", "offset", "limit", "totalCount"}}`. The items key is the resource name (`projects`, `jobs`, `users`, `environments`, `datasets`, `hardwareTiers`). `totalCount` is optional in the schema. |
 | Taxonomy `/api/taxonomy/v1` and NetApp `/remotefs/v1` lists | `{"data": [...], "meta": {"pagination": {"total" or "totalCount", "limit", "offset"}}}` |
-| Model serving, apps, registered models | `{"items": [...]}`; registered models v2 pages with `pageToken` / `maxResults` instead of offset |
+| Model serving, apps | `{"items": [...], "metadata": {...}}` with `offset` / `limit` (apps: `limit` defaults to no limit) |
+| Registered models `/api/registeredmodels/v1` and `/v2` | `{"items": [...], "metadata": {"nextPageToken"}}`; page with `pageToken` / `maxResults` (default 25), not offset |
 | Audit trail `POST /api/audittrail/v1/search` | `limit` 1 to 1000 (default 50), `offset` >= 0 |
 
 Rules for agents:

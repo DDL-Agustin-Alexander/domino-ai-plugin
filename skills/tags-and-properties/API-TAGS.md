@@ -52,26 +52,24 @@ curl -s -H "$H" "$BASE/namespaces?limit=50&offset=0"
 # {"data":[{"id","label","description","allowMultipleAssignments","tagCount","entityCount":{...},"status"}],
 #  "meta":{"pagination":{"total","limit","offset"},"sort"}}
 
-# Create (label required; allowMultipleAssignments optional, default false)
+# Create (label required; description and allowMultipleAssignments optional, default false)
 curl -s -X POST -H "$H" -H "Content-Type: application/json" \
-  -d '{"label":"Indication","allowMultipleAssignments":true}' "$BASE/namespaces"
-# 201 -> the namespace record (id, label, status "active", tagCount, entityCount, timestamps)
+  -d '{"label":"Indication","description":"Therapeutic area","allowMultipleAssignments":true}' "$BASE/namespaces"
+# 201 -> the namespace record (id, label, description, status "active", tagCount, entityCount, timestamps)
 
 # Get one
 curl -s -H "$H" "$BASE/namespaces/<id>"
 
-# Update (label and status required; status is active or deprecated)
+# Update (label and status required; description and allowMultipleAssignments optional; status is active or deprecated)
 curl -s -X PUT -H "$H" -H "Content-Type: application/json" \
-  -d '{"label":"Indication","status":"active","allowMultipleAssignments":true}' "$BASE/namespaces/<id>"
+  -d '{"label":"Indication","description":"updated","status":"active","allowMultipleAssignments":true}' "$BASE/namespaces/<id>"
 
 # Delete: removes the namespace, its tags and their assignments. No confirmation.
 curl -s -X DELETE -H "$H" "$BASE/namespaces/<id>"
 # 204
 ```
 
-Namespace labels are alphanumeric with hyphens and underscores (docs). The published
-schema has no `description` field on create or update; records returned by live
-deployments can carry one set through the UI.
+Namespace labels are alphanumeric with hyphens and underscores (docs).
 
 ## Tags
 
@@ -80,17 +78,17 @@ deployments can carry one set through the UI.
 curl -s -H "$H" "$BASE/tags?namespaceId=<ns>&rootOnly=true&limit=50"
 # {"data":[{"id","label","namespaceId","namespaceLabel","parentId","status","children":[...],"entityCount":{...}}],"meta":{...}}
 
-# Create (label and namespaceId required; parentId nests under a tag in the same namespace)
+# Create (label and namespaceId required; description optional; parentId nests under a tag in the same namespace)
 curl -s -X POST -H "$H" -H "Content-Type: application/json" \
-  -d '{"label":"SDTM","namespaceId":"<ns>","parentId":"<parent-tag>"}' "$BASE/tags"
+  -d '{"label":"SDTM","namespaceId":"<ns>","description":"Study Data Tabulation Model","parentId":"<parent-tag>"}' "$BASE/tags"
 # 201 -> tag record with fullPath, e.g. ["Clinical_Data","SDTM"]
 
 # Get one
 curl -s -H "$H" "$BASE/tags/<id>"
 
-# Update (label required; parentId re-parents; status active or deprecated)
+# Update (label required; description, parentId (re-parent) and status (active or deprecated) optional)
 curl -s -X PUT -H "$H" -H "Content-Type: application/json" \
-  -d '{"label":"SDTMv2","status":"active","parentId":"<new-parent>"}' "$BASE/tags/<id>"
+  -d '{"label":"SDTMv2","description":"new desc","status":"active","parentId":"<new-parent>"}' "$BASE/tags/<id>"
 
 # Deprecate: keeps existing assignments, blocks new ones
 curl -s -X PUT -H "$H" -H "Content-Type: application/json" \

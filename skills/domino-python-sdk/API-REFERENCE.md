@@ -90,10 +90,10 @@ the 6.3 spec. Everything else is in both.
 
 | Method | Route |
 |--------|-------|
-| GET, POST | `/api/environments/beta/environments` |
+| GET, POST | `/api/environments/beta/environments` (POST is deprecated on Cloud in favour of v2) |
 | GET, DELETE | `/api/environments/v1/environments/{environmentId}` |
-| POST | `/api/environments/beta/environments/{environmentId}/revisions`; PATCH `.../revisions/{revisionId}` |
-| POST | `/api/environments/v2/environments`, `.../{environmentId}/revisions` (**Cloud**) |
+| POST | `/api/environments/beta/environments/{environmentId}/revisions` (deprecated on Cloud); PATCH `.../revisions/{revisionId}` |
+| POST | `/api/environments/v2/environments`, `.../{environmentId}/revisions` (**Cloud**; the current create routes there) |
 | PUT | `/api/environments/v1/environments/{environmentId}/name`, `/description` (**Cloud**) |
 
 ### Model APIs, deployments, registry ([API-MODELS.md](./API-MODELS.md))
@@ -102,11 +102,13 @@ the 6.3 spec. Everything else is in both.
 |--------|-------|
 | GET, POST | `/api/modelServing/v1/modelApis`; GET, PUT, DELETE `/{modelApiId}` |
 | GET, POST | `/api/modelServing/v1/modelApis/{modelApiId}/versions`; GET `/{modelApiVersionId}`, `/buildLogs`, `/exportLogs`, `/instanceLogs` |
-| GET, PUT, POST, DELETE | `/api/modelServing/beta/modelApis/{modelApiId}/access`, `/visibility`, `/collaborators[...]`, `/consumer/access` (**Cloud**) |
+| PUT | `/api/modelServing/beta/modelApis/{modelApiId}/access` (**Cloud**) |
+| GET, PUT | `/api/modelServing/beta/modelApis/{modelApiId}/visibility` (**Cloud**) |
+| GET, POST; GET, PUT, DELETE | `/api/modelServing/beta/modelApis/{modelApiId}/collaborators[/{collaboratorId}]` (**Cloud**); GET `.../consumer/access` (**Cloud**) |
 | GET, POST | `/api/modelServing/v1/modelDeployments`; GET, PATCH, DELETE `/{modelDeploymentId}`; `/start`, `/stop`, `/versions`, `/logs/{logSuffix}`, `/credentials` |
 | POST, GET | `/api/modelApis/async/v1/{asyncModelId}[/{asyncPredictionId}]` (async predictions) |
-| GET, POST | `/api/registeredmodels/v2`; GET `/api/registeredmodels/v2/{modelName}/versions[/{version}]` |
-| GET, PATCH | `/api/registeredmodels/v1/{modelName}`; GET, POST `/versions`; GET `/versions/{version}`, `/modelapis`, build logs |
+| GET, POST | `/api/registeredmodels/v2` (register and add versions); GET `/api/registeredmodels/v2/{modelName}/versions[/{version}]` |
+| GET, PATCH | `/api/registeredmodels/v1/{modelName}`; GET `/versions`, `/versions/{version}`, `/modelapis`, build logs; POST `/versions` is deprecated (use v2) |
 | GET, POST | `/api/gen-ai/beta/endpoints` and version/start/stop/metrics sub-routes (GenAI endpoints) |
 
 ### Apps and extensions
@@ -125,7 +127,7 @@ the 6.3 spec. Everything else is in both.
 | `/api/taxonomy/v1` | [tags-and-properties](../tags-and-properties/SKILL.md) |
 | `/remotefs/v1` | [netapp-volumes](../netapp-volumes/SKILL.md) |
 | `/model-monitor/v2/api`, `/api/metricValues/v1`, `/api/metricAlerts/v1` | [domino-model-monitoring](../domino-model-monitoring/SKILL.md) |
-| `/api/aigateway/v1` (**6.3**; removed on Cloud) | `domino-llm-access` skill |
+| `/api/aigateway/v1` (**6.3**; removed on Cloud) | `domino-llm-access` skill (named `domino-ai-gateway` until that rename lands) |
 
 ## Workspace sessions
 
@@ -157,10 +159,11 @@ Nucleus routes: `{"errors": ["..."], "requestId": "..."}`. Taxonomy and NetApp s
 
 ### Pagination
 
-`offset` / `limit` on every list route. Nucleus responses wrap items under a resource key
+`offset` / `limit` on most list routes. Nucleus responses wrap items under a resource key
 with `metadata.offset`, `metadata.limit` and (usually) `metadata.totalCount`; taxonomy and
-NetApp use `data` plus `meta.pagination`; model serving, apps and the registry use `items`.
-Details: [LIMITS.md](../domino-api-intro/LIMITS.md#pagination).
+NetApp use `data` plus `meta.pagination`; model serving and apps use `items`. The
+registry (`/api/registeredmodels/v1` and `/v2`) pages with `pageToken` / `maxResults` and
+returns `metadata.nextPageToken`. Details: [LIMITS.md](../domino-api-intro/LIMITS.md#pagination).
 
 ### Path conventions
 

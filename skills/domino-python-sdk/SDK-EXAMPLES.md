@@ -10,19 +10,29 @@ Client setup and authentication: [SKILL.md](./SKILL.md#authentication). Never pa
 
 ```python
 import os
+import requests
 from domino import Domino
 
-# Inside a Domino execution (DOMINO_API_HOST and DOMINO_API_PROXY are injected)
-domino = Domino(f"{os.environ['DOMINO_PROJECT_OWNER']}/{os.environ['DOMINO_PROJECT_NAME']}")
+project = f"{os.environ['DOMINO_PROJECT_OWNER']}/{os.environ['DOMINO_PROJECT_NAME']}"
 
-# Outside Domino: deployment URL plus a PAT or service account token
-domino = Domino("owner/project-name", host=os.environ["DOMINO_API_HOST"],
-                auth_token=os.environ["DOMINO_API_TOKEN"])
+if os.environ.get("DOMINO_API_PROXY"):
+    # Inside a Domino execution with the API proxy: the client picks DOMINO_API_HOST and
+    # DOMINO_API_PROXY up from the environment.
+    domino = Domino(project)
+elif os.environ.get("DOMINO_RUN_ID"):
+    # Inside a run without the proxy: pass the short-lived token explicitly. Without it the
+    # client falls back to DOMINO_TOKEN_FILE and then the deprecated DOMINO_USER_API_KEY.
+    domino = Domino(project, auth_token=requests.get("http://localhost:8899/access-token").text.strip())
+else:
+    # Outside Domino: deployment URL plus a PAT or service account token
+    domino = Domino("owner/project-name", host=os.environ["DOMINO_API_HOST"],
+                    auth_token=os.environ["DOMINO_API_TOKEN"])
 ```
 
-The client is bound to one project (`owner/project-name`); `domino.project_id` resolves its
-id. Most methods call the Domino Internal API (`/v4/...`, `/v1/projects/...`) on behalf of
-that project.
+`domino.authenticate(auth_token=...)` re-authenticates an existing client, which is how a
+long-running script refreshes the short-lived access token. The client is bound to one
+project (`owner/project-name`); `domino.project_id` resolves its id. Most methods call the
+Domino Internal API (`/v4/...`, `/v1/projects/...`) on behalf of that project.
 
 ## Method reference
 
@@ -34,7 +44,8 @@ camelCase names (`runId`, `commitId`).
 | Method | Notes |
 |--------|-------|
 | `job_start(command, commit_id=None, hardware_tier_id=None, hardware_tier_name=None, environment_id=None, on_demand_spark_cluster_properties=None, compute_cluster_properties=None, external_volume_mounts=None, title=None, main_repo_git_ref=None, branch=None)` | Returns the created job dict (`id`, `number`, ...). `hardware_tier_name` and `on_demand_spark_cluster_properties` are deprecated in the source; use `hardware_tier_id` and `compute_cluster_properties`. For Git-based projects pass `branch="main"` or `main_repo_git_ref={"type": "branches" or "tags", "value": "..."}` (master adds `"commitId"`); `commit_id` pins the DFS commit, not a git commit. Validates ids and raises `HardwareTierNotFoundException` / `EnvironmentNotFoundException`. |
-| `job_start_blocking(poll_freq=5, max_poll_time=6000, ignore_exceptions=(RequestException,), **job_start_kwargs)` | Starts, polls `job_status` until `statuses.isCompleted`, prints the log, returns the final status dict. Raises `RunFailedException` when `statuses.executionStatus == "Failed"`. |
+| `job_start_blocking(poll_freq=5, max_poll_time=6000, ignore_exceptions=(RequestException,), **job_start_kwargs)` | Starts, polls `job_status` until `statuses.isCompleted`, prints the log, returns the final status dict. Raises `RunFailedException` only when `statuses.executionStatus == "Failed"`; it returns normally on `Stopped` and `Error`, so check `executionStatus == "Succeeded"` yourself. |
+| `authenticate(api_key=None, auth_token=None, domino_token_file=None, api_proxy=None)` | Re-authenticate an existing client (refresh an expired short-lived token). |
 | `job_status(job_id)` | Dict with `statuses.executionStatus` and `statuses.isCompleted` (plus job fields). |
 | `job_stop(job_id, commit_results=True)` | Returns the raw `requests.Response`. |
 | `jobs_list(project_id, order_by="number", sort_by="desc", page_size=None, page_no=1, show_archived="false", status="all", tag=None)` | Job history for a project id. |
@@ -53,7 +64,7 @@ Legacy v1 Runs API (source docstring: "For new work, prefer job_start()"):
 
 | Method | Notes |
 |--------|-------|
-| `files_list(commit_id=None, path="/")` | Lists project files at a commit. |
+| `files_list(commit_id=None, path="/")` | Lists project files at a commit. Pass `commit_id` (from `commits_list()`): the default `None` is concatenated into the URL and raises `TypeError`. |
 | `files_upload(path, file)` | `path` inside the project (leading `/` added if missing); `file` is an open binary file object. Uploads one file. |
 | `files_download(path, commit_id=None)` | Resolves the latest commit when `commit_id` is omitted and returns the raw response stream from `blobs_get_v2`; read it with `.read()` / `.data`. |
 | `blobs_get_v2(path, commit_id, project_id)` | Public API `GET /api/projects/v1/projects/{projectId}/files/{commitId}/{path}/content`. `blobs_get(key)` is deprecated. |
@@ -88,8 +99,8 @@ There is no `datasets_snapshot` or `datasets_tag` method. Snapshot and tag route
 | Method | Notes |
 |--------|-------|
 | `environments_list()`, `get_environment(environment_id)`, `get_default_environment()` | `get_environment` calls the Public API `GET /api/environments/v1/environments/{id}`. |
-| `create_environment(name, visibility, dockerfile_instructions="", environment_variables=None, base_image="", post_run_script="", post_setup_script="", pre_run_script="", pre_setup_script="", skip_cache=False, summary="", supported_clusters=None, tags=None, use_vpn=False, workspace_tools=None, add_base_dependencies=True, description="", is_restricted=False, organization_owner_id=None)` | Public API `POST /api/environments/beta/environments`. |
-| `create_environment_revision(environment_id, dockerfile_instructions="", ...)` | Same optional build fields as above. |
+| `create_environment(name, visibility, dockerfile_instructions="", environment_variables=None, base_image="", post_run_script="", post_setup_script="", pre_run_script="", pre_setup_script="", skip_cache=False, summary="", supported_clusters=None, tags=None, use_vpn=False, workspace_tools=None, add_base_dependencies=True, description="", is_restricted=False, organization_owner_id=None)` | Public API `POST /api/environments/beta/environments` (current on 6.3; deprecated on Cloud in favour of v2, which the SDK does not wrap). |
+| `create_environment_revision(environment_id, dockerfile_instructions="", ...)` | Same optional build fields as above; same beta route caveat. |
 | `restrict_environment_revision(environment_id, revision_id)`, `archive_environment(environment_id)` | |
 | `hardware_tiers_list()`, `get_hardware_tier_id_from_name(hardware_tier_name)` | Tiers usable by the client's project. |
 
@@ -130,8 +141,11 @@ job_id = job["id"]
 status = domino.job_status(job_id)
 print(status["statuses"]["executionStatus"], status["statuses"]["isCompleted"])
 
-# Or block until completion (raises RunFailedException on failure)
+# Or block until completion. RunFailedException is raised only for "Failed"; "Stopped" and
+# "Error" return normally, so always check the final status.
 final = domino.job_start_blocking(command="python train.py", hardware_tier_id="small-k8s")
+if final["statuses"]["executionStatus"] != "Succeeded":
+    raise RuntimeError(f"job ended with {final['statuses']['executionStatus']}")
 print(domino.get_run_log(final["id"], include_setup_log=False))
 ```
 
@@ -175,7 +189,7 @@ content = domino.files_download("/results/output.csv").read()
 
 ```python
 dataset = domino.datasets_create("training-data", "Preprocessed training data")
-dataset_id = domino.datasets_ids(domino.project_id)[-1]   # or read it from the create response
+dataset_id = dataset["datasetId"]            # key used by the SDK's own integration tests
 domino.datasets_upload_files(dataset_id, "./processed", target_relative_path="v1")
 for ds in domino.datasets_list(domino.project_id):
     print(ds)
@@ -203,8 +217,9 @@ versions = domino.model_versions_get(model_id)["data"]
 latest_version_id = versions[0]["_id"]
 ```
 
-`model_publish` posts to the legacy `/v1/models` route; the Public API equivalent is
-`POST /api/modelServing/v1/modelApis` ([API-MODELS.md](./API-MODELS.md)).
+`model_publish` posts to `/v1/models` (internal API, may change between Domino versions);
+the Public API equivalent is `POST /api/modelServing/v1/modelApis`
+([API-MODELS.md](./API-MODELS.md)).
 
 ### CI/CD trigger (outside Domino)
 
@@ -217,10 +232,14 @@ domino = Domino("team/ml-project", host=os.environ["DOMINO_API_HOST"],
                 auth_token=os.environ["DOMINO_API_TOKEN"])   # service account token
 try:
     final = domino.job_start_blocking(command="python train.py", hardware_tier_id="small-k8s")
-except RunFailedException as exc:
+except RunFailedException as exc:               # executionStatus == "Failed"
     print(exc)
     sys.exit(1)
-print("Training succeeded:", final["statuses"]["executionStatus"])
+status = final["statuses"]["executionStatus"]
+if status != "Succeeded":                       # "Stopped" and "Error" do not raise
+    print(f"Training did not succeed: {status}")
+    sys.exit(1)
+print("Training succeeded")
 ```
 
 ## Error handling
@@ -231,7 +250,8 @@ print("Training succeeded:", final["statuses"]["executionStatus"])
 `CommitNotFoundException`, `UserNotFoundException`, `MalformedInputException`,
 `MissingRequiredFieldException`, `UnsupportedFieldException`,
 `UnsupportedOperationException`, `ReloginRequiredException`. HTTP failures surface as
-`requests.exceptions.HTTPError` from the request manager.
+`requests.exceptions.HTTPError` from the request manager, except a `409`, which it
+converts to `ReloginRequiredException` ("Temporary credentials expired").
 
 ```python
 from domino.exceptions import DominoException

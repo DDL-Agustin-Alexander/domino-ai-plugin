@@ -1,7 +1,8 @@
 # Domino Datasets API
 
-Create and manage Datasets, snapshots, tags and grants with the Public API. Routes and
-bodies are from both published specs. Product docs:
+Create and manage Datasets, snapshots, tags and grants with the Public API. Routes,
+bodies and response envelopes below are from both published specs (identical on 6.3 and
+Cloud). Product docs:
 https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/datasets and the
 [domino-datasets](../domino-datasets/SKILL.md) skill.
 
@@ -18,22 +19,26 @@ GET /api/datasetrw/v2/datasets
 
 | Parameter | Notes |
 |-----------|-------|
-| `projectIdsToInclude`, `projectIdsToExclude` | Repeatable project id filters |
-| `minimumPermission` | For example `ListDatasetRwV2`, `DeleteDatasetRwV2` |
-| `includeProjectInfo`, `includeArchivedProjects` | boolean |
-| `offset`, `limit` | Pagination |
+| `projectIdsToInclude`, `projectIdsToExclude` | Repeatable project-id filters; send one or the other, not both |
+| `minimumPermission` | Minimum permission the caller must hold, for example `ReadDatasetRwV2`, `UpdateDatasetRwV2`, `DeleteDatasetRwV2` |
+| `includeProjectInfo` | Add `projectInfo` to each item |
+| `includeArchivedProjects` | Defaults to true |
+| `offset`, `limit` | Pagination (`limit` defaults to 10) |
 
-Response: `{"datasets": [{"dataset": {"id", "name", "description", "projectId", "createdAt", "snapshotIds", "tags"}}], "metadata": {...}}`.
-Note the nested `dataset` key. `GET /api/datasetrw/v1/datasets?projectId=...` is the
-simpler v1 list.
+Response: `{"datasets": [{"dataset": {...}, "projectInfo": {...}}], "metadata": {"offset", "limit", "totalCount", ...}}`.
+Note the nested `dataset` key. `GET /api/datasetrw/v1/datasets?projectId=...&offset=&limit=`
+is the simpler v1 list.
 
 ```python
-datasets = requests.get(f"{base_url}/api/datasetrw/v2/datasets", headers=headers,
-                        params={"projectIdsToInclude": [project_id], "limit": 50}).json()
-for item in datasets["datasets"]:
+page = requests.get(f"{base_url}/api/datasetrw/v2/datasets", headers=headers,
+                    params={"projectIdsToInclude": [project_id], "limit": 50}).json()
+for item in page["datasets"]:
     ds = item["dataset"]
-    print(ds["name"], ds["id"], len(ds["snapshotIds"]))
+    print(ds["name"], ds["id"], ds.get("description"), len(ds["snapshotIds"]))
 ```
+
+Dataset record: `id`, `name`, `description`, `projectId`, `createdAt`, `snapshotIds`,
+`tags` (a map of `tagName -> snapshotId`).
 
 ## Create a dataset
 
@@ -41,44 +46,51 @@ for item in datasets["datasets"]:
 POST /api/datasetrw/v1/datasets
 ```
 
-Body: `name` (required), `projectId`, optional `grants`
-(`[{"targetId": "<user-or-org-id>", "targetRole": "DatasetRwOwner|DatasetRwEditor|DatasetRwReader"}]`)
-and `snapshotId`. There is no `description` field on create; set it afterwards with the UI
-or python-domino `datasets_update_details`.
+| Field | Notes |
+|-------|-------|
+| `name` | **Required**; unique within the project |
+| `projectId` | Project to create the dataset in. Either `projectId` or `snapshotId` must be provided |
+| `snapshotId` | Create the new dataset from an existing snapshot instead; grants are then ignored and the caller becomes owner |
+| `description` | Description of the Dataset |
+| `grants` | `[{"targetId": "<user-or-org-id>", "targetRole": "DatasetRwOwner" or "DatasetRwEditor" or "DatasetRwReader"}]`; organizations cannot be owners |
 
 ```python
 dataset = requests.post(f"{base_url}/api/datasetrw/v1/datasets", headers=headers, json={
     "name": "customer-features",
+    "description": "Processed customer features for modeling",
     "projectId": project_id,
-}).json()
+}).json()["dataset"]
+dataset_id = dataset["id"]
 ```
+
+Response: `{"dataset": {...}, "metadata": {...}}`.
 
 ## Get, update, delete
 
 ```
-GET    /api/datasetrw/v1/datasets/{datasetId}
-PATCH  /api/datasetrw/v1/datasets/{datasetId}     body: {"name": "new-name"}
+GET    /api/datasetrw/v1/datasets/{datasetId}                 -> {"dataset": {...}, "metadata": {...}}
+PATCH  /api/datasetrw/v1/datasets/{datasetId}                 body: {"name": "new-name", "description": "..."} (both optional)
 DELETE /api/datasetrw/v1/datasets/{datasetId}
 ```
-
-`PATCH` accepts only `name`.
 
 ## Snapshots
 
 ```
 GET  /api/datasetrw/v1/datasets/{datasetId}/snapshots
-POST /api/datasetrw/v1/datasets/{datasetId}/snapshots     body: {"relativeFilePaths": ["data/train.parquet", ...]}
+POST /api/datasetrw/v1/datasets/{datasetId}/snapshots     body: {"relativeFilePaths": ["features.parquet", "labels/"]}
 GET  /api/datasetrw/v1/snapshots/{snapshotId}
 ```
 
-`relativeFilePaths` is required: the paths, relative to the dataset root, to include in
-the snapshot (documented at
-https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/datasets/version-data-with-snapshots).
-Tags are added separately (below); there is no `tag` field on snapshot create.
+`relativeFilePaths` (required) lists the paths, relative to the dataset root, to include
+in the snapshot
+(https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/datasets/version-data-with-snapshots).
+Tags are added separately (below). Response: `{"snapshot": {"id", "datasetId", "createdAt",
+"creatorId", "description", "status", "lastMounted"}, "metadata": {...}}` with `status` one of
+`active`, `pending`, `copying`, `markForDeletion`, `deletionInProgress`, `deleted`, `failed`.
 
 ```python
 snapshot = requests.post(f"{base_url}/api/datasetrw/v1/datasets/{dataset_id}/snapshots",
-                         headers=headers, json={"relativeFilePaths": ["features.parquet"]}).json()
+                         headers=headers, json={"relativeFilePaths": ["features.parquet"]}).json()["snapshot"]
 ```
 
 ## Tags
@@ -88,7 +100,8 @@ POST   /api/datasetrw/v1/datasets/{datasetId}/tags            body: {"snapshotId
 DELETE /api/datasetrw/v1/datasets/{datasetId}/tags/{tagName}
 ```
 
-Both body fields are required.
+Both body fields are required. The response is the updated `{"dataset": {...}}`; the
+dataset's `tags` map shows every `tagName -> snapshotId`.
 
 ## Grants (permissions)
 
@@ -99,22 +112,23 @@ DELETE /api/datasetrw/v1/datasets/{datasetId}/grants     body: {"targetId": "<us
 ```
 
 `targetRole` is `DatasetRwOwner`, `DatasetRwEditor` or `DatasetRwReader`; organizations
-cannot be owners. `DELETE` takes the same body.
+cannot be owners. `DELETE` takes the same body. Responses carry `{"grants": [...]}`.
 
 ## Mount paths inside executions
 
 From https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/datasets/use-datasets-and-snapshots:
 
-| Project type | Live dataset (read-write) | Snapshot by tag / by number (read-only) |
-|--------------|---------------------------|------------------------------------------|
+| Project type | Dataset of this project (read-write) | Its snapshots by tag / by number (read-only) |
+|--------------|--------------------------------------|----------------------------------------------|
 | DFS | `/domino/datasets/local/<name>` | `/domino/datasets/local/snapshots/<name>/<tag>` and `/<number>` |
 | Git-based | `/mnt/data/<name>` | `/mnt/data/snapshots/<name>/<tag>` and `/<number>` |
-| Shared from another project (DFS) | `/domino/datasets/<name>` | `/domino/datasets/snapshots/<name>/<tag>` |
-| Shared from another project (Git-based) | `/mnt/imported/data/<name>` | `/mnt/imported/data/snapshots/<name>/<tag>` |
+
+Datasets shared from another project mount read-only at `/domino/datasets/<name>` (DFS) or
+`/mnt/imported/data/<name>` (Git-based), with snapshots under `.../snapshots/<name>/<tag>`.
 
 ```python
 import pandas as pd
-df = pd.read_parquet("/mnt/data/customer-features/features.parquet")              # live
+df = pd.read_parquet("/mnt/data/customer-features/features.parquet")                   # live
 df_v1 = pd.read_parquet("/mnt/data/snapshots/customer-features/v1.0/features.parquet")  # tag
 ```
 
@@ -127,13 +141,14 @@ Writing to the mount path inside a Workspace or Job is the normal way to add dat
 From outside an execution, python-domino `datasets_upload_files(dataset_id, local_path, ...)`
 performs the chunked upload against the dataset files service
 ([SDK-EXAMPLES.md](./SDK-EXAMPLES.md#datasets)); the `/datasetrw/datasets/{datasetId}/snapshot/file/*`
-routes it uses are in the spec but are a multi-step resumable protocol, so use the SDK
+routes it uses are in the spec but form a multi-step resumable protocol, so use the SDK
 rather than calling them directly.
 
 ## python-domino
 
 `datasets_list(project_id=None)`, `datasets_ids(project_id)`, `datasets_names(project_id)`,
-`datasets_create(dataset_name, dataset_description)`, `datasets_details(dataset_id)`,
+`datasets_create(dataset_name, dataset_description)` (returns a record with `datasetId`
+and `datasetName`), `datasets_details(dataset_id)`,
 `datasets_update_details(dataset_id, dataset_name=None, dataset_description=None)`,
 `datasets_remove(dataset_ids)`, `datasets_upload_files(...)`. There is no
 `datasets_snapshot` or `datasets_tag`; use the REST routes above.
@@ -142,19 +157,15 @@ rather than calling them directly.
 
 ```python
 dataset = requests.post(f"{base_url}/api/datasetrw/v1/datasets", headers=headers,
-                        json={"name": "feature-store", "projectId": project_id}).json()
-dataset_id = dataset["id"] if "id" in dataset else dataset["dataset"]["id"]
+                        json={"name": "feature-store", "description": "Centralized features",
+                              "projectId": project_id}).json()["dataset"]
 
 # ... write files to the mount path inside a job, then:
-snapshot = requests.post(f"{base_url}/api/datasetrw/v1/datasets/{dataset_id}/snapshots",
-                         headers=headers, json={"relativeFilePaths": ["features.parquet"]}).json()
-snapshot_id = snapshot["id"] if "id" in snapshot else snapshot["snapshot"]["id"]
+snapshot = requests.post(f"{base_url}/api/datasetrw/v1/datasets/{dataset['id']}/snapshots",
+                         headers=headers, json={"relativeFilePaths": ["features.parquet"]}).json()["snapshot"]
 
-requests.post(f"{base_url}/api/datasetrw/v1/datasets/{dataset_id}/tags", headers=headers,
-              json={"snapshotId": snapshot_id, "tagName": "baseline"})
-requests.post(f"{base_url}/api/datasetrw/v1/datasets/{dataset_id}/grants", headers=headers,
+requests.post(f"{base_url}/api/datasetrw/v1/datasets/{dataset['id']}/tags", headers=headers,
+              json={"snapshotId": snapshot["id"], "tagName": "baseline"})
+requests.post(f"{base_url}/api/datasetrw/v1/datasets/{dataset['id']}/grants", headers=headers,
               json={"targetId": colleague_user_id, "targetRole": "DatasetRwReader"})
 ```
-
-Check the create responses once on your deployment: v1 routes may return the object bare
-or wrapped under `dataset` / `snapshot`.

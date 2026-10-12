@@ -76,9 +76,11 @@ Paths mirror the Dataset scheme; volumes are global, so there is no local/import
 | DFS | `/domino/netapp-volumes/<name>` | `/domino/netapp-volumes/snapshots/<name>/<number>` | `/domino/netapp-volumes/snapshot-tags/<name>/<tag>` |
 | Git-based | `/mnt/netapp-volumes/<name>` | `/mnt/netapp-volumes/snapshots/<name>/<number>` | `/mnt/netapp-volumes/snapshot-tags/<name>/<tag>` |
 
-Owners and Editors mount read-write; Readers mount read-only; Apps mount with the App
-owner's permission. If a snapshot has several tags, only the most recently added tag is
-mounted. Renaming a volume changes its mount path. At launch you can pin a volume to one
+The docs give `snapshots/<name>` for the snapshots directory and say the paths mirror the
+Dataset scheme, where each snapshot sits under its number; `<number>` is the snapshot's
+`version` from the API. Owners and Editors mount read-write; Readers mount read-only; Apps
+mount with the App owner's permission. If a snapshot has several tags, only the most
+recently added tag is mounted. Renaming a volume changes its mount path. At launch you can pin a volume to one
 snapshot on the **Data Plane & Hardware** tab; the pinned snapshot then mounts read-only at
 the read-write path and the `snapshots/<name>` directory is disabled. Details:
 [DATA-ACCESS.md](./DATA-ACCESS.md).
@@ -91,7 +93,8 @@ The button is unavailable once the volume reaches its maximum snapshot count. De
 snapshot is permanent and needs delete permission on the volume. Docs:
 https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/datasets/version-data-with-snapshots.
 
-REST: `POST /remotefs/v1/snapshots` (`volumeId`, `tagNames`), `POST /remotefs/v1/snapshots/{id}/tags`,
+REST: `POST /remotefs/v1/snapshots` (`volumeId`, `description` as the commit message,
+`tagNames`), `POST /remotefs/v1/snapshots/{id}/tags`, `PUT /remotefs/v1/snapshots/{id}`,
 `POST /remotefs/v1/rpc/create-snapshot-from-run`, `/rpc/restore-snapshot`, `/rpc/delete-snapshot`
 ([API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#snapshots)).
 

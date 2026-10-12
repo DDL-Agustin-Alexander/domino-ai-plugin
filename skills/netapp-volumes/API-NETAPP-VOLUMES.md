@@ -6,54 +6,64 @@ https://docs.domino.ai/api-specs/cloud/public-api.json). The API page:
 https://docs.domino.ai/cloud/reference/api/domino-volumes-api. Mount paths and in-run
 file access: [DATA-ACCESS.md](./DATA-ACCESS.md).
 
-## Authentication and base URL
+## Authentication and base URLs
 
-Follow [domino-api-intro](../domino-api-intro/SKILL.md#authentication). For volume,
-filesystem, snapshot and grant operations inside a run, use
-`DOMINO_REMOTE_FILE_SYSTEM_HOSTPORT` when Domino injects it (the volumes API page says it
-is for volume operations), otherwise `$DOMINO_API_PROXY` (no header) or `$DOMINO_API_HOST`
-with the access token; outside Domino use the deployment URL with a PAT or service
-account token. All examples share this setup:
+Follow [domino-api-intro](../domino-api-intro/SKILL.md#authentication). Two bases:
+
+- `base_url` for the Nucleus Public API (`/api/users/v1/self`, `/api/jobs/v1/jobs`):
+  `$DOMINO_API_PROXY` with no header, else `$DOMINO_API_HOST` with the access token, else
+  the deployment URL with a PAT or service account token.
+- `remotefs_url` for `/remotefs/v1/*` volume, filesystem, snapshot and grant operations.
+  Inside a run Domino injects `DOMINO_REMOTE_FILE_SYSTEM_HOSTPORT` for exactly these
+  operations (volumes API page). That host is reached directly, not through the API proxy,
+  so **always** send `Authorization: Bearer` with the token from
+  `http://localhost:8899/access-token` to it, even when `DOMINO_API_PROXY` is set. When the
+  variable is absent, use `base_url` and its headers.
 
 ```python
 import os
 import requests
 
-if os.environ.get("DOMINO_API_PROXY"):
-    base_url = os.environ["DOMINO_API_PROXY"].rstrip("/")
-    headers = {}
-elif os.environ.get("DOMINO_RUN_ID"):
+def access_token():
+    return requests.get("http://localhost:8899/access-token").text.strip()
+
+if os.environ.get("DOMINO_API_PROXY"):                 # inside a run
+    base_url, headers = os.environ["DOMINO_API_PROXY"].rstrip("/"), {}
+elif os.environ.get("DOMINO_RUN_ID"):                  # inside a run, proxy not injected
     base_url = os.environ["DOMINO_API_HOST"].rstrip("/")
-    token = requests.get("http://localhost:8899/access-token").text.strip()
-    headers = {"Authorization": f"Bearer {token}"}
-else:
-    base_url = os.environ["DOMINO_API_HOST"].rstrip("/")          # deployment URL
+    headers = {"Authorization": f"Bearer {access_token()}"}
+else:                                                  # outside Domino
+    base_url = os.environ["DOMINO_API_HOST"].rstrip("/")
     headers = {"Authorization": f"Bearer {os.environ['DOMINO_API_TOKEN']}"}
 
-remotefs_url = os.environ.get("DOMINO_REMOTE_FILE_SYSTEM_HOSTPORT", base_url).rstrip("/")
+remotefs_url, remotefs_headers = base_url, headers
+if os.environ.get("DOMINO_REMOTE_FILE_SYSTEM_HOSTPORT"):
+    remotefs_url = os.environ["DOMINO_REMOTE_FILE_SYSTEM_HOSTPORT"].rstrip("/")
+    if "://" not in remotefs_url:
+        remotefs_url = "http://" + remotefs_url
+    remotefs_headers = {"Authorization": f"Bearer {access_token()}"}
 ```
 
-Error bodies from this service are `{"message": "..."}`.
+Error bodies from this service are `{"message": "..."}`. The access token is short-lived;
+re-read it for long-running scripts.
 
 ## Filesystems
 
 ```
 GET  /remotefs/v1/filesystems?limit=&offset=&data_plane_id=
 GET  /remotefs/v1/filesystems/{id}
-POST /remotefs/v1/filesystems            admin: {"name", "dataPlaneId", "isDataPlaneDefault", "rootPvc", "storageClass", "maxSnapshotsPerVolume"}
+POST /remotefs/v1/filesystems            admin: name, dataPlaneId, isDataPlaneDefault, rootPvc, storageClass required; maxSnapshotsPerVolume optional
 PUT, DELETE /remotefs/v1/filesystems/{id}
 ```
 
 ```python
-filesystems = requests.get(f"{remotefs_url}/remotefs/v1/filesystems", headers=headers).json()["data"]
+filesystems = requests.get(f"{remotefs_url}/remotefs/v1/filesystems", headers=remotefs_headers).json()["data"]
 for fs in filesystems:
-    print(fs["id"], fs["name"], fs["dataPlaneName"], fs["numVolumes"], fs["maxSnapshotsPerVolume"])
+    print(fs["id"], fs["name"], fs["dataPlaneName"], fs.get("numVolumes"), fs["maxSnapshotsPerVolume"])
 ```
 
 Registering a filesystem is an administrator task that also needs Kubernetes and Trident
 setup: https://docs.domino.ai/cloud/admin/data-administration/netapp-volumes.
-`name`, `dataPlaneId`, `isDataPlaneDefault`, `rootPvc` and `storageClass` are required on
-create.
 
 ## Create a volume
 
@@ -63,14 +73,14 @@ POST /remotefs/v1/volumes
 
 Required: `name`, `filesystemId`, `capacity` (integer, bytes), `grants`
 (`[{"targetId": "<user-or-org-id>", "targetRole": "VolumeOwner" | "VolumeEditor" | "VolumeReader"}]`).
-Optional: `projectId` (attach on creation). There is no `description` field in the spec;
-set the description in the UI.
+Optional: `description`, `projectId` (attach on creation).
 
 ```python
 user_id = requests.get(f"{base_url}/api/users/v1/self", headers=headers).json()["user"]["id"]
 
-volume = requests.post(f"{remotefs_url}/remotefs/v1/volumes", headers=headers, json={
+volume = requests.post(f"{remotefs_url}/remotefs/v1/volumes", headers=remotefs_headers, json={
     "name": "large-training-data",
+    "description": "Multi-TB training dataset for vision models",
     "filesystemId": filesystems[0]["id"],
     "capacity": 5_000_000_000_000,            # 5 TB in bytes
     "grants": [{"targetId": user_id, "targetRole": "VolumeOwner"}],
@@ -80,25 +90,25 @@ print(volume["id"], volume["uniqueName"], volume["status"])
 ```
 
 The volume record: `id`, `name`, `uniqueName`, `description`, `filesystemId`,
-`filesystemName`, `capacity`, `storageSize`, `path`, `status` (`Active`,
-`MarkedForDeletion`, `Deleted`), `numSnapshots`, `maxSnapshots`, `dataPlaneId`,
+`filesystemName`, `capacity` (maximum bytes), `storageSize` (used bytes), `path`, `status`
+(`Active`, `MarkedForDeletion`, `Deleted`), `numSnapshots`, `maxSnapshots`, `dataPlaneId`,
 `grants[]` (`targetId`, `targetName`, `targetRole`, `isOrganization`), `projects[]`,
 `createdAt`, `createdBy`, `updatedAt`, `updatedBy`, `taxonomyTags`, `properties`.
 
-## Rename, attach, detach, delete
+## Edit, attach, detach, delete
 
 ```
-PATCH /remotefs/v1/volumes/{id}                          body: {"name": "new-name"}   (changes the mount path)
+PATCH /remotefs/v1/volumes/{id}                          body: {"name": "new-name", "description": "..."} (both optional; a rename changes the mount path)
 POST  /remotefs/v1/rpc/attach-volume-to-project          body: {"projectId": "...", "volumeId": "..."}   -> 204
 POST  /remotefs/v1/rpc/detach-volume-from-project        body: {"projectId": "...", "volumeId": "..."}   -> 204
 POST  /remotefs/v1/rpc/mark-volume-for-deletion          body: {"volumeId": "..."}   -> 204 (status MarkedForDeletion)
-POST  /remotefs/v1/rpc/restore-volume                    body: {"volumeId": "..."}   (undo mark-for-deletion)
+POST  /remotefs/v1/rpc/restore-volume                    body: {"volumeId": "..."}   -> 204 (undo mark-for-deletion)
 POST  /remotefs/v1/rpc/delete-volume                     body: {"volumeId": "..."}   (permanent; needs delete permission)
 POST  /remotefs/v1/rpc/bulk-attach-volumes-to-project, /rpc/bulk-copy-volumes-to-project
 ```
 
 ```python
-requests.post(f"{remotefs_url}/remotefs/v1/rpc/attach-volume-to-project", headers=headers,
+requests.post(f"{remotefs_url}/remotefs/v1/rpc/attach-volume-to-project", headers=remotefs_headers,
               json={"volumeId": volume["id"], "projectId": project_id})
 ```
 
@@ -110,7 +120,7 @@ PUT /remotefs/v1/volumes/{id}/grants      body: a JSON array of {"targetId", "ta
 ```
 
 ```python
-requests.put(f"{remotefs_url}/remotefs/v1/volumes/{volume_id}/grants", headers=headers, json=[
+requests.put(f"{remotefs_url}/remotefs/v1/volumes/{volume_id}/grants", headers=remotefs_headers, json=[
     {"targetId": user_id, "targetRole": "VolumeOwner"},
     {"targetId": "<other-user-id>", "targetRole": "VolumeEditor"},
     {"targetId": "<org-id>", "targetRole": "VolumeReader"},
@@ -124,35 +134,40 @@ reserved for Domino services.
 
 ```
 GET  /remotefs/v1/snapshots?volume_id=<id>&run_id=<runId>&limit=&offset=
-GET  /remotefs/v1/snapshots/{id};  PUT /remotefs/v1/snapshots/{id}
-POST /remotefs/v1/snapshots                          body: {"volumeId": "...", "tagNames": ["v2.0"]}   (tagNames optional)
+GET  /remotefs/v1/snapshots/{id}
+PUT  /remotefs/v1/snapshots/{id}                     body: {"description": "..."} (required; edits the commit message)
+POST /remotefs/v1/snapshots                          body: {"volumeId": "...", "description": "...", "tagNames": ["v2.0"]} (volumeId required)
 POST /remotefs/v1/snapshots/{id}/tags                body: {"name": "production"}
 DELETE /remotefs/v1/snapshots/{id}/tags/{name}
-POST /remotefs/v1/rpc/create-snapshot-from-run       body: {"volumeId": "...", "runId": "...", "userId": "..."}   (all required)
+POST /remotefs/v1/rpc/create-snapshot-from-run       body: {"volumeId": "...", "runId": "...", "userId": "...", "description": "..."} (first three required)
 POST /remotefs/v1/rpc/restore-snapshot               body: {"snapshotId": "..."}   -> 204
 POST /remotefs/v1/rpc/delete-snapshot                body: {"snapshotId": "..."}
 GET  /remotefs/v1/volumes/{id}/snapshots/{version}
 ```
 
-Query filters on the snapshot list are snake_case (`volume_id`, `run_id`), unlike the
-Nucleus routes. There is no `description` field on snapshot create in the spec; the
-commit message is entered in the UI.
+`description` is the commit message shown in the UI. Query filters on the snapshot list
+are snake_case (`volume_id`, `run_id`), unlike the Nucleus routes.
 
 ```python
-snapshot = requests.post(f"{remotefs_url}/remotefs/v1/snapshots", headers=headers,
-                         json={"volumeId": volume_id, "tagNames": ["v2.0"]}).json()
+snapshot = requests.post(f"{remotefs_url}/remotefs/v1/snapshots", headers=remotefs_headers, json={
+    "volumeId": volume_id,
+    "description": "Added Q4 customer records, 50M new rows",
+    "tagNames": ["v2.0"],
+}).json()
 print(snapshot["id"], snapshot["version"], [t["name"] for t in snapshot.get("tags", [])])
 
 requests.post(f"{remotefs_url}/remotefs/v1/snapshots/{snapshot['id']}/tags",
-              headers=headers, json={"name": "production"})
+              headers=remotefs_headers, json={"name": "production"})
 
-requests.post(f"{remotefs_url}/remotefs/v1/rpc/create-snapshot-from-run", headers=headers,
-              json={"volumeId": volume_id, "runId": os.environ["DOMINO_RUN_ID"], "userId": user_id})
+requests.post(f"{remotefs_url}/remotefs/v1/rpc/create-snapshot-from-run", headers=remotefs_headers,
+              json={"volumeId": volume_id, "runId": os.environ["DOMINO_RUN_ID"], "userId": user_id,
+                    "description": "post-training snapshot"})
 ```
 
-Snapshot record: `id`, `volumeId`, `version` (the number used in `snapshots/<name>/<number>`
-mount paths), `status`, `tags[]` (`name`, `addedAt`, `addedBy`), `labels`, `runId`,
-`createdAt`, `createdBy`.
+Snapshot record: `id`, `volumeId`, `version` (links to the ONTAP snapshot name and is the
+`<number>` in `snapshots/<name>/<number>` mount paths), `description`, `status`, `tags[]`
+(`name`, `addedAt`, `addedBy`; sorted by creation time ascending, so the last entry is the
+tag that mounts), `labels` (system-set), `runId`, `createdAt`, `createdBy`.
 
 ## List volumes
 
@@ -163,7 +178,7 @@ GET /remotefs/v1/volumes/ids;  GET /remotefs/v1/volumes/unique-name/{uniqueName}
 ```
 
 ```python
-volumes = requests.get(f"{remotefs_url}/remotefs/v1/volumes", headers=headers,
+volumes = requests.get(f"{remotefs_url}/remotefs/v1/volumes", headers=remotefs_headers,
                        params={"project_id": project_id, "limit": 50}).json()
 for v in volumes["data"]:
     print(f"{v['name']}  {v['capacity'] / 1e12:.1f} TB  snapshots={v['numSnapshots']}/{v['maxSnapshots']}  id={v['id']}")
@@ -173,7 +188,7 @@ print(volumes["meta"]["pagination"])
 ## Files
 
 ```
-GET    /remotefs/v1/volumes/{id}/files?path=<subpath>            list
+GET    /remotefs/v1/volumes/{id}/files?path=<subpath>            -> {"rows": [{"name", "size", "lastModified"}], "directorySize"}
 GET    /remotefs/v1/volumes/{id}/files/raw/{path}, /files/preview/{path}, /files/metadata, /files/recursive
 PATCH, DELETE /remotefs/v1/volumes/{id}/files
 POST   /remotefs/v1/volumes/{id}/uploads/start, /uploads, GET /uploads/status, /uploads/{uploadID}, /uploads/{uploadID}/complete
@@ -184,21 +199,25 @@ File operations run on a different host than volume operations
 (https://docs.domino.ai/6.3/reference/api/domino-volumes-api):
 
 - Outside a Domino execution: prefix the path with `/webvfs` on the deployment URL, for
-  example `GET https://<deployment>/webvfs/remotefs/v1/volumes/{id}/files?path=raw`.
+  example `GET https://<deployment>/webvfs/remotefs/v1/volumes/{id}/files?path=raw`, with
+  your PAT or service account token.
 - Inside an execution: call `http://data-webvfs-service.domino-compute:80` with the path
-  exactly as above (no prefix).
+  exactly as above (no prefix). Send the same access-token bearer as for the other
+  remotefs routes; the published spec binds no security scheme to these operations, so if
+  a deployment rejects it, check its `/docs/openapi/data_webvfs_service-swagger.json`.
 
 Inside a Workspace or Job, reading and writing the mount path is simpler than the file API
 ([DATA-ACCESS.md](./DATA-ACCESS.md)).
 
 ## Mount volumes in a job
 
-`POST /api/jobs/v1/jobs` (Nucleus base, not `remotefs_url`):
+`POST /api/jobs/v1/jobs` (Nucleus `base_url`, not `remotefs_url`):
 
 ```python
 requests.post(f"{base_url}/api/jobs/v1/jobs", headers=headers, json={
     "projectId": project_id,
     "runCommand": "python train.py",
+    "title": "train on shared volume",               # optional
     "hardwareTier": "small-k8s",                     # optional hardware tier id
     "netAppVolumeIds": [volume_id],
     "snapshotNetAppVolumesOnCompletion": True,       # snapshot every mounted volume when the job ends

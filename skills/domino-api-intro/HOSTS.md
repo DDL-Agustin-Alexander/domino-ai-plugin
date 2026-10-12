@@ -14,11 +14,13 @@ execution into another. Read `DOMINO_API_HOST` or use the URL an API response re
 
 ## One base for the Public API
 
-Both published specs declare a single server, the deployment hostname. Every path in
-them (`/api/...`, `/remotefs/v1`, `/datasetrw/...`, `/model-monitor/...`) is served on that
-base; inside a run `$DOMINO_API_PROXY` or `$DOMINO_API_HOST` stands in for it. Verified on
-a Domino Cloud deployment with `GET /api/users/v1/self`, `/api/jobs/beta/jobs`,
-`/api/taxonomy/v1/config` and `/remotefs/v1/volumes` on the same base.
+Both published specs declare a single server, the deployment hostname. The paths in them
+(`/api/...`, `/remotefs/v1`, `/datasetrw/...`, `/model-monitor/...`) are served on that
+base, with one documented exception: NetApp file operations under `/remotefs/v1/.../files/*`
+take a `/webvfs` prefix outside a run (next section). Inside a run `$DOMINO_API_PROXY` or
+`$DOMINO_API_HOST` stands in for the base. Verified on a Domino Cloud deployment with
+`GET /api/users/v1/self`, `/api/jobs/beta/jobs`, `/api/taxonomy/v1/config` and
+`/remotefs/v1/volumes` on the same base.
 
 ## NetApp Volumes (`/remotefs/v1`)
 
@@ -28,8 +30,8 @@ https://docs.domino.ai/6.3/reference/api/domino-volumes-api).
 
 | Operation | Inside a run | Outside Domino |
 |-----------|--------------|----------------|
-| Volume and filesystem CRUD, snapshots, grants, transfers | `$DOMINO_REMOTE_FILE_SYSTEM_HOSTPORT` when Domino injects it, else the proxy or `$DOMINO_API_HOST` | deployment URL |
-| File operations under `/remotefs/v1/volumes/{id}/files/*` and `/remotefs/v1/snapshots/{id}/files/*` | `http://data-webvfs-service.domino-compute:80` with the path as shown in the reference | deployment URL with `/webvfs` prefixed to the path |
+| Volume and filesystem CRUD, snapshots, grants, transfers | `$DOMINO_REMOTE_FILE_SYSTEM_HOSTPORT` when Domino injects it, **always with `Authorization: Bearer` from `http://localhost:8899/access-token`** (that host is reached directly, so the API proxy does not add a token); without the variable, the proxy or `$DOMINO_API_HOST` as usual | deployment URL with a PAT or service account token |
+| File operations under `/remotefs/v1/volumes/{id}/files/*` and `/remotefs/v1/snapshots/{id}/files/*` | `http://data-webvfs-service.domino-compute:80` with the path as shown in the reference; send the same access-token bearer as for the other remotefs routes (the published spec binds no security scheme to these operations) | deployment URL with `/webvfs` prefixed to the path |
 
 Details: [netapp-volumes](../netapp-volumes/API-NETAPP-VOLUMES.md).
 

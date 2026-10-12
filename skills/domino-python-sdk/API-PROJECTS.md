@@ -15,11 +15,12 @@ Use the shared setup block (`base_url`, `headers`) from
 GET /api/projects/beta/projects?offset=0&limit=20
 ```
 
-Only `offset` and `limit` are accepted; there is no name or owner filter, so filter
-client-side. Response: `{"projects": [...], "metadata": {"offset", "limit", "totalCount", "notices", "requestId"}}`.
-Each project has `id`, `name`, `description`, `visibility` (`Private`, `Searchable`,
-`Public`), `ownerId`, `ownerUsername`, `collaborators`, `isRestricted`, optional
-`billingTag`.
+Only `offset` and `limit` (default 10) are accepted; there is no name or owner filter, so
+filter client-side. Response: `{"projects": [...], "metadata": {"offset", "limit", "totalCount", "notices", "requestId"}}`.
+Each project has `id`, `name`, `description`, `visibility` (spec enum `public`,
+`searchable`, `private`; a live deployment has been seen returning `Private`, so compare
+case-insensitively), `ownerId`, `ownerUsername`, `collaborators`, `isRestricted`,
+optional `billingTag` and `mainRepository`.
 
 ```python
 projects = requests.get(f"{base_url}/api/projects/beta/projects", headers=headers,
@@ -44,11 +45,11 @@ project = requests.post(f"{base_url}/api/projects/beta/projects", headers=header
     "name": "fraud-detection",
     "description": "Fraud detection model",
     "visibility": "private",
-}).json()
-project_id = project["project"]["id"] if "project" in project else project["id"]
+}).json()["project"]
+project_id = project["id"]
 ```
 
-Read the response shape once on your deployment; beta routes may wrap the object.
+Response: `{"project": {...}, "metadata": {...}}`.
 
 ## Get a project
 
@@ -131,12 +132,13 @@ requests.post(f"{base_url}/api/projects/v1/projects/{project_id}/repositories", 
 
 ```
 GET    /api/projects/v1/projects/{projectId}/goals
-POST   /api/projects/v1/projects/{projectId}/goals          body: {"title": "...", "assigneeId": "...", "stageId": "..."}
+POST   /api/projects/v1/projects/{projectId}/goals          body: {"title": "...", "description": "...", "assigneeId": "...", "stageId": "..."}
 PATCH  /api/projects/v1/projects/{projectId}/goals/{goalId} body: {"isComplete": true}
 DELETE /api/projects/v1/projects/{projectId}/goals/{goalId}
 ```
 
-`title` is required on create; `isComplete` is required on update. Link a job to a goal
+`title` is required on create (`description`, `assigneeId`, `stageId` optional);
+`isComplete` is required on update. Responses are `{"goal": {...}, "metadata"}`. Link a job to a goal
 with `POST /api/jobs/v1/goals?jobId=...` ([API-JOBS.md](./API-JOBS.md#job-goals)).
 
 ## Shared datasets
@@ -156,8 +158,8 @@ POST /api/projects/beta/projects/{projectId}/commits/resolveGitRef
 ```
 
 ```python
-commit = requests.get(f"{base_url}/api/projects/beta/projects/{project_id}/commits/latest",
-                      headers=headers).json()
+commit_id = requests.get(f"{base_url}/api/projects/beta/projects/{project_id}/commits/latest",
+                         headers=headers).json()["commitId"]     # current DFS head
 content = requests.get(
     f"{base_url}/api/projects/v1/projects/{project_id}/files/{commit_id}/train.py/content",
     headers=headers).text

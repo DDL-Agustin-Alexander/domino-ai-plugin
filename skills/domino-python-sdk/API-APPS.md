@@ -20,18 +20,18 @@ GET /api/apps/beta/apps
 | Parameter | Notes |
 |-----------|-------|
 | `projectId`, `ownerId`, `publisherId`, `name` | Filters |
-| `status` | One of the app statuses (`Queued`, `Scheduled`, `Pending`, `Preparing`, `Building`, `Pulling`, `Running`, `Serving`, `StopRequested`, `StopAndDiscardRequested`, `Stopping`, `Finishing`, ...) |
-| `tagIds` | Repeatable taxonomy tag ids |
-| `accessStatus` | `granted`, `pending`, `noAccess` |
-| `configurationType` | `STANDARD` (default) or `AISYSTEM` |
-| `includeTemplateApps`, `prioritizePinned` | boolean |
+| `status` | Most recent instance status: `Queued`, `Scheduled`, `Pending`, `Preparing`, `Building`, `Pulling`, `Running`, `Serving`, `StopRequested`, `StopAndDiscardRequested`, `Stopping`, `Finishing`, `Stopped`, `Succeeded`, `Failed`, `Error` |
+| `tagIds` | Taxonomy tag ids, comma-separated, AND semantics |
+| `includeTemplateApps` | Default false |
 | `sortField` (`name`, `lastUpdated`, `status`, `views`, `lastViewed`, `published`), `sortOrder` (`asc`, `desc`) | |
-| `limit`, `offset` | Pagination |
+| `limit`, `offset` | `limit` defaults to no limit |
+| `configurationType` (`STANDARD`, `AISYSTEM`), `accessStatus` (`granted`, `pending`, `noAccess`), `prioritizePinned` | **Cloud** only |
 
-Response: `{"items": [...]}`. Each item has `id`, `name`, `description`, `project`
-(`id`, `name`, `ownerUsername`, `projectType`), `publisher`, `entryPoint`, `url`,
-`visibility`, `discoverable`, `mountDatasets`, `renderIFrame`, `currentVersion`
-(`id`, `hardwareTierId`, `environmentId`, `resolvedCommits`, `currentInstance`, ...).
+Response: `{"items": [...], "metadata": {...}}`. Each item has `id`, `name`, `description`,
+`project` (`id`, `name`, `ownerUsername`, `projectType`), `publisher`, `entryPoint`, `url`,
+`visibility`, `discoverable`, `mountDatasets`, `renderIFrame`, `isPinned`, `views`,
+`currentVersion` (`id`, `hardwareTierId`, `environmentId`, `resolvedCommits`,
+`currentInstance`, ...), `taxonomyTags`; `iconId` and `latestVersion` on **Cloud**.
 
 ```python
 apps = requests.get(f"{base_url}/api/apps/beta/apps", headers=headers,
@@ -46,31 +46,34 @@ for app in apps:
 POST /api/apps/beta/apps
 ```
 
-Required: `name`, `projectId`, `visibility`, `version`. Optional: `entryPoint`
-(default `app.sh`), `discoverable`, `mountDatasets`, `renderIFrame`, `sendNotifications`,
-`iconId`, `configurationType`, `accessStatuses[]` (`userId`, `status` `ALLOWED` /
-`DENIED` / `PENDING`).
+Required: `name`, `projectId`, `visibility` (`AUTHENTICATED`, `GRANT_BASED`,
+`GRANT_BASED_STRICT`, `PUBLIC`), `version`. Optional: `description`, `entryPoint`,
+`discoverable`, `mountDatasets`, `renderIFrame`, `sendNotifications`, `configurationType`
+(`STANDARD` default, `AISYSTEM`), `accessStatuses[]` (`userId`, `status` `ALLOWED` /
+`DENIED` / `PENDING`); `iconId` (Font Awesome identifier) on **Cloud**.
 
 `version` fields (none required by the schema): `hardwareTierId`, `environmentId`,
-`environmentRevisionId`, `entryScript`, `gitRef` (`{"type": "head|commitId|branches|tags|custom", "value": "..."}`),
-`dfsCommitId`, `externalVolumeMountIds`, `netAppVolumeIds`, `dataPlaneId`,
-`autoscalingSpecification` (`enabled` required; `minReplicas`, `maxReplicas` 1 to 30,
-CPU/memory targets, stabilization windows, `useSessionAffinity`), `bundleId`,
-`extendedIdentityPropagationToAppsEnabled`, `vanityUrl`, `tags`.
+`environmentRevisionId`, `description`, `entryScript` (inline script that overrides the
+entry point), `gitRef` (`{"type": "head" | "commitId" | "branches" | "tags" | "custom", "value": "..."}`),
+`dfsCommitId`, `externalVolumeMountIds`, `netAppVolumeIds`, `dataPlaneId` (auto-filled from
+the hardware tier; 422 if both are given and disagree), `autoscalingSpecification`
+(`enabled` required; `minReplicas`, `maxReplicas` 1 to 30, CPU/memory targets,
+stabilization windows, `useSessionAffinity`), `bundleId` (governance; immutable),
+`extendedIdentityPropagationToAppsEnabled`, `vanityUrl`, `tags` (`[{"key", "value"}]`).
 
 ```python
 app = requests.post(f"{base_url}/api/apps/beta/apps", headers=headers, json={
     "name": "customer-insights",
+    "description": "Customer analytics dashboard",
     "projectId": project_id,
     "visibility": "GRANT_BASED",
     "entryPoint": "app.sh",
     "version": {"hardwareTierId": "small-k8s", "environmentId": env_id},
 }).json()
+app_id, version_id = app["id"], app["currentVersion"]["id"]
 ```
 
-`visibility` values are not enumerated in the beta schema; live deployments return
-`GRANT_BASED` for shared apps. Check the v1 chain in
-[domino-apps/API-APPS.md](../domino-apps/API-APPS.md) for the documented values.
+The response is the app record (`id`, `url`, `visibility`, `currentVersion`, ...).
 
 ## Get, update, delete
 
@@ -91,7 +94,8 @@ POST  /api/apps/beta/apps/{appId}/versions/{versionId}/start
 POST  /api/apps/beta/apps/{appId}/versions/{versionId}/stop
 ```
 
-Use `start` and `stop` on a version to run or halt the app.
+Use `start` and `stop` on a version to run or halt the app. A version record carries
+`currentInstance` (`id`, `status`, `createdAt`, `dfsCommitId`, `gitCommitId`).
 
 ## Instances and logs
 
@@ -105,19 +109,13 @@ POST   /api/apps/beta/apps/{appId}/versions/{versionId}/instances/{instanceId}/v
 ```
 
 ```python
-versions = requests.get(f"{base_url}/api/apps/beta/apps/{app_id}/versions", headers=headers).json()
-version_id = versions["items"][0]["id"]
-instances = requests.get(f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}/instances",
-                         headers=headers).json()
-instance_id = instances["items"][0]["id"]
+version = requests.get(f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}", headers=headers).json()
+instance_id = version["currentInstance"]["id"]
 logs = requests.get(
     f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}/instances/{instance_id}/logs",
     headers=headers)
 print(logs.text)
 ```
-
-Check the list envelope key (`items`) once on your deployment; beta list responses may
-differ from v1.
 
 ## Thumbnail, views, vanity URLs, filters, access
 
@@ -130,7 +128,7 @@ POST /api/apps/beta/apps/{appId}/access/requests
 GET, PUT /api/apps/beta/apps/{appId}/roles        (Cloud only)
 ```
 
-## Workflow: create, wait, read logs, stop
+## Workflow: create, start, wait, read logs, stop
 
 ```python
 import time
@@ -139,20 +137,22 @@ app = requests.post(f"{base_url}/api/apps/beta/apps", headers=headers, json={
     "name": "ml-dashboard", "projectId": project_id, "visibility": "GRANT_BASED",
     "version": {"hardwareTierId": "small-k8s", "environmentId": env_id},
 }).json()
-app_id = app["id"]
-version_id = app["currentVersion"]["id"]
+app_id, version_id = app["id"], app["currentVersion"]["id"]
 
 requests.post(f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}/start", headers=headers)
 
-while True:
-    current = requests.get(f"{base_url}/api/apps/beta/apps/{app_id}", headers=headers).json()
-    status = current["currentVersion"]["currentInstance"]["status"] \
-        if current.get("currentVersion", {}).get("currentInstance") else "Pending"
+deadline = time.time() + 900
+while time.time() < deadline:
+    version = requests.get(f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}",
+                           headers=headers).json()
+    status = (version.get("currentInstance") or {}).get("status", "Pending")
     if status in ("Running", "Serving"):
-        print("App is up:", current["url"]); break
-    if status in ("Failed", "Stopped"):
-        print("App did not start:", status); break
+        print("App is up:", app["url"]); break
+    if status in ("Failed", "Error", "Stopped", "Succeeded"):
+        print("App is not serving:", status); break
     time.sleep(10)
+else:
+    print("Timed out waiting for the app")
 
 requests.post(f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}/stop", headers=headers)
 ```

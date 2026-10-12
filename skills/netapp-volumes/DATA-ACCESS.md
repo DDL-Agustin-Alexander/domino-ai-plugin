@@ -29,8 +29,10 @@ Paths mirror the Dataset scheme. Volumes are global, so there is no local/import
 | DFS | `/domino/netapp-volumes/<name>` | `/domino/netapp-volumes/snapshots/<name>/<number>` | `/domino/netapp-volumes/snapshot-tags/<name>/<tag>` |
 | Git-based | `/mnt/netapp-volumes/<name>` | `/mnt/netapp-volumes/snapshots/<name>/<number>` | `/mnt/netapp-volumes/snapshot-tags/<name>/<tag>` |
 
-`<number>` is the snapshot's `version` from the API. Renaming a volume changes `<name>`
-and therefore every path; update scripts after a rename.
+The docs give `snapshots/<name>` for the snapshots directory and state that the paths
+mirror the Dataset scheme, in which each snapshot sits under its number; `<number>` is the
+snapshot's `version` from the API. Renaming a volume changes `<name>` and therefore every
+path; update scripts after a rename.
 
 ### Permissions at mount time
 
@@ -103,12 +105,13 @@ Writes need the Editor or Owner role; a pinned snapshot is read-only.
 ### Snapshot before destructive changes
 
 ```python
-requests.post(f"{remotefs_url}/remotefs/v1/snapshots", headers=headers,
-              json={"volumeId": volume_id, "tagNames": ["pre-processing-2026-01"]})
+requests.post(f"{remotefs_url}/remotefs/v1/snapshots", headers=remotefs_headers,
+              json={"volumeId": volume_id, "description": "Pre-processing baseline",
+                    "tagNames": ["pre-processing-2026-01"]})
 process_data()
 ```
 
-Setup for `remotefs_url` and `headers`: [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#authentication-and-base-url).
+Setup for `remotefs_url` and `remotefs_headers`: [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#authentication-and-base-urls).
 For Jobs, `snapshotNetAppVolumesOnCompletion: true` on `POST /api/jobs/v1/jobs` does
 this automatically at the end of the run.
 

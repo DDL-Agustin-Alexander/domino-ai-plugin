@@ -40,8 +40,12 @@ problem.
 `GET /api/jobs/beta/jobs/{jobId}` returns `{"job": {...}, "metadata": {...}}`. Status is the
 object `job.status` with `executionStatus` (string), `isCompleted`, `isArchived` and
 `isScheduled`. Treat `isCompleted: true` as terminal and read `executionStatus` for the
-outcome. Values seen on live deployments and tested by python-domino: `Succeeded`,
-`Failed`, `Stopped`, plus `Running` and queued states while in flight.
+outcome. Terminal values per
+https://docs.domino.ai/cloud/platform-capabilities/core-concepts/jobs/job-states:
+`Succeeded`, `Stopped` (manually stopped), `Failed` (a problem with your code) and
+`Error` (a problem outside your code); in-flight values include `Queued`, `Scheduled`,
+`Pending`, `Preparing`, `Building`, `Pulling`, `Running`, `Finishing`, `StopRequested`,
+`Stopping`. Only `Succeeded` is success.
 
 `GET /api/jobs/beta/jobs?projectId=...` filters with `statusFilter` =
 `all | queued | running | completed | archived | active`.
@@ -55,12 +59,13 @@ Prefer the paginated routes over one-shot dumps:
 
 - Platform audit: `GET /api/audittrail/v1/auditevents` with `limit`/`offset` and
   `startTimestamp`/`endTimestamp` (epoch milliseconds), or `POST /api/audittrail/v1/search`
-  (`limit` <= 1000). Details: [API-ADMIN.md](../domino-python-sdk/API-ADMIN.md#audit-events-api).
+  (`limit` <= 1000). Details: [API-ADMIN.md](../domino-python-sdk/API-ADMIN.md#audit-trail).
 - Data source audit: `GET /api/datasource/v1/audit` with `startTime`/`endTime`
   (ISO 8601), `dataSourceNames` and `eventKinds` filters. Documented at
   https://docs.domino.ai/cloud/admin/operations/audit-logs/monitor-data-source-logs.
-- Governance exports: paginate `GET /api/governance/v1/results?bundleID=...` with
-  `offset`/`limit` (see [domino-governance](../domino-governance/SKILL.md)).
+- Governance: `GET /api/governance/v1/results?bundleID=...` filters by `policyID`,
+  `policyVersionID`, `artifactID` and `createdBy.id` (no offset/limit); narrow by filter
+  rather than reading everything at once (see [domino-governance](../domino-governance/SKILL.md)).
 
 ## Wrong-surface symptoms
 

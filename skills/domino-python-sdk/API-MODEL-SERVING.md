@@ -10,12 +10,13 @@ Authentication: [domino-api-intro](../domino-api-intro/SKILL.md#authentication).
 
 | Operation | Path | Notes |
 |-----------|------|--------|
-| List, register | `/api/registeredmodels/v2` | `pageToken` / `maxResults` pagination; `modelCategory` filter |
-| Get, update, versions, model APIs for a version | `/api/registeredmodels/v1/{modelName}/...` | Path key is the **model name**, not an id |
+| List, register, add a version | `/api/registeredmodels/v2` | `pageToken` / `maxResults` pagination; `modelCategory` filter; `create: false` adds a version to an existing model |
+| Get, update, read versions, model APIs for a version | `/api/registeredmodels/v1/{modelName}/...` | Path key is the **model name**, not an id |
 | Versions (v2 read) | `/api/registeredmodels/v2/{modelName}/versions[/{version}]` | |
 
-Both families are in both specs; use v2 for discovery and create, v1 for per-model reads
-and version creation.
+Both families are in both specs; use v2 for discovery and writes, v1 for per-model reads.
+`POST /api/registeredmodels/v1/{modelName}/versions` is marked deprecated in both specs
+(since 6.2.1); do not use it for new automation.
 
 ## Model Serving (`/api/modelServing/v1`)
 

@@ -15,17 +15,21 @@ All examples assume `BASE` and `H` from [SKILL.md](./SKILL.md#configuration).
 | `/property-values/{entityType}/{entityId}` | DELETE | Remove every stored value |
 
 `entityType` is one of the target's entity types ([SKILL.md](./SKILL.md#which-path-applies)).
-All three take an optional `version` query parameter.
+All three take a `version` query parameter whose rule, per the spec, is: "Required for
+`app_version`; omitted for all other types (`model_version` is referenced by its version
+UUID)".
 
-## Versioned entities (`?version=`)
+## Versioned entities
 
-Apps, Models and (on Cloud) Policies carry values globally and independently per version.
-Use `app_version`, `model_version` or `policy_version` with `?version=<n>` to address one
+Apps and Models (and Policies on Cloud) carry values globally and independently per
 version:
 
 ```bash
-curl -s -H "$H" "$BASE/property-values/model_version/<model-id>?version=3"
+# App version: the app id plus ?version=<n>
 curl -s -H "$H" "$BASE/property-values/app_version/<app-id>?version=5"
+
+# Model version: the model-version UUID as the entity id, no version parameter
+curl -s -H "$H" "$BASE/property-values/model_version/<model-version-uuid>"
 ```
 
 ## Get values
@@ -87,7 +91,8 @@ Rules:
   abort the batch.
 - `value` and `values` are mutually exclusive per item: `values[]` for `multi_select`,
   `value` for everything else.
-- Clearing: an item with an empty `value` removes a stored value.
+- Clearing: an item with an empty `value` removes a stored value. `applied[].action` is
+  `set`, `cleared` or `noop` (nothing was stored).
 
 ## Copy policy (templates)
 

@@ -23,9 +23,10 @@ Reference: https://docs.domino.ai/cloud/reference/api/domino-api-authentication
 | Outside Domino (laptop, CI, cron) | The deployment URL users open in the browser; set `DOMINO_API_HOST` to it yourself | `Authorization: Bearer` with a **Personal Access Token** (you) or a **service account token** (unattended automation) |
 
 Legacy user API keys (`X-Domino-Api-Key`, `DOMINO_USER_API_KEY`, `api_key=`) are
-deprecated: the auth page schedules them for removal and the environment-variable
-glossary marks `DOMINO_USER_API_KEY` as sunsetting. Never recommend them, not even as a
-fallback. `DOMINO_TOKEN_FILE` no longer exists as an environment variable.
+deprecated: the auth page says they still work but are "scheduled for deprecation in
+future versions", and the environment-variable glossary marks `DOMINO_USER_API_KEY` as
+sunsetting. Never recommend them, not even as a fallback. `DOMINO_TOKEN_FILE` no longer
+exists as an environment variable.
 
 ```bash
 # Inside a run (preferred)

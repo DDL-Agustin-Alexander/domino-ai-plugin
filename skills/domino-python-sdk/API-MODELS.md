@@ -21,12 +21,13 @@ uses that endpoint's own access token instead (below).
 GET /api/modelServing/v1/modelApis
 ```
 
-Filters: `projectId`, `environmentId`, `name`, `registeredModelName`,
-`registeredModelVersion`, `limit`, `offset`, `orderBy`. Response: `{"items": [...]}`.
-Each item has `id`, `name`, `description`, `isArchived`, `environmentId`,
-`hardwareTierId`, `replicas`, `isAsync`, `routingMode`, `access` (`isPublic`,
-`accessTokens[]`), `activeVersion` (`id`, `number`, `dataPlaneId`, `deployment.status`),
-`collaborators`, `metadata`.
+Filters: `projectId`, `environmentId`, `name` (regular expression),
+`registeredModelName`, `registeredModelVersion`, `limit` (default 25), `offset`,
+`orderBy` (`<field> ASC|DESC`). Response: `{"items": [...], "metadata": {...}}`. Each item
+has `id`, `name`, `description`, `isArchived`, `environmentId`, `hardwareTierId`,
+`replicas`, `isAsync`, `routingMode`, `access` (`isPublic`, `accessTokens[]`),
+`activeVersion` (`id`, `number`, `dataPlaneId`, `deployment.status`, `deployment.isPending`),
+`collaborators`, `healthCheck`, `metadata`.
 
 ```python
 items = requests.get(f"{base_url}/api/modelServing/v1/modelApis", headers=headers,
@@ -36,17 +37,17 @@ items = requests.get(f"{base_url}/api/modelServing/v1/modelApis", headers=header
 ### Create
 
 ```
-POST /api/modelServing/v1/modelApis
+POST /api/modelServing/v1/modelApis        -> 201 with the Model API record
 ```
 
 Required: `name`, `description`, `environmentId`, `isAsync`, `strictNodeAntiAffinity`,
-`environmentVariables` (array, may be empty), `version`. Optional: `hardwareTierId`,
-`replicas`, `resourceQuotaId`, `bundleId` (governance).
+`environmentVariables` (array of `{"key", "value"}`, may be empty), `version`. Optional:
+`hardwareTierId`, `replicas`, `resourceQuotaId`, `bundleId` (governance).
 
 `version` (required fields `projectId`, `source`, `logHttpRequestResponse`,
 `monitoringEnabled`): `source.type` is `File` (`file`, `function`, optional
 `excludeFiles`) or `Registry` (`registeredModelName`, `registeredModelVersion`); optional
-`commitId`, `environmentId`, `shouldDeploy`, `recordInvocation`,
+`description`, `commitId`, `environmentId`, `shouldDeploy`, `recordInvocation`,
 `predictionDatasetResourceId`, `provenanceCheckpointId`.
 
 ```python
@@ -60,6 +61,7 @@ model_api = requests.post(f"{base_url}/api/modelServing/v1/modelApis", headers=h
     "environmentVariables": [],
     "version": {
         "projectId": project_id,
+        "description": "initial version",
         "source": {"type": "File", "file": "serve.py", "function": "predict"},
         "logHttpRequestResponse": False,
         "monitoringEnabled": False,
@@ -81,14 +83,16 @@ The GET response carries `access.accessTokens[]` (token ids and metadata, not th
 values) and `activeVersion.deployment.status`. It does not include the invocation URL;
 read that from the Model API's page in Domino.
 
-**Cloud only:** `PUT /api/modelServing/beta/modelApis/{modelApiId}/access`,
-`GET/PUT .../visibility`, `GET/POST .../collaborators`, `GET .../consumer/access`.
+**Cloud only:** `PUT /api/modelServing/beta/modelApis/{modelApiId}/access` (body
+`collaborators[]` with `id`, `isOrganization`, `role` `Owner`/`Editor`/`Operator`/`Viewer`,
+plus `visibility` `Public`/`Discoverable`/`Private`), `GET/PUT .../visibility`,
+`GET/POST .../collaborators`, `GET .../consumer/access`.
 
 ### Versions and logs
 
 ```
 GET  /api/modelServing/v1/modelApis/{modelApiId}/versions
-POST /api/modelServing/v1/modelApis/{modelApiId}/versions
+POST /api/modelServing/v1/modelApis/{modelApiId}/versions        -> 201
 GET  /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}
 GET  /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/buildLogs
 GET  /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/exportLogs
@@ -96,7 +100,9 @@ GET  /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/in
 ```
 
 New-version body is the `version` object above (`projectId`, `source`,
-`logHttpRequestResponse`, `monitoringEnabled` required).
+`logHttpRequestResponse`, `monitoringEnabled` required; `description` optional). The
+response includes `deployment.status`, `deployment.isPending`, `environmentRevisionId`,
+`number`.
 
 ## Model Deployments
 
@@ -109,47 +115,57 @@ GET                /api/modelServing/v1/modelDeployments/{modelDeploymentId}/log
 GET                /api/modelServing/v1/modelDeployments/{modelDeploymentId}/credentials[/{operationType}]
 ```
 
-The create body is large: `models[]` (each with `name`, `source` naming a registered
-model and version, optional `environmentId`), `configuration` (`deploymentType.type`
-`SYNC_ENDPOINT` or `ASYNC_ENDPOINT`, `sharedConfig`, `modelConfigs`), `deploymentTargetId`,
-`collaborators[]` (`id`, `role` `OWNER`/`CONSUMER`), `isGloballyAccessible`. Pull the
-schema from the spec ([API-SPECS.md](../domino-api-intro/API-SPECS.md)) before composing
-it; deployment targets come from `GET /api/admin/v1/deploymentTargets/selectable`.
+Create body, required fields: `name`, `deploymentTargetId`, `resourceConfigurationId`,
+`configuration` (`deploymentType` with `type` `SYNC_ENDPOINT` or `ASYNC_ENDPOINT`,
+`sharedConfig`, `modelConfigs`; plus top-level `sharedConfig` and `modelConfigs`), and
+`models[]`, each with `name`, `environmentId` and `source`
+(`registeredModelName`, `registeredModelVersion`, `registeredModelType: "MODELREGISTRY"`).
+Optional: `description`, `collaborators[]` (`id`, `role` `OWNER`/`CONSUMER`),
+`isGloballyAccessible`. Deployment targets and resource configurations come from
+`GET /api/admin/v1/deploymentTargets/selectable` and
+`.../{deploymentTargetId}/resourceConfigurations`; the `sharedConfig` / `modelConfigs`
+shape follows the target type's `effectiveModelDeploymentSchema`. The record's
+`status.state` is one of `STARTING`, `RUNNING`, `UPDATING`, `STOPPING`, `STOPPED`,
+`FAILED`, `DELETING`, `DELETED`.
 
 ## Registered models (registry)
 
-List and register use v2; get, update, versions use v1 keyed by **model name**.
+List and register use v2; per-model reads use v1 keyed by **model name**. Version
+creation goes through `POST /api/registeredmodels/v2` as well: the v1 route
+`POST /api/registeredmodels/v1/{modelName}/versions` is marked deprecated in both specs
+("deprecated as of version 6.2.1. Please migrate to POST /api/registeredmodels/v2").
 
 ```
-GET  /api/registeredmodels/v2            params: projectId, searchPattern, modelCategory (genai|ml), pageToken, maxResults, orderBy
-POST /api/registeredmodels/v2
-GET  /api/registeredmodels/v1/{modelName}
-PATCH /api/registeredmodels/v1/{modelName}
-GET  /api/registeredmodels/v1/{modelName}/versions
-POST /api/registeredmodels/v1/{modelName}/versions     body: {"experimentRunId": "...", "artifact": "...", "description": "..."} (all required)
-GET  /api/registeredmodels/v1/{modelName}/versions/{version}
-GET  /api/registeredmodels/v1/{modelName}/versions/{version}/modelapis
+GET  /api/registeredmodels/v2            params: projectId, searchPattern, modelCategory (genai|ml), pageToken, maxResults (default 25), orderBy
+POST /api/registeredmodels/v2            register a model or add a version
+GET  /api/registeredmodels/v1            same list, without modelCategory
+GET  /api/registeredmodels/v1/{modelName};  PATCH /api/registeredmodels/v1/{modelName}
+GET  /api/registeredmodels/v1/{modelName}/versions;  GET .../versions/{version};  GET .../versions/{version}/modelapis
 GET  /api/registeredmodels/v2/{modelName}/versions[/{version}]
 ```
 
 Register (`POST /api/registeredmodels/v2`) requires `modelName`, `modelSource` and
-`create` (boolean: create the registered model if it does not exist). `modelSource` is
-`{"sourceType": "mlflow", "mlflowSource": {"experimentRunId": "...", "artifactPath": "models/my_model"}}`
-or `{"sourceType": "huggingface", "huggingFaceSource": {"modelId": "org/model"}}`.
-Optional: `projectId`, `modelCategory`, `modelType`, `discoverable`.
+`create` (true to create the registered model, false to add a version to an existing
+one). `modelSource` is
+`{"sourceType": "mlflow", "mlflowSource": {"experimentRunId": "...", "artifactPath": "model", "loggedModelId": "..."}}`
+or `{"sourceType": "huggingface", "huggingFaceSource": {"modelId": "org/model", "modelRevision": "...", "huggingFaceToken": "..."}}`.
+Optional: `description`, `discoverable`, `modelCategory` (`genai`, `ml`), `modelType`,
+`projectId` (required for Hugging Face sources only; MLflow sources take the project from
+the run). Response: `{"registeredModel": {...}, "modelVersion": {...}}`.
 
 ```python
-requests.post(f"{base_url}/api/registeredmodels/v2", headers=headers, json={
+result = requests.post(f"{base_url}/api/registeredmodels/v2", headers=headers, json={
     "modelName": "fraud-classifier",
+    "description": "Random forest fraud classifier",
     "create": True,
-    "projectId": project_id,
     "modelSource": {"sourceType": "mlflow",
                     "mlflowSource": {"experimentRunId": run_id, "artifactPath": "model"}},
-})
+}).json()
+print(result["modelVersion"]["modelVersion"])
 ```
 
-Registry list responses use `{"items": [...]}` with `pageToken` pagination; items carry
-`name`, `latestVersion`, `project`, `tags`.
+List responses use `{"items": [...], "metadata": {"nextPageToken", ...}}`; page with
+`pageToken` / `maxResults` (both v1 and v2), not `offset` / `limit`.
 
 ## Invoking a Model API
 
@@ -171,33 +187,37 @@ response = requests.post(
 prediction = response.json()
 ```
 
-Asynchronous endpoints use the Public API routes:
+Asynchronous endpoints use the Public API routes on the deployment URL. Send them to
+`$DOMINO_API_HOST` (or the deployment URL from outside), not through `$DOMINO_API_PROXY`:
+the endpoint expects its own access token, and the proxy injects a platform token.
 
 ```python
-submitted = requests.post(f"{base_url}/api/modelApis/async/v1/{model_api_id}",
-                          headers={"Authorization": f"Bearer {model_access_token}"},
+import time
+async_base = os.environ["DOMINO_API_HOST"].rstrip("/")
+auth = {"Authorization": f"Bearer {model_access_token}"}
+
+submitted = requests.post(f"{async_base}/api/modelApis/async/v1/{model_api_id}", headers=auth,
                           json={"parameters": {"input_file": "s3://bucket/data.csv"}}).json()
 prediction_id = submitted["asyncPredictionId"]
 
-import time
-while True:
-    result = requests.get(f"{base_url}/api/modelApis/async/v1/{model_api_id}/{prediction_id}",
-                          headers={"Authorization": f"Bearer {model_access_token}"}).json()
-    if result.get("result") is not None or result.get("errors"):
+deadline = time.time() + 1800
+while time.time() < deadline:
+    result = requests.get(f"{async_base}/api/modelApis/async/v1/{model_api_id}/{prediction_id}",
+                          headers=auth).json()
+    if result["status"] in ("Succeeded", "Failed"):
         break
-    print("status:", result["status"])
-    time.sleep(5)
-print(result.get("result"), result.get("errors"))
+    time.sleep(5)                                   # Pending or Processing
+print(result["status"], result.get("result"), result.get("errors"))
 ```
 
-`parameters` is required on submit; the poll response has `asyncPredictionId`, `status`
-(a string the spec does not enumerate), optional `result` and `errors[]`. Stop when
-`result` or `errors` is populated.
+`parameters` is required on submit. The poll response has `asyncPredictionId`, `status`
+(`Pending`, `Processing`, `Succeeded`, `Failed`), `result` and `errors[]`.
 
 ## python-domino
 
 `models_list()`, `model_publish(file, function, environment_id, name, description, files_to_exclude=None)`,
 `model_versions_get(model_id)`, `model_version_publish(model_id, file, function, environment_id, description, files_to_exclude=None)`
-and the `model_version_export*` methods call the legacy `/v1/models` and `/v4/models`
-routes. Signatures and a publish example: [SDK-EXAMPLES.md](./SDK-EXAMPLES.md#model-apis-and-apps).
-There is no `model_get` or `runs_wait`.
+and the `model_version_export*` methods call `/v1/models` and `/v4/models`, which are
+Domino Internal API, may change between Domino versions. Signatures and a publish example:
+[SDK-EXAMPLES.md](./SDK-EXAMPLES.md#model-apis-and-apps). There is no `model_get` or
+`runs_wait`.

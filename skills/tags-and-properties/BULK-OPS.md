@@ -20,12 +20,10 @@ curl -s -X POST -H "$H" -H "Content-Type: application/json" \
 # 200 -> {"deletedCount":2}
 ```
 
-Both responses are `{"deletedCount": N}` per the spec. The request body is **not**
-declared in the published spec or in the per-deployment service document; `{"ids": [...]}`
-is the shape this skill has used, so confirm it with a one-item call on your deployment
-before scripting it. Deleting tags removes their assignments; deleting namespaces removes
-their tags and assignments. There is no undo, so confirm with the user first and prefer
-`status: deprecated` on shared deployments.
+Both routes take `{"ids": [...]}` (`ids` required, at least one id) and return
+`{"deletedCount": N}`, per both published specs. Deleting tags removes their assignments;
+deleting namespaces removes their tags and assignments. There is no undo, so confirm with
+the user first and prefer `status: deprecated` on shared deployments.
 
 ## Merge tags
 

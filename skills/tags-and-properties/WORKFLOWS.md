@@ -72,8 +72,9 @@ curl -s -X POST -H "$H" -H "Content-Type: application/json" \
   "$BASE/rpc/copy-entity-tags"
 ```
 
-Project Templates do this automatically: a project created from a template inherits the
-template's tags and property values.
+Project Templates do this at creation time: a project created from a template inherits
+the template's tags, and its property values according to the `copyPolicy` chosen per
+property ([PROPERTY-VALUES.md](./PROPERTY-VALUES.md#copy-policy-templates)).
 
 ## Design practices
 

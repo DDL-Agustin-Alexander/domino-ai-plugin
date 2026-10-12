@@ -90,9 +90,13 @@ carry a PAT or service account token for that deployment.
 
 ```bash
 curl -s -X POST -H "$H" "$BASE/rpc/export-to-file" > "taxonomy-backup-$(date +%Y%m%d).csv"
+head -1 "taxonomy-backup-$(date +%Y%m%d).csv"   # if this is a header line, drop it before importing
 # restore: idempotent for rows that already exist
 curl -s -X POST -H "$H" -F "file=@taxonomy-backup-20260508.csv" "$BASE/rpc/import-from-file"
 ```
+
+The spec types the export as `text/csv` and the import format has no header row; whether
+the export itself writes one is not stated, so inspect the first line before a round trip.
 
 ### Reviewable changes
 

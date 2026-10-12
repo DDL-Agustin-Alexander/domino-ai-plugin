@@ -53,7 +53,7 @@ Human users have no Public API deactivate route; use the admin UI.
 ## Personal Access Tokens
 
 ```
-GET, POST, DELETE /api/pat/v1/tokens                      your own tokens; POST body {"name": "...", "expiresIn": <seconds>, "scopes": [...]}
+GET, POST, DELETE /api/pat/v1/tokens                      your own tokens; POST body {"name": "...", "expiresIn": <seconds>, "description": "...", "scopes": [...]}
 POST /api/pat/v1/tokens/{patId}/invalidate;  DELETE /api/pat/v1/tokens/{patId}
 POST /api/pat/v1/tokens/invalidate | /invalidate/bulk | /delete/bulk
 GET  /api/pat/v1/tokens/expiration-policy;  GET /api/pat/v1/tokens/grantable-scopes (Cloud)
@@ -61,7 +61,9 @@ GET  /api/pat/v1/users/tokens                              admin: all users' tok
 GET, DELETE /api/pat/v1/users/{userId}/tokens;  POST .../invalidate;  DELETE .../{patId};  POST .../{patId}/invalidate
 ```
 
-`name` and `expiresIn` are required on create; the response includes `token` once.
+`name` and `expiresIn` are required on create; `description` is optional; `scopes`
+(**Cloud** only, values from `grantable-scopes`; omitted means none) restricts the token.
+The response includes `token` once.
 
 ## Organizations
 
@@ -74,7 +76,8 @@ PUT  /api/organizations/v1/organizations/{organizationId}/user      body: {"user
 DELETE /api/organizations/v1/organizations/{organizationId}/user?memberToRemoveId=<userId>
 ```
 
-`name` and `members` are required on create. List responses use `{"orgs": [...], "metadata": {...}}`.
+`name` and `members` are required on create; the response is `{"org": {"id", "name", "members", "defaultEnvironmentId"}, "metadata"}`.
+List responses use `{"orgs": [...], "metadata": {...}}`.
 
 ## Service accounts
 
@@ -107,8 +110,11 @@ PUT    /api/hardwaretiers/v1/hardwaretiers        admin; full object
 DELETE /api/hardwaretiers/v1/hardwaretiers/{hardwareTierId}   archive
 ```
 
-Response: `{"hardwareTiers": [{"id", "name", "resources": {"cores", "coresLimit", "memory": {"value", "units"}, ...}, "flags": {"isDefault", "isVisible", "isGlobal", "isArchived", ...}, "gpuConfiguration": {"numberOfGpus", "gpuKey"}, "centsPerMinute", "nodePool", "architecture", "computeClusterRestrictions", "capacity", ...}], "metadata": {...}}`.
-The `id` (for example `small-k8s`) is what `POST /api/jobs/v1/jobs` takes as `hardwareTier`.
+Response: `{"hardwareTiers": [{"id", "name", "resources": {"cores", "coresLimit", "memory": {"value", "units"}, ...}, "flags": {"isDefault", "isVisible", "isGlobal", "isArchived", ...}, "gpuConfiguration": {"numberOfGpus", "gpuKey"}, "centsPerMinute", "nodePool", "computeClusterRestrictions", "capacity", ...}], "metadata": {...}}`
+(`limit` defaults to 10; `architecture` `amd64`/`arm64` is **Cloud** only). The `id` (for
+example `small-k8s`) is what `POST /api/jobs/v1/jobs` takes as `hardwareTier`. Listing
+needs the ViewHardwareTiers permission; python-domino `hardware_tiers_list()` lists the
+tiers usable by a project without it.
 
 ```python
 tiers = requests.get(f"{base_url}/api/hardwaretiers/v1/hardwaretiers", headers=headers).json()["hardwareTiers"]
@@ -128,8 +134,10 @@ GET    /api/datasource/v1/audit?startTime=&endTime=&dataSourceIds=&dataSourceNam
 List returns `{"dataSources": [{"id", "name", "dataSourceType", "authType", "credentialType", "config", "permissions", "ownerId", ...}]}`.
 Create requires `name`, `dataSourceType`, `authType`, `credentialType`
 (`Individual` or `Shared`), `credentials` (`visibleCredentials`, `secretCredentials`
-maps), `config` (map) and `permissions` (`isEveryone`, `userAndOrganizationIds`). The
-type-specific `config` and `credentials` keys are not enumerated in the spec; copy them
+maps), `config` (map) and `permissions` (`isEveryone`, `userAndOrganizationIds`);
+`description` is optional. The spec
+types `config`, `visibleCredentials` and `secretCredentials` as free-form string maps
+("a map of configuration name -> value"), so the keys depend on `dataSourceType`: copy them
 from an existing data source of the same type (`GET` one) or create the first one in the
 UI. Audit `eventKinds`: `AccessDataSource`, `CreateDataSource`,
 `DataSourceAssociatedToProject`, `DataSourceDissociatedFromProject`,
@@ -157,13 +165,23 @@ GET, PUT /api/cost/v1/billingtagSettings;  /mode;  /notifications
 GET /api/cost/v1/costActivationStatus;  PUT /api/cost/v1/licenseKey;  PUT /api/cost/v1/athenaConfigs
 ```
 
-`window` is the only required allocation parameter; the spec does not enumerate its
-syntax or the `aggregate` values, so copy them from the reference UI
-(https://docs.domino.ai/cloud/reference/api/domino-open-api, Cost section) or your
-deployment's `/docs`. Permissions vary by deployment; a `403` means the caller lacks the
-admin or billing role. Budgets and alerts are covered by python-domino's `budget_*` and
-`billing_tag*` methods ([SDK-EXAMPLES.md](./SDK-EXAMPLES.md)), which call internal
-`/v4/cost` routes.
+`window` is the only required allocation parameter. Per the spec it accepts words
+(`today`, `week`, `month`, `yesterday`, `lastweek`, `lastmonth`), durations (`30m`,
+`12h`, `7d`) or a time range (`2021-03-10T00:00:00Z,2021-03-11T00:00:00Z`); `start` and
+`end` (RFC 3339) must fall inside it. `aggregate` takes the kubecost aggregates
+(`cluster`, `namespace`, `pod`, `deployment`, `service`, `daemonset`, `statefulset`, `job`,
+`cronjob`, `replicaset`, `node`, `container`, `pv`, `pvc`, `storageclass`); `filter` uses the
+same keys. The response is `{"data": [{"name", "totalCost", "cpuCost", "ramCost", "gpuCost", "cpuCoreHours", "gpuHours", "window", ...}]}`.
+Permissions vary by deployment; a `403` means the caller lacks the admin or billing role.
+
+```python
+costs = requests.get(f"{base_url}/api/cost/v1/allocation", headers=headers,
+                     params={"window": "7d", "aggregate": "namespace"}).json()["data"]
+```
+
+Budgets and alerts are covered by python-domino's `budget_*` and `billing_tag*` methods
+([SDK-EXAMPLES.md](./SDK-EXAMPLES.md)), which call `/v4/cost` routes (internal API, may
+change between Domino versions).
 
 ## Audit trail
 
@@ -177,8 +195,11 @@ GET  /api/audittrail/v1/fieldValues?field=<required>&search=
 
 `auditevents` query parameters (all optional): `startTimestamp`, `endTimestamp`
 (integers, epoch milliseconds), `actorId`, `actorName`, `event`, `targetType`, `targetId`,
-`targetName`, `withinProjectId`, `withinProjectName`, `sort`, `limit`, `offset`, `column`.
-There is no `startTime`, `endTime` or `eventType` parameter.
+`targetName`, `withinProjectId`, `withinProjectName`, `sort` (comma-separated fields with
+`+`/`-` prefix: `timestamp`, `actorId`, `actorName`, `withinProjectId`,
+`withinProjectName`, `event`, `targetType`, `targetName`), `limit` (default 10),
+`offset`, `column` (CSV download only). There is no `startTime`, `endTime` or `eventType`
+parameter.
 
 ```python
 events = requests.get(f"{base_url}/api/audittrail/v1/auditevents", headers=headers, params={
