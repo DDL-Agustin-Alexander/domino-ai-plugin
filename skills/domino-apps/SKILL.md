@@ -1,6 +1,6 @@
 ---
 name: domino-apps
-description: Deploy web applications to Domino behind its reverse proxy. Covers the app.sh entry point, the required 0.0.0.0:8888 binding, DOMINO_RUN_HOST_PATH path prefixes, Vite + React (relative base, HashRouter, a small backend for model calls), Streamlit, Dash, Flask, Shiny, Gradio and FastAPI setup, the Apps v1 REST publish chain, CI/CD with GitHub Actions, and proxy troubleshooting. Use when publishing or deploying an app to Domino, automating app create, start or stop over the API, building a CI/CD pipeline for a Domino app, fixing 404s, blank pages or broken routing behind the proxy, or configuring a web framework for Domino.
+description: Publish, deploy, update, restart, stop or roll back a web application as a Domino App, and automate those steps over the Apps API or a CI/CD pipeline. Use whenever the user wants to publish, deploy, ship, launch, release or host an app (React/Vite, Streamlit, Dash, Flask, Shiny, Gradio, FastAPI) on Domino, make an existing app work behind Domino's reverse proxy (app.sh entry point, mandatory 0.0.0.0:8888, DOMINO_RUN_HOST_PATH, relative base, HashRouter, server-side model endpoint calls), create a new App version, deploy an older version, start or stop an App over /api/apps/v1, or set up GitHub Actions deployment to Domino. Not for scaffolding a brand-new app from scratch (domino-app-init) or for diagnosing 404s, blank pages or broken routing in an already published app (domino-debug-proxy); use it when those hand off to publishing.
 compatibility: Domino 6.3 and Domino Cloud. Requires DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token or service account token.
 ---
 
@@ -46,7 +46,7 @@ Use `HashRouter` for client-side routes: they live after `#`, so they never reac
 
 ## Lifecycle
 
-Create, publish and deploy are separate steps. Publishing records an immutable version (code commit, environment revision, data plane, mounts, identity propagation); deploying starts it. Hardware tier, autoscaling, vanity URL and iframe settings are deployment settings: changing them restarts the instance without creating a version. Develop in a workspace with **App Preview** (a real App runtime on port 8888, visible only to the author at `/preview/<draftAppId>`), then **Publish App**, then **Deploy** the version from the App details page.
+Create, publish and deploy are separate steps. Publishing records an immutable version (code commit, environment revision, mounts, identity propagation); deploying starts it. Hardware tier, autoscaling, vanity URL and iframe settings are deployment settings: changing them restarts the instance without creating a version. Develop in a workspace with **App Preview** (a real App runtime on port 8888, visible only to the author at `/preview/<draftAppId>`), then **Publish App**, then **Deploy** the version from the App details page.
 
 ## Environment variables and headers
 
@@ -56,7 +56,6 @@ Create, publish and deploy are separate steps. Publishing records an immutable v
 | `DOMINO_PROJECT_ID`, `DOMINO_PROJECT_NAME`, `DOMINO_PROJECT_OWNER` | Hosting project |
 | `DOMINO_RUN_ID` | Run ID of the App instance |
 | `DOMINO_STARTING_USERNAME` | User who started the run, not the viewer |
-| `DOMINO_WORKING_DIR` | Directory holding the project files |
 | `DOMINO_API_HOST` | Base URL for Domino platform APIs from inside the App |
 | `domino-username` (request header) | Viewer's username; `Anonymous` when anonymous access is enabled |
 | `Authorization` (request header) | Viewer JWT; full user scope only with extended identity propagation and viewer consent |
@@ -77,10 +76,10 @@ Authentication reference: https://docs.domino.ai/cloud/reference/api/domino-api-
 
 ## Reference files
 
-- [REACT-VITE-GUIDE.md](./REACT-VITE-GUIDE.md): Vite config, Express backend that keeps the model token server-side, HashRouter, App Preview workflow
-- [REACT-CICD.md](./REACT-CICD.md): GitHub Actions workflow and a Public API deploy script
-- [FRAMEWORKS.md](./FRAMEWORKS.md): Streamlit, Dash, Flask, Gradio, FastAPI and Shiny configurations
+- [REACT-VITE-GUIDE.md](./REACT-VITE-GUIDE.md): Vite config, Express backend, HashRouter, App Preview
+- [REACT-CICD.md](./REACT-CICD.md): GitHub Actions workflow and Public API deploy script
+- [FRAMEWORKS.md](./FRAMEWORKS.md): Streamlit, Dash, Flask, Gradio, FastAPI, Shiny
 - [API-APPS.md](./API-APPS.md): v1 vs beta routes, publish chain, logs
 - [TROUBLESHOOTING.md](./TROUBLESHOOTING.md): symptoms, causes and fixes
 
-Docs: https://docs.domino.ai/cloud/platform-capabilities/features/apps (Cloud) and https://docs.domino.ai/6.3/platform-capabilities/features/apps (6.3). Specs: https://docs.domino.ai/api-specs/cloud/public-api.json and https://docs.domino.ai/api-specs/6.3/public-api.json . Related skills: `domino-api-intro` (auth and hosts), `domino-ui-bootstrap` (Domino design system SPA), `domino-ui-design` (FastAPI + Ant Design UI), `domino-extensions` (mount an App in the Domino UI).
+Docs: https://docs.domino.ai/cloud/platform-capabilities/features/apps (same under `/6.3/`). Specs: https://docs.domino.ai/api-specs/cloud/public-api.json and https://docs.domino.ai/api-specs/6.3/public-api.json . Related skills: `domino-api-intro` (auth, hosts), `domino-ui-bootstrap` (design system SPA), `domino-ui-design` (FastAPI + Ant Design), `domino-extensions` (mount an App in the Domino UI).
