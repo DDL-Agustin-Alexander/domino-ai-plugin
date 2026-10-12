@@ -2,5 +2,5 @@
 type: regex
 target: last_message
 match: not_contains
-pattern: '/mnt/external-data'
+pattern: 'DOMINO_API_PROXY|localhost:8899'
 ---

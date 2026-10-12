@@ -1,5 +1,5 @@
 ---
 type: regex
 target: { source: file, path: flow.py }
-pattern: 'DominoJobTask'
+pattern: 'DominoJobTask|run_domino_job_task'
 ---

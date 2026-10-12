@@ -1,6 +1,6 @@
 ---
 description: "GenAI tracing: evaluators receive the span; DominoRun has no run_name; results grouped in one run."
-tags: [trigger, domino-genai-tracing, genai, disambiguation]
+tags: [trigger, domino-genai-tracing, genai]
 max_turns: 15
 allowed_tools: [Read, Glob, Grep, Skill, Write, Edit]
 ---

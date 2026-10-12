@@ -1,6 +1,6 @@
 ---
-description: "Disambiguation: a from-scratch experiment-tracking setup loads domino-experiment-setup and writes a deployment-unique experiment name."
-tags: [trigger, domino-experiment-setup, experiments, disambiguation]
+description: "a from-scratch experiment-tracking setup loads domino-experiment-setup and writes a deployment-unique experiment name."
+tags: [trigger, domino-experiment-setup, experiments]
 max_turns: 15
 allowed_tools: [Read, Glob, Grep, Skill, Write, Edit]
 ---

@@ -11,17 +11,21 @@ model call billed to your account; results land in `results/` (git-ignored).
 |---|---|---|
 | `trigger` | one or more per skill | The skill fires on a natural request (`tool_used: Skill`) and the answer is correct |
 | `negative` | 5 | No Domino skill fires on a non-Domino request, including the word "domino" in a board game |
-| `disambiguation` | 15 | For overlapping skills, the right one fires and the neighbour does not (`min: 0`, `max: 0`, `arm: both`) |
+| `disambiguation` | 10 | For overlapping skills, the right one fires and the neighbour does not (`min: 0`, `max: 0`, `arm: both`) |
 | `compat` | 1 | The answer is gated on the Domino version named in the prompt |
 
 Every case also carries its skill name as a tag (`domino-jobs`, `netapp-volumes`, ...), so
 `--tag domino-jobs` runs the cases for one skill.
 
-Overlapping pairs with strict disambiguation cases: `domino-model-endpoints` / `domino-model-serving`,
-`domino-apps` / `domino-app-init` / `domino-debug-proxy`, `domino-experiment-tracking` /
-`domino-experiment-setup`, `domino-genai-tracing` / `domino-trace-setup`, `domino-datasets` /
-`netapp-volumes` / `domino-data-sdk`, `domino-api-intro` / `domino-python-sdk` (one direction only:
-AGENTS.md asks for `domino-api-intro` to load alongside the SDK skill, so the SDK case allows it).
+A `max: 0` ban is used only where the neighbour's own description clearly excludes the request:
+`domino-model-serving` on an endpoint-monitoring question, `domino-app-init` and `domino-debug-proxy`
+on deployment and CI/CD requests, `domino-debug-proxy` on a scaffold, `domino-experiment-setup` on
+run comparison, `netapp-volumes` / `domino-data-sdk` on a Dataset path question, `domino-datasets` /
+`domino-data-sdk` on a NetApp question, `netapp-volumes` on a Data API download, and the endpoint
+skills on nightly batch scoring. Where a neighbour's description also claims the request
+(`domino-apps` on a 404, `domino-trace-setup` on evaluators, `domino-experiment-tracking` on setup,
+`domino-python-sdk` on an auth question) the case keeps only the positive `skill-fired` check;
+sharpening those descriptions is the fix, not a ban.
 
 ## Grading rules
 
@@ -37,18 +41,24 @@ still carries an invented method or route is doing its job.
   method quoted by the skill would fail a model that correctly ignored it, and a documented fact
   quoted by the skill would pass a model that never used it). `trace` is used only by `tool_used`.
 - `regex` graders with `match: not_contains` catch invented SDK methods, invented fields, legacy
-  API-key *usage* (a prose mention that the key is deprecated passes) and JWT `iss` scraping.
+  API-key *usage* and JWT `iss` scraping. Their patterns are anchored to code forms (`\.runs_stop\(`,
+  `"hardwareTierId":`) so a reply that correctly warns against the thing in prose still passes.
+- Two rubric clauses are plugin policy rather than documented Domino behaviour and are therefore
+  optional in the rubric: the governance base-URL fallback to the public URL on 404, and retry
+  guidance for 502s.
 - `llm` graders carry a PASS/FAIL rubric; where the judged content is a file the grader sets
   `focus: { source: file, path: ... }`.
 - The `skill-fired` grader is excluded from the score under the default `with-without` ablation
   (it can never pass without the plugin); it still shows as an indicator. Under `--ablation none`
   it is scored.
 
-Sandbox facts that shape the cases: the run cannot `Read` the plugin's own files, so a skill is
-exercised through its SKILL.md and whatever the model already knows (sibling reference files and
-`assets/` templates are out of reach; the model reports "access denied" when it tries); the always-on
-`rules/domino.md` is loaded, so a request answerable from it alone may be answered in one turn
-without loading any skill.
+Sandbox facts that shape the cases: `Read` of the plugin's own files depends on where the checkout
+lives. With the checkout under `~/.claude/` every such `Read` failed with "File is in a directory
+that is denied by your permission settings" (ten attempts across six runs on Claude Code 2.1.296),
+so sibling reference files and `assets/` templates were out of reach and the skill was exercised
+through its SKILL.md alone; a checkout elsewhere read them fine. Run the suite from a checkout
+outside `~/.claude/`. The always-on `rules/domino.md` is loaded, so a request answerable from it
+alone may be answered in one turn without loading any skill.
 
 ## Running
 
@@ -60,7 +70,8 @@ claude plugin eval . --case start-job-via-rest-and-schedule --runs 1 --ablation 
 claude plugin eval . --tag domino-datasets --runs 1 --ablation none --no-publish --scaffold --allow-tools Write Edit
 claude plugin eval . --tag negative --runs 1 --ablation none --no-publish
 
-# full suite, default three runs plus the no-plugin baseline (46 cases; budget accordingly)
+# full suite, default three runs plus the no-plugin baseline (52 cases x 6 runs; roughly $20-100
+# with the judge, so set the ceiling you can afford; hitting it exits 2 with a partial results.json)
 claude plugin eval . --scaffold --allow-tools Write Edit --no-publish -j 3 --max-cost-usd 60 --json results.json
 ```
 

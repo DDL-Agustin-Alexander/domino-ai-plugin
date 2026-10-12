@@ -5,5 +5,5 @@ max_turns: 15
 allowed_tools: [Read, Glob, Grep, Skill, Write, Edit]
 ---
 
-Start a brand-new Dash app for Domino in this empty folder: app.py and the app.sh launch script,
-ready to publish.
+Start a brand-new Dash app for Domino in this empty folder: app.py, which binds the server itself,
+and an app.sh that just runs it, ready to publish.

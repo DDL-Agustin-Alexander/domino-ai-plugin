@@ -1,6 +1,6 @@
 ---
 description: "python-domino: Domino(project) without api_key, job_start / job_start_blocking, job_status; no invented methods."
-tags: [trigger, domino-python-sdk, api, disambiguation]
+tags: [trigger, domino-python-sdk, api]
 max_turns: 12
 allowed_tools: [Read, Glob, Grep, Skill]
 ---

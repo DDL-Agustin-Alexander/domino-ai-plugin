@@ -1,6 +1,6 @@
 ---
 description: "Model serving: new model API version via /api/modelServing/v1, polled to Running, with PAT or service-account auth from CI."
-tags: [trigger, domino-model-serving, model-deployment, disambiguation]
+tags: [trigger, domino-model-serving, model-deployment]
 max_turns: 12
 allowed_tools: [Read, Glob, Grep, Skill]
 ---

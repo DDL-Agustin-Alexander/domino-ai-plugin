@@ -2,5 +2,5 @@
 type: regex
 target: last_message
 match: not_contains
-pattern: 'Client\(\)'
+pattern: '=\s*Client\(\)'
 ---

@@ -1,6 +1,6 @@
 ---
-description: "Disambiguation: instrumenting an un-traced LLM script loads domino-trace-setup and uses the real SDK import and package."
-tags: [trigger, domino-trace-setup, genai, disambiguation]
+description: "instrumenting an un-traced LLM script loads domino-trace-setup and uses the real SDK import and package."
+tags: [trigger, domino-trace-setup, genai]
 max_turns: 15
 allowed_tools: [Read, Glob, Grep, Skill, Write, Edit]
 ---

@@ -1,6 +1,6 @@
 ---
-description: "Disambiguation: an API-policy question (token, header, error handling, paging) loads domino-api-intro, not the Python SDK skill."
-tags: [trigger, domino-api-intro, api, disambiguation]
+description: "an API-policy question (token, header, error handling, paging) loads domino-api-intro, not the Python SDK skill."
+tags: [trigger, domino-api-intro, api]
 max_turns: 8
 allowed_tools: [Read, Glob, Grep, Skill]
 ---
