@@ -129,11 +129,11 @@ Synchronous endpoints: HTTP Basic with the token as username and password; async
 
 Tell the user to:
 
-1. Set `MODEL_API_URL` and `MODEL_API_TOKEN` (if used) as environment variables in the Domino project settings; both values come from the endpoint's page (see Inputs).
-2. Make sure the framework is available to the App (step 5 above), not only in the Workspace.
+1. Set `MODEL_API_URL` and `MODEL_API_TOKEN` (if used) in the project's environment variables; both come from the endpoint's page (see Inputs).
+2. Make sure the framework is in the App's environment (step 5), not only the Workspace.
 3. **Sync before publishing.** An App runs the project's committed files, not the Workspace's working copy. DFS project: **File Changes > Sync to Domino** (or the bundled MCP server's upload tool), then check `app.sh` and `app.py` under **Code**. Git-based: `git add`, `git commit`, `git push` from the Workspace terminal. An unsynced entry point fails with `entry script 'app.sh' not found in the root directory of your project`. Creating the version over the API right after an upload: pin `content.dfsCommitId` to the uploaded commit; the head can lag by a few seconds (`domino-apps`, API-APPS.md).
-4. Optional smoke test in the Workspace terminal: port 8888 is the IDE's there, so run the same command on another port (`streamlit run app.py --server.port 8501 --server.address 0.0.0.0 &`), curl it, then `kill $!` (not `pkill -f`, which matches your own shell). Keep 8888 in `app.sh`; the App gets that port in its own container.
-5. In a workspace, open **App Preview**, select `app.sh`, and test. Preview runs the latest committed code in the real App runtime, including the proxy prefix.
+4. Optional smoke test in the Workspace, on another port (8888 is the IDE's) and in one command (each tool call is a new shell): `streamlit run app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true & pid=$!; sleep 8; curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8501/; kill $pid`. Never `pkill -f` (it matches your own shell). Keep 8888 in `app.sh` for the App container.
+5. Open **App Preview** in the workspace, select `app.sh`, and test: it runs the latest committed code in the real App runtime with the proxy prefix.
 6. **Publish App**, then **Deploy** the version from the App details page and set sharing.
 
-For deployment details, CI/CD and framework specifics use the `domino-apps` skill; for 404s, blank pages or routing problems after publishing use `domino-debug-proxy`; for a Domino design system SPA use `domino-ui-bootstrap`.
+Deployment, CI/CD and framework details: `domino-apps`; 404s, blank pages or routing problems after publishing: `domino-debug-proxy`; Domino design system SPA: `domino-ui-bootstrap`.
