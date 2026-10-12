@@ -4,7 +4,7 @@ Every framework must bind `0.0.0.0:8888`; an App that does not fails to start. W
 
 ## Calling a model endpoint from any framework
 
-Read the endpoint URL and a Model Access Token from environment variables set in the project (or user) settings; never hardcode them. Synchronous endpoints use HTTP Basic auth with the token as both username and password; asynchronous endpoints use `Authorization: Bearer <token>` (https://docs.domino.ai/cloud/platform-capabilities/features/model-deployment/domino-endpoint-authorization).
+Read the endpoint URL and a Model Access Token from environment variables set in the project (or user) settings; never hardcode them. Both values must come from the user: the URL is on the endpoint's overview page (the deployment's external URL, `https://<domino-domain>/models/<id>/latest/model`; `$DOMINO_API_HOST` and `$DOMINO_API_PROXY` do not route `/models/...`), and the token is created and shown once under **Settings > Invocation > Add Model Access Token**. No API returns or mints that token, and a Domino bearer token is rejected with 401, so ask for both before writing the call. Synchronous endpoints use HTTP Basic auth with the token as both username and password; asynchronous endpoints use `Authorization: Bearer <token>` (https://docs.domino.ai/cloud/platform-capabilities/features/model-deployment/domino-endpoint-authorization).
 
 ```python
 # predict.py: shared helper for the Python examples below
@@ -266,7 +266,13 @@ Identity headers reach Shiny only under Shiny Server Pro. R is single-process, s
 
 ## Dependencies
 
-Install packages in the Compute Environment (Dockerfile) rather than at start; `pip install` in `app.sh` slows every launch and fails without egress. Domino's Dash guide, for example, adds `RUN pip install dash` to the environment. Floors that match the code above:
+The App runs in the project's default Compute Environment (or the one chosen at publish time). Packages you `pip install` in a Workspace are not in it; an App published that way dies at start with `streamlit: not found` (exit 127). Before publishing, run `python -c "import <framework>"` in the Workspace (`node -v` for Vite); if it fails, do one of:
+
+1. **Put the package in the environment** (best): pick an environment that has it when publishing (`GET /api/environments/beta/environments` lists them), or build one from the Domino Standard Environment with Dockerfile lines `USER root`, `RUN pip install dash`, `USER ubuntu` (Domino's Dash guide does exactly this). Fast starts, no egress needed.
+2. **`requirements.txt`** at the project root (Git-based projects: inside the Artifacts folder). Domino installs it at the start of every execution, Apps included; slower starts and PyPI egress (https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environments/add-packages-to-environments/use-requirements-txt).
+3. **Install at start in `app.sh`** for a prototype: `python -m pip install --user -q streamlit && exec python -m streamlit run app.py --server.port 8888 --server.address 0.0.0.0`. Same trade-offs as `requirements.txt`; the `python -m` form avoids depending on `~/.local/bin` being on `PATH`.
+
+Floors that match the code above:
 
 | Framework | Packages |
 |---|---|

@@ -14,7 +14,11 @@ echo "Started by: $DOMINO_STARTING_USERNAME"
 # subfolder when app.sh lives there).
 cd "$(dirname "$0")"
 
-# Install streamlit in the Compute Environment rather than here; pip at start slows every launch.
+# Streamlit must be in the Compute Environment (packages pip-installed in a Workspace are not in
+# the App). Preferred: an environment that includes it, or requirements.txt at the project root.
+# Prototype only (slower start, needs PyPI egress): uncomment the next line and change the last
+# line to `exec python -m streamlit run app.py --server.port 8888 --server.address 0.0.0.0`.
+# python -m pip install --user -q streamlit
 
 # Domino's published Streamlit example writes this config. enableCORS and
 # enableXsrfProtection are set to false there; keep them unless your deployment is known to
