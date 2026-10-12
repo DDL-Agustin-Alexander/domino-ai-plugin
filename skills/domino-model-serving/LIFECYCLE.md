@@ -39,7 +39,16 @@ Versions: `GET .../modelApis/{modelApiId}/versions` lists `ModelApiVersion` obje
 
 ## Create from project files
 
-The version is built from the Project's latest commit (or the `version.commitId` you pass), never from a Workspace's disk. In a DFS Project sync the Workspace first (**File Changes** > **Sync to Domino**) and confirm with `GET /api/projects/beta/projects/{projectId}/commits/latest`; in a Git-based Project commit and push the code and sync the artifacts. Include the model artifacts the function loads. Otherwise the build succeeds and the container crash-loops at start with `FileNotFoundError` (see `domino-model-endpoints`, "Sync or commit first").
+The version is built from the `version.commitId` you pass, or the Project's head commit if you omit it, never from a Workspace's disk. In a DFS Project sync the Workspace first (**File Changes** > **Sync to Domino**); in a Git-based Project commit and push the code and sync the artifacts. Include the model artifacts the function loads. Then pin the commit: the head lags an upload by a few seconds, and a version created right after a sync was built from the previous commit and crash-looped with `FileNotFoundError` (see `domino-model-endpoints`, "Sync or commit first"). Use the `commitId` the MCP upload tool returned, or read `GET /api/projects/beta/projects/{projectId}/commits/latest` (`commitId`) and confirm `GET /api/projects/v1/projects/{projectId}/files/{commitId}/{path}/content` is 200 for each model file.
+
+```python
+commit_id = requests.get(f"{base}/api/projects/beta/projects/{os.environ['DOMINO_PROJECT_ID']}/commits/latest",
+                         headers=headers).json()["commitId"]
+for path in ("model.py", "random_forest.joblib"):
+    ok = requests.get(f"{base}/api/projects/v1/projects/{os.environ['DOMINO_PROJECT_ID']}/files/{commit_id}/{path}/content",
+                      headers=headers).status_code == 200
+    assert ok, f"{path} is not in commit {commit_id}; wait a few seconds and re-read commits/latest"
+```
 
 ```python
 body = {
@@ -53,10 +62,11 @@ body = {
     "environmentVariables": [{"key": "MODEL_PATH", "value": "models/gbm.pkl"}],
     "version": {
         "projectId": os.environ["DOMINO_PROJECT_ID"],
+        "commitId": commit_id,                    # the verified commit; omitting it takes the head, which can be stale
         "source": {"type": "File", "file": "model.py", "function": "predict", "excludeFiles": ["data/"]},
         "logHttpRequestResponse": False,
         "monitoringEnabled": False,
-        # optional: "commitId": "<dfs or artifacts commit>", "environmentId": "...", "shouldDeploy": True
+        # optional: "environmentId": "...", "shouldDeploy": True
     },
 }
 r = requests.post(f"{base}/api/modelServing/v1/modelApis", headers=headers, json=body)
@@ -101,14 +111,30 @@ def wait_version_running(model_api_id, version_id, timeout_s=1800):
 
 `Running` is the documented ready state. The spec types `deployment.status` as a free string and does not enumerate the other values, so the helper prints them and keeps polling until the deadline; a status that stops changing is the cue to read the build and instance logs (below).
 
-`Running` is not a health check: a crash-looping container reports `Running` between restarts and the status later flips to `Starting` with `isPending: true`. After the helper returns, read the instance logs and reject the version if they contain `Traceback`, `FileNotFoundError`, `ModuleNotFoundError` or `no app loaded`; then make one test prediction (200 with your result shape; 503 means no healthy instance).
+`Running` is not a health check: a crash-looping container reports `Running` between restarts and the status later flips to `Starting` with `isPending: true`. After the helper returns, read the instance logs **without** `tail` and with a large window, keep the model container's lines (tag `kubernetes.container_name` starting with `model-`; the `istio-proxy` sidecar's hundreds of lines otherwise crowd them out and a small `tail` window shows no crash at all), and accept the version only on `WSGI app 0 (mountpoint='') ready`; `no app loaded. GAME OVER` after a `Traceback` is a crash loop and the exception line is the cause. Then make one test prediction (200 with your result shape; 503 means no healthy instance).
 
 ```python
-logs = requests.get(f"{base}/api/modelServing/v1/modelApis/{model_api_id}/versions/{version_id}/instanceLogs",
-                    headers=headers, params={"tail": True, "maxResults": 200}).json().get("logs", [])
-text = "\n".join(str(line) for line in logs)
-if any(marker in text for marker in ("Traceback", "FileNotFoundError", "ModuleNotFoundError", "no app loaded")):
-    raise RuntimeError(f"version {version_id} is crash-looping; see instance logs")
+def model_container_health(model_api_id, version_id):
+    """'ready', 'crash' (with the cause), or 'pending' when the model container has not logged yet."""
+    r = requests.get(f"{base}/api/modelServing/v1/modelApis/{model_api_id}/versions/{version_id}/instanceLogs",
+                     headers=headers, params={"maxResults": 3000})      # no tail
+    r.raise_for_status()
+    lines = [e["log"] for e in r.json().get("logs", [])
+             if any(t["key"] == "kubernetes.container_name" and t["value"].startswith("model-")
+                    for t in e.get("tags", []))]
+    text = "\n".join(lines)
+    if not lines:
+        return "pending", None                                           # never treat an empty result as healthy
+    if "no app loaded. GAME OVER" in text:
+        errors = [line for line in lines if "Error" in line or "Exception" in line]
+        return "crash", (errors[-1] if errors else text[-2000:])
+    if "WSGI app 0 (mountpoint='') ready" in text:
+        return "ready", None
+    return "pending", None
+
+state, cause = model_container_health(model_api_id, version_id)
+if state == "crash":
+    raise RuntimeError(f"version {version_id} is crash-looping: {cause}")
 ```
 
 ## Prediction URL
@@ -177,7 +203,7 @@ assert requests.get(f"{base}/api/modelServing/v1/modelApis/{model_api_id}", head
 ```python
 logs = requests.get(
     f"{base}/api/modelServing/v1/modelApis/{model_api_id}/versions/{version_id}/instanceLogs",
-    headers=headers, params={"tail": True, "maxResults": 200}).json()["logs"]
+    headers=headers, params={"maxResults": 3000}).json()["logs"]   # no tail; filter on tags[kubernetes.container_name]
 build = requests.get(
     f"{base}/api/modelServing/v1/modelApis/{model_api_id}/versions/{version_id}/buildLogs", headers=headers).json()
 ```
