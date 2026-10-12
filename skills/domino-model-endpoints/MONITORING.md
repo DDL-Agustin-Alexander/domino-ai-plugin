@@ -46,15 +46,15 @@ Open the **Logs** column for any version:
 | Instance | stdout and stderr of each container (your `print` output and tracebacks) | Prediction errors, slow processing, memory warnings; filter by pod and container |
 | Deployment | Kubernetes events, heartbeats, pod status | Pods not starting, resource allocation, health-check restarts |
 
-Over the API (both specs): `GET /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/buildLogs` (optional `buildId`, `sinceTimeNano`), `.../exportLogs`, `.../instanceLogs` (optional `podName`, `containerName`, `sinceTimeNano`, `tail`, `maxResults`).
+Over the API (both specs): `GET /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/buildLogs` (optional `buildId`, `sinceTimeNano`), `.../exportLogs`, `.../instanceLogs` (optional `podName`, `containerName`, `sinceTimeNano`, `tail`, `maxResults`). Each instance-log entry is `{timestamp, timeNano, log, streamType, tags[{key, value}]}`, and the pod has two containers: the model container (tag `kubernetes.container_name` starting with `model-`) and the `istio-proxy` sidecar.
 
 ```bash
 TOKEN=$(curl -s http://localhost:8899/access-token)   # outside a run: PAT or service-account token
 curl -s -H "Authorization: Bearer $TOKEN" \
-  "$DOMINO_API_HOST/api/modelServing/v1/modelApis/$MODEL_ID/versions/$VERSION_ID/instanceLogs?tail=true&maxResults=200"
+  "$DOMINO_API_HOST/api/modelServing/v1/modelApis/$MODEL_ID/versions/$VERSION_ID/instanceLogs?maxResults=3000"
 ```
 
-With `DOMINO_API_PROXY` set, call `$DOMINO_API_PROXY/api/...` without the header.
+Fetch **without** `tail` and with a large `maxResults`, then keep the model-container entries. The sidecar emits hundreds of startup lines, so `tail=true` with a small window returns sidecar lines only and hides a crash (on an internal Domino test cluster, `tail=true&maxResults=200` returned no model-container lines for a crash-looping version; `maxResults=3000` without `tail` returned the full traceback). Healthy: a model-container line `WSGI app 0 (mountpoint='') ready`. Crash loop: `no app loaded. GAME OVER` after a `Traceback`, with the exception line as the cause. No model-container lines means nothing has been logged yet, not that the version is healthy. The filtering snippet is under "Health check after publishing" in [DEPLOY-ENDPOINT.md](./DEPLOY-ENDPOINT.md); whether `containerName` filters server-side was not verified. With `DOMINO_API_PROXY` set, call `$DOMINO_API_PROXY/api/...` without the header.
 
 ## Debugging workflow
 
