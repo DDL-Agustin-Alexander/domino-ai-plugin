@@ -14,19 +14,41 @@ committed `uv.lock` pins the dependencies. Python 3.11 or later; `mcp` 1.x (`mcp
 | Tool | Kind | What it does | Domino route |
 |---|---|---|---|
 | `get_domino_environment_info` | read, local | Inside or outside Domino, project owner, name and id, Git-based or DFS, auth mode, what is missing | none (environment variables) |
-| `run_domino_job` | write | Starts a Job with one command string; optional `hardware_tier`, `environment_id`, `git_branch`; with `wait_seconds` waits on the server and returns the final status and the end of the stdout | `POST /api/jobs/v1/jobs`; `GET /api/hardwaretiers/v1/hardwaretiers` and `GET /api/environments/beta/environments` to validate the ids (Public API) |
+| `run_domino_job` | write | Starts a Job with one command string; optional `commit_id`, `hardware_tier`, `environment_id`, `git_branch`; pins the commit after recent uploads; with `wait_seconds` waits on the server and returns the final status and the end of the stdout | `POST /api/jobs/v1/jobs`; `GET /api/hardwaretiers/v1/hardwaretiers` and `GET /api/environments/beta/environments` to validate the ids (Public API) |
 | `check_domino_job_run_status` | read | Execution status of a job (`Queued`, `Running`, `Succeeded`, `Failed`, ...); with `wait_seconds` waits on the server until it completes or the cap is reached | `GET /api/jobs/beta/jobs/{jobId}` (Public API) |
 | `check_domino_job_run_results` | read | Job output: `stdOut` by default, or `stdErr`, `prepareOutput`, `complete` | `GET /api/jobs/beta/jobs/{jobId}/logs` (Public API) |
 | `list_domino_project_files` | read | Files and subdirectories of one directory of a DFS project (not recursive) | `GET /v4/files/browseFiles`, `GET /v4/files/browseDirectories` (Internal API) |
 | `download_file_from_domino_project` | read | Content of a file at the latest commit (text as `content`, binary as `content_base64`); records the version for `smart_sync_file` | `GET /api/projects/beta/projects/{id}/commits/latest`, `GET /api/projects/v1/projects/{id}/files/{commitId}/{path}/content` (Public API) |
-| `upload_file_to_domino_project` | write | Creates a file of any type in a DFS project (`file_content` text or `content_base64`); replaces an existing one only with `overwrite=True`; refuses Git-based projects | `PUT /v1/projects/{owner}/{project}/{path}` (legacy API) |
-| `sync_local_file_to_domino` | write | Reads a local file as bytes (model artifacts, images, text) and uploads it unchanged | as above |
-| `smart_sync_file` | write | Upload of any file type (`content` text or `content_base64`) with conflict detection; never replaces a file it has not seen unless `force_overwrite=True`; refuses Git-based projects | the read routes above plus the legacy upload |
+| `upload_file_to_domino_project` | write | Creates a file of any type in a DFS project (`file_content` text or `content_base64`); replaces an existing one only with `overwrite=True`; refuses Git-based projects; returns the `commitId` that contains the file | `PUT /v1/projects/{owner}/{project}/{path}` (legacy API) |
+| `sync_local_file_to_domino` | write | Reads a local file as bytes (model artifacts, images, text) and uploads it unchanged; returns `commitId` | as above |
+| `smart_sync_file` | write | Upload of any file type (`content` text or `content_base64`) with conflict detection; never replaces a file it has not seen unless `force_overwrite=True`; refuses Git-based projects; returns `commitId` | the read routes above plus the legacy upload |
 | `open_web_browser` | local side effect | Opens a URL in the default browser of the machine running the server; inside a Domino execution it returns `False` without doing anything | none |
 
 A job id and a run id are the same value, so `run_id` from `run_domino_job` goes straight into
 the status and results tools. `user_name` and `project_name` on those two tools are optional and
 kept for compatibility.
+
+### Which commit a Job runs
+
+For some seconds after an upload, the Jobs, Apps and Model API services still resolve the
+previous DFS head, even once the files API shows the new commit (seen on Domino Cloud 6.4: a
+Job submitted 5 s after an upload ran from the project-creation commit and could not find the
+file). So:
+
+- Every upload tool (`upload_file_to_domino_project`, `sync_local_file_to_domino`,
+  `smart_sync_file`) waits until the files API shows the upload and returns `commitId`, the
+  project commit that contains it.
+- `run_domino_job` takes `commit_id` and sends it as `NewJobV1.commitId` (both specs). When it is
+  omitted on a DFS project and this process uploaded files in the last 15 minutes, the server
+  pins the Job itself: the latest commit if it contains all of those files, else the newest
+  commit confirmed to contain them; if an upload is not in any commit yet after 45 s the call
+  fails rather than start a Job without the file. The commit used comes back as `commit_id`
+  (`null` when the head was taken). On a Git-based project `commit_id` is the main-repository
+  commit, sent as `mainRepoGitRef` with `refType` `commitId` (the Cloud spec rejects `commitId`
+  there); it cannot be combined with `git_branch`.
+
+The same applies to Apps and Model API versions started through the REST API: pin the commit an
+upload tool returned instead of taking the head.
 
 ### Waiting for a Job
 
@@ -88,8 +110,8 @@ seconds (observed on Domino Cloud 6.4): a read in that window returns the previo
 server remembers the files it wrote in this process and, before trusting a read of one of them,
 re-reads (every 2 s, up to 45 s) until the read shows the version it wrote, a newer one (another
 client wrote after it: a real conflict), or the timeout passes (the result then carries a note
-saying to retry). `run_domino_job` waits the same way for files uploaded moments before, so the
-Job starts from the uploaded version. What this cannot cover: a write by another client in the
+saying to retry). The upload tools do this wait themselves so that they can return `commitId`,
+and `run_domino_job` pins that commit (see "Which commit a Job runs"). What this cannot cover: a write by another client in the
 last ~20 s is not visible yet, so a sync in that window may miss it. For shared projects, give
 other people's edits a minute before syncing over them.
 
