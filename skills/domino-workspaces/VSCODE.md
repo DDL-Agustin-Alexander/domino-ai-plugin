@@ -16,9 +16,10 @@ Resume a stopped Workspace with **Start** or `POST /api/projects/v1/projects/{pr
 
 Extensions installed from the Extensions panel land in `$HOME/.local/share/code-server/extensions` and disappear on restart unless **Home Directory Persistence** is on. To make them part of the environment (docs: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/workspaces/launch-a-workspace/launch-a-vs-code-workspace):
 
-- **Pre Run Script** of the environment (installs on every start):
+- **Pre Run Script** of the environment (installs on every start; the script runs as root, so use the `ubuntu` home explicitly):
   ```shell
-  code-server --install-extension <publisher.extension> --extensions-dir $HOME/.local/share/code-server/extensions
+  code-server --install-extension <publisher.extension> --extensions-dir /home/ubuntu/.local/share/code-server/extensions
+  chown -R ubuntu:ubuntu /home/ubuntu/.local/share/code-server
   ```
 - **Dockerfile Instructions** (baked into the image; runs as root, hand ownership back to `ubuntu`):
   ```dockerfile
@@ -48,7 +49,7 @@ Check the interpreter path in the environment with `which python` before pinning
 Prerequisites and `dom connect` are in SKILL.md ("SSH from a local IDE"). Summary:
 
 1. Launch with **Enable SSH access**; install the Dom CLI from the Workspace **Settings > SSH connection** pane.
-2. `dom connect <workspace_id> --domino-api-host=https://<deployment URL> -l ubuntu`
+2. `dom connect <workspace_id> --domino-api-host=https://<the URL you open Domino at in the browser> -l ubuntu`
 3. Add `Include ~/.domino/ssh/config` to `~/.ssh/config` (or set `Remote.SSH: ConfigFile` to `~/.domino/ssh/config`).
 4. **Remote Explorer > SSH** > pick the workspace entry. Files, terminal and debugger then run in the Workspace with your local extensions.
 

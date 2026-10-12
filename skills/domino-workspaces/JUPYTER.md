@@ -80,7 +80,7 @@ See [domino-jobs](../domino-jobs/SKILL.md) for scheduling and the Jobs API.
 - **Kernel dies**: memory limit of the hardware tier; check **Usage** on the Workspace, pick a larger tier, or process data in chunks.
 - **Module not found after restart**: the package was installed outside the environment without Package Persistence.
 - **Notebook will not open**: validate the JSON (`python -m json.tool notebook.ipynb`); very large outputs can be cleared with `jupyter nbconvert --clear-output --inplace notebook.ipynb`.
-- **Another app's port is unreachable**: only 8888 is proxied; use jupyter-server-proxy (SKILL.md, "Run extra apps").
+- **Another app's port is unreachable**: only the IDE port is proxied; use jupyter-server-proxy (SKILL.md, "Coding assistants and extra apps").
 
 ## Docs
 

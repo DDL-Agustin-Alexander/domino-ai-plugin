@@ -83,7 +83,7 @@ client.wait_for_workers(2)      # optional; client.close() when done, never clie
 ```
 `Client()` with no address starts a local cluster inside your container, not the Domino cluster. `client.dashboard_link` does not route through Domino; use the Dask tab.
 
-**MPI**: workers are listed in `/domino/mpi/hosts`. In a Workspace run **File Changes > MPI Cluster File Sync > Sync** first (copies `/mnt` code to the workers; Datasets are already mounted there), then `mpirun python train.py` (slots = worker CPU cores; `--map-by`, `--bind-to`, `-x VAR` as usual). In a Job, Domino wraps the command in `mpirun` itself; tune with `mpi.conf` in the Project root (`rmaps_base_mapping_policy core`, `hwloc_base_binding_policy socket`, `mca_base_env_list VAR`). Write outputs to a Dataset, not the Project files.
+**MPI**: workers are listed in `/domino/mpi/hosts`. In a Workspace run **File Changes > MPI Cluster File Sync > Sync** first (copies `/mnt` code to the workers; Datasets are already mounted there), then `mpirun python train.py` (slots = worker CPU cores; `--map-by`, `--bind-to`, `-x VAR` as usual). In a Job, Domino wraps the command in `mpirun` itself; tune with an `mpi.conf` in the Project root, one `name = value` per line (`rmaps_base_mapping_policy = core`, `hwloc_base_binding_policy = socket`, `mca_base_env_list = VAR`, `orte_hostfile = /mnt/hosts`). Write outputs to a Dataset, not the Project files.
 
 Datasets mounted on the execution are mounted on all cluster nodes at the same path; S3 and other stores need the client libraries in both environments.
 
@@ -96,7 +96,7 @@ Datasets mounted on the execution are mounted on all cluster nodes at the same p
 ## Troubleshooting
 
 - **Cluster never ready**: the cluster environment lacks the Supported Clusters flag, Python versions differ, the tier has no capacity or is restricted to another cluster type, or the per-user execution limit is hit.
-- **`ray.init` / `Client` runs locally**: the service env vars are absent because no cluster was attached.
+- **`KeyError` on `RAY_HEAD_SERVICE_HOST` / `DASK_SCHEDULER_SERVICE_HOST`**: no cluster was attached to this execution (a bare `ray.init()` or `Client()` would silently start a local cluster instead).
 - **Worker OOM**: bigger worker tier, more workers, fewer shuffles; Spark adds 10% (min 384 MB) overhead per worker on top of the tier memory.
 - **MPI changes not seen on workers**: sync files again; do not run `mpirun` while a sync is in progress.
 

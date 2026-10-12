@@ -20,9 +20,9 @@ Docs: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/workspace
 4. **Volume Size** if provisioning recommendations are enabled (Git-based Projects use the Project setting on first launch).
 5. **Next**: **Hardware Tier** (grouped by data plane on Nexus; smallest that fits), then only the Datasets, NetApp Volumes and external volumes you need (per-asset snapshot pins).
 6. **Next**: optional Spark, Ray, Dask or MPI cluster ([domino-distributed-computing](../domino-distributed-computing/SKILL.md)).
-7. Additional settings: **Enable SSH access**, **Package Persistence**, **Home Directory Persistence**; **Launch** (opens a new tab; allow pop-ups). Default limit: four Workspaces per user per Project.
+7. Additional settings: **Enable SSH access**, **Package Persistence**, **Home Directory Persistence**; **Launch**. Default limit: four Workspaces per user per Project.
 
-Later, **Settings > Edit Settings** changes tier or environment (**Save & Restart**); `nvidia-smi` shows a GPU tier's devices.
+**Settings > Edit Settings** changes tier or environment (**Save & Restart**).
 
 ## Paths and what persists
 
@@ -50,7 +50,7 @@ Later, **Settings > Edit Settings** changes tier or environment (**Save & Restar
 1. The environment needs `openssh-server` (the DSE has it; custom image: `USER root` / `apt-get install -y openssh-server` / `mkdir -p /var/run/sshd` / `USER ubuntu`).
 2. Launch with **Enable SSH access**. Missing checkbox: on 6.3 the admin sets `com.cerebro.domino.workbench.workspace.ssh.enabled`; on Cloud contact Domino support.
 3. In the running Workspace open **Settings** > **SSH connection** and install the **Dom CLI** from the link (distinct from the Domino CLI). Note the **Workspace ID** (also in the URL).
-4. Locally: `dom connect <workspace_id> --domino-api-host=https://<deployment URL> -l ubuntu` (add `--port 2223` for PyCharm). Add `Include ~/.domino/ssh/config` to `~/.ssh/config`, then connect from VS Code **Remote Explorer > SSH** or PyCharm **Remote Development > SSH** (host = workspace id, user `ubuntu`); `ssh -L` port forwarding works too.
+4. Locally: `dom connect <workspace_id> --domino-api-host=https://<URL you open Domino at in the browser> -l ubuntu` (add `--port 2223` for PyCharm). Add `Include ~/.domino/ssh/config` to `~/.ssh/config`, then connect from VS Code **Remote Explorer > SSH** or PyCharm **Remote Development > SSH** (host = workspace id, user `ubuntu`).
 
 ## Workspace sessions over the API
 
@@ -60,23 +60,23 @@ Later, **Settings > Edit Settings** changes tier or environment (**Save & Restar
 
 ### Which path applies
 
-`GET $DOMINO_API_HOST/version` returns `{"version": "6.3.x"}` or `"6.4.x"` (Domino Cloud). Only the Cloud spec has `GET /api/workspace/v1/workspace/{workspaceId}/writable-project-mounts` (`mainDfsMount`, `mainGitMount`, `importedGitMounts`); on 6.3 use the paths table above.
+Read `GET $DOMINO_API_HOST/version`. On `6.3.x` use the paths table above. On 6.4 and later (Domino Cloud today) `GET /api/workspace/v1/workspace/{workspaceId}/writable-project-mounts` also returns `mainDfsMount`, `mainGitMount` and `importedGitMounts` (`404` = absent).
 
 ## Manage Workspaces
 
-**Workspaces > My / All / Deleted** in a Project, or **Develop > Workspaces** globally. **Stop** (compute stops; storage persists and still bills), **Start** to resume (restricted Projects switch to the current restricted revision), **Delete** only after stopping and syncing. With auto-deletion enabled, a Workspace stopped 10 days gets a 30-day grace period with notifications. Per Workspace: **Logs**, **Usage**, **History** (sessions, commits, support bundle).
+**Workspaces > My / All / Deleted** in a Project, or **Develop > Workspaces** globally. **Stop** (compute stops; storage persists and still bills), **Start** to resume (restricted Projects switch to the current restricted revision), **Delete** only after stopping and syncing. Auto-deletion, if enabled, uses admin-configurable periods (user docs: 10 days stopped, then a 30-day grace period with notifications). Per Workspace: **Logs**, **Usage**, **History** (sessions, commits, support bundle).
 
 ## Coding assistants and extra apps
 
 - The DSE ships AI coding-assistant VS Code extensions and CLI agents; sign in once and Home Directory Persistence keeps the login. Docs: https://docs.domino.ai/cloud/platform-capabilities/features/coding-assistants
-- Only the IDE port (8888) is proxied; jupyter-server-proxy (in the DSE) exposes other ports at `https://<deployment URL>/<owner>/<project>/notebookSession/$DOMINO_RUN_ID/proxy/<port>/`. The App Preview tab is the way to develop a Domino App.
+- Only the IDE port (8888) is proxied; jupyter-server-proxy (in the DSE) exposes other ports at `https://<browser URL>/<owner>/<project>/notebookSession/$DOMINO_RUN_ID/proxy/<port>/`. The App Preview tab is the way to develop a Domino App.
 
 ## Troubleshooting
 
 - **Will not start / queued**: tier capacity or quota, failed environment build (revision build logs), volume too small, four-Workspace limit.
 - **Lost work**: only synced changes reach Domino; check `/mnt` after resume and the **History** checkpoints.
 - **Packages gone after restart**: install in the environment or enable Package Persistence.
-- **Slow start**: Project files are copied to the volume; move bulk data to a Dataset; use a smaller image.
+- **Slow start**: Project files are copied to the volume; move bulk data to a Dataset.
 
 ## Reference files
 

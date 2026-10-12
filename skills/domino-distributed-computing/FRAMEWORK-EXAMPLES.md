@@ -2,17 +2,22 @@
 
 Worked code for Spark, Ray and Dask on Domino on-demand clusters. Connecting to each cluster, environments and cluster settings: [SKILL.md](./SKILL.md). Every example assumes the connection snippet from SKILL.md has run.
 
-Dataset paths: `/mnt/data/<dataset>` in a Git-based Project, `/domino/datasets/local/<dataset>` in a DFS Project; both are mounted on the cluster nodes at the same path. Object storage (`s3a://`, `s3://`) needs the connector libraries in both environments and credentials (AWS credential propagation, when enabled, puts a profile on every node).
+Dataset paths: `/mnt/data/<dataset>` in a Git-based Project, `/domino/datasets/local/<dataset>` in a DFS Project; both are mounted on the cluster nodes at the same path. Project files (`/mnt`, `/mnt/code`, `/mnt/artifacts`) exist only on the execution container, never on cluster nodes, so distributed reads and writes must use a Dataset or object storage. Object storage (`s3a://`, `s3://`) needs the connector libraries in both environments and credentials (AWS credential propagation, when enabled, puts a profile on every node).
 
 ## Apache Spark
 
 ### Read, transform, write
 
+Spark tasks run on the executors, so read and write only Dataset paths (with the `file:///` prefix the docs use) or object storage. Anything that must become a Job result is collected to the driver first.
+
 ```python
+import os
+from pathlib import Path
 from pyspark.sql import functions as F
 
-df = spark.read.csv("/mnt/data/my-dataset/data.csv", header=True, inferSchema=True)
-df = spark.read.parquet("/mnt/data/my-dataset/parquet/")
+ds = "file:///mnt/data/my-dataset"           # DFS Project: file:///domino/datasets/local/my-dataset
+df = spark.read.csv(f"{ds}/data.csv", header=True, inferSchema=True)
+df = spark.read.parquet(f"{ds}/parquet/")
 df = spark.read.json("s3a://bucket/prefix/people.json")          # needs hadoop-aws in the cluster environment
 
 result = (df.filter(F.col("value") > 100)
@@ -21,11 +26,16 @@ result = (df.filter(F.col("value") > 100)
             .orderBy("avg_value", ascending=False))
 result.show()
 
-result.write.mode("overwrite").parquet("/mnt/data/my-dataset/output/")   # Dataset: visible to all nodes
-result.coalesce(1).write.mode("overwrite").csv("/mnt/artifacts/results/output", header=True)   # driver-side result
+result.write.mode("overwrite").parquet(f"{ds}/output/")          # executors write; the Dataset is on every node
+
+# Small result for the Job results view: collect on the driver, then write to the Project files
+git_based = os.environ.get("DOMINO_IS_GIT_BASED", "false").lower() == "true"
+results_dir = Path("/mnt/artifacts/results") if git_based else Path(os.environ["DOMINO_WORKING_DIR"]) / "results"
+results_dir.mkdir(parents=True, exist_ok=True)
+result.limit(1000).toPandas().to_csv(results_dir / "summary.csv", index=False)
 ```
 
-Write large outputs to a Dataset or object storage; Project files are synced from the driver only and are not meant for bulk data.
+A DataFrame `.write` to `/mnt/...` lands on an executor's ephemeral disk (or fails) and never reaches the Job results; `coalesce(1)` does not change that.
 
 ### MLlib pipeline
 
@@ -39,7 +49,7 @@ assembler = VectorAssembler(inputCols=["feature1", "feature2", "feature3"], outp
 rf = RandomForestClassifier(featuresCol="features", labelCol="label", numTrees=100)
 model = Pipeline(stages=[assembler, rf]).fit(train_df)
 predictions = model.transform(test_df)
-model.write().overwrite().save("/mnt/data/my-dataset/models/rf")
+model.write().overwrite().save(f"{ds}/models/rf")                 # Dataset path, visible to all nodes
 ```
 
 ### Tune the context
@@ -129,7 +139,7 @@ results = tuner.fit()
 print(results.get_best_result().config)
 ```
 
-Log trials to MLflow with `mlflow.get_tracking_uri()` (preconfigured in Domino) to compare them in Experiments; see https://docs.domino.ai/cloud/platform-capabilities/features/development/ray-tune and [domino-experiment-tracking](../domino-experiment-tracking/SKILL.md).
+`tune.report` is exported by recent Ray releases (Domino's validated 2.55.x has it); on older cluster images such as the Ray 2.36 tags use `from ray import train` and `train.report({...})` instead. Log trials to MLflow with `mlflow.get_tracking_uri()` (preconfigured in Domino) to compare them in Experiments; see https://docs.domino.ai/cloud/platform-capabilities/features/development/ray-tune and [domino-experiment-tracking](../domino-experiment-tracking/SKILL.md).
 
 ## Dask
 

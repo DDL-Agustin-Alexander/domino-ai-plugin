@@ -22,7 +22,7 @@ Docs: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-e
 | Domino GPU Environment (DGE) | `domino-gpu-environment` | CUDA and GPU libraries for GPU tiers |
 | Cluster environments | `domino-{spark,ray,dask,mpi}-environment` (execution), `{spark,ray,dask,mpi}-cluster-environment` (nodes) | [domino-distributed-computing](../domino-distributed-computing/SKILL.md); a DSE cannot be a cluster node |
 
-Exact tags and partner images: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environments/manage-compute-environments/8-compute-environment-catalog (no language versions are documented; check with `python --version`).
+Exact tags and partner images: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environments/manage-compute-environments/8-compute-environment-catalog.
 
 ## Create an environment (UI)
 
@@ -31,9 +31,7 @@ Exact tags and partner images: https://docs.domino.ai/cloud/platform-capabilitie
 - **Start from an existing Environment** with **Active (auto-rebuilds)** (follows the base's active revision) or a pinned revision.
 - **Start from a custom base image**: an image URI; keep **Automatically make compatible with Domino** unless it is already a Domino image (the option disappears when a cluster type is selected).
 
-Then **Supported Clusters** (cluster-node environments only), **Visibility** (Private, an Organization, or Global for admins), the revision toggle, and **Create Environment** or **Customize before building**. Later: open the environment > **Edit Definition** > **Build**. Base image and supported clusters cannot be changed afterwards; duplicate instead. Archive from the environment menu (not while it is a Project default).
-
-Project default: Project **Settings > Hardware & Environment**.
+Then **Supported Clusters** (cluster-node environments only), **Visibility** (Private, an Organization, or Global for admins), the revision toggle, and **Create Environment** or **Customize before building**. Later: open the environment > **Edit Definition** > **Build**. Base image and supported clusters cannot be changed afterwards; duplicate instead. Archive from the environment menu (not while it is a Project default). Project default: Project **Settings > Hardware & Environment**.
 
 ## Edit Definition
 
@@ -63,23 +61,27 @@ One `pip install` per set of packages, pinned versions, `&&` to merge layers, `A
 | Method | When | Cost |
 |---|---|---|
 | Dockerfile `RUN pip install ...` | anything used regularly | one build; fastest starts |
-| `requirements.txt` in `DOMINO_WORKING_DIR` (`/mnt` DFS, `/mnt/code` Git-based) | per-Project extras | reinstalled every start |
+| `requirements.txt` in the Project root (`/mnt` on DFS; Git-based: the docs name both `/mnt/code` and the artifacts folder, test which applies) | per-Project extras | reinstalled every start |
 | `install.R` + `source('install.R')` | R equivalents | per session |
 | Package Persistence (Workspaces) | interactive installs kept across sessions | enable on the revision; custom images need `uv` and `renv` |
 | `!pip install --user ...` in a notebook | one-off | lost on restart |
 
-Keep images small (few global environments, DCE base for custom builds); every dependency-file package costs startup time on each run.
+Keep images small; dependency-file packages cost startup time on every run.
 
 ## Revisions
 
 - Each build is a revision with build logs (**Revisions** tab > three dots). **Auto-assign next new revision as Active** on uses the latest successful build; off pins the Active revision so you can test first.
 - Environments based on **Active (auto-rebuilds)** rebuild when the base's Active revision changes (build propagation, chained through the **Dependency Tree** tab). Archived environments are not rebuilt.
-- Workspaces and Jobs can pin a revision (a non-active choice shows **Not Recommended**). API: `environmentRevisionSpec` = `ActiveRevision`, `LatestRevision` or `SomeRevision(<revisionId>)`.
-- Revisions may declare CPU architectures (`amd64`, `arm64`); a mismatched hardware tier is rejected (v2 API, Cloud).
+- Workspaces and Jobs can pin a revision. API: `environmentRevisionSpec` = `ActiveRevision`, `LatestRevision` or `SomeRevision(<revisionId>)`.
+- On 6.4+ revisions may declare CPU architectures (`amd64`, `arm64`); a mismatched hardware tier is rejected.
 
 ## REST API
 
-Both specs: `GET /api/environments/beta/environments` (list), `GET /api/environments/v1/environments/{environmentId}`, `POST /api/environments/beta/environments`, `POST .../beta/environments/{environmentId}/revisions`, `PATCH .../revisions/{revisionId}` (restricted flag), `DELETE /api/environments/v1/environments/{environmentId}` (archive). Cloud only (beta create routes are deprecated there): `POST /api/environments/v2/environments`, `POST .../v2/environments/{environmentId}/revisions`, `PUT .../v1/environments/{environmentId}/name` and `/description`. Bodies and the version check: [API.md](./API.md). Authentication: [domino-api-intro](../domino-api-intro/SKILL.md).
+Both specs: `GET /api/environments/beta/environments` (list), `GET /api/environments/v1/environments/{environmentId}`, `POST /api/environments/beta/environments`, `POST .../beta/environments/{environmentId}/revisions`, `PATCH .../revisions/{revisionId}` (restricted flag), `DELETE /api/environments/v1/environments/{environmentId}` (archive). Bodies: [API.md](./API.md). Authentication: [domino-api-intro](../domino-api-intro/SKILL.md).
+
+### Which path applies
+
+Read `GET $DOMINO_API_HOST/version`. On `6.3.x` only the routes above exist. On 6.4 and later (Domino Cloud today) `POST /api/environments/v2/environments`, `POST .../v2/environments/{environmentId}/revisions` (preferred there) and `PUT .../v1/environments/{environmentId}/name` / `/description` also exist (`404` = absent).
 
 ## Troubleshooting builds
 
@@ -87,7 +89,6 @@ Both specs: `GET /api/environments/beta/environments` (list), `GET /api/environm
 - **Package not found**: wrong name (`scikit-learn`, not `sklearn`), missing apt dependency, or no network from the builder (use an internal mirror).
 - **Build never finishes / killed**: too many layers or packages; split into base and derived environments; read the revision's build log.
 - **IDE missing at launch**: no Pluggable Workspace Tools entry or start script ([WORKSPACE-TOOLS.md](./WORKSPACE-TOOLS.md)).
-- **Old revision used**: the Active revision is pinned, or the Project is restricted.
 
 ## Reference files
 

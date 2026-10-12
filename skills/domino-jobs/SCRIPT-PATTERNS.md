@@ -14,7 +14,11 @@ notebook.ipynb                                            # executes the noteboo
 bash pipeline.sh                                          # shell wrapper (for spark-submit, nbconvert, ...)
 ```
 
-Any non-zero exit code marks the Job **Failed**. To treat a specific code as success, map it in a shell wrapper, for example `bash -c 'exit 2 || [ $? -eq 2 ]'`.
+Any non-zero exit code marks the Job **Failed**. To treat a specific code (here `2`) as success, wrap the command so the wrapper's last status is what Domino sees:
+
+```bash
+bash -c 'python train.py "$@"; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 2 ]' _ --epochs 10
+```
 
 ## Environment variables in a Job
 
@@ -44,7 +48,7 @@ Names starting with `DOMINO_` are reserved; prefix your own variables (`ACME_...
 | Datasets | `/domino/datasets/local/<name>` | `/mnt/data/<name>` |
 | `email.html`, `dominostats.json`, `.dominoresults` | Project root `/mnt` | `/mnt/artifacts` (`dominostats.json` at the Project root) |
 
-Results are the files added or modified between the Job's input and output commits; use them for models, reports and metrics files. Large or many files belong in a Dataset ([domino-datasets](../domino-datasets/SKILL.md)); Project files are not designed for more than roughly 10 GB or 100,000 files. In a Job with an MPI cluster write to a Dataset, not the Project files.
+Results are the files added or modified between the Job's input and output commits; use them for models, reports and metrics files. Large or many files belong in a Dataset ([domino-datasets](../domino-datasets/SKILL.md)): by default a Project holds at most 10,000 files and a single file transfer is capped at 8 GB (both admin-configurable), and sync time grows with size. Project files are not mounted on compute-cluster nodes, so a Job with a cluster writes to a Dataset.
 
 ```python
 import json, os
@@ -65,7 +69,7 @@ joblib.dump(model, out / "model.joblib")
       json.dump({"R^2": 0.99, "sse": 10.49}, f)
   ```
 - `email.html`: body of the success email; `<head><title>...</title></head>` sets the subject; inline CSS; image paths relative to the Project root.
-- `.dominoresults` / `.dominoignore`: one path or glob per line (`*.pdf`, `results/*.png`, `**/*.txt`) to include or exclude files from the results view and email. If you use `.dominoresults`, list `email.html` in it.
+- `.dominoresults`: one path or glob per line (`*.pdf`, `results/*.png`, `**/*.txt`) selecting what the results view shows and the email attaches; if you use it, list `email.html` in it. `.dominoignore` patterns are excluded from the new file revision altogether (the files are not saved), so use it for scratch output, never to hide a result you still want.
 - MLflow is the recommended place for metrics ([domino-experiment-tracking](../domino-experiment-tracking/SKILL.md)); `dominostats.json` is the lightweight dashboard option.
 
 ## Logs
@@ -119,4 +123,4 @@ except Exception:
 - **`Error` state**: platform-side; check `prepareOutput` logs, the environment build status and the hardware tier's capacity, then open the support bundle.
 - **Out of memory**: larger hardware tier, chunked loading, or a compute cluster; check **Usage** on the Job.
 - **Long queue times**: per-user execution limit, tier capacity, or a cluster waiting for workers.
-- **Results missing**: files written outside the tracked directories (table above) or excluded by `.dominoignore`.
+- **Results missing**: files written outside the tracked directories (table above), or matched by `.dominoignore` (they are dropped from the revision, not just hidden).

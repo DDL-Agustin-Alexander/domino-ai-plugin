@@ -4,7 +4,7 @@ Applies to Domino 6.3 and Domino Cloud. How an environment declares the IDEs a W
 
 ## Pluggable Workspace Tools
 
-The **Pluggable Workspace Tools** field of an environment definition is YAML mapping a tool key to how Domino starts and proxies it. Domino serves one port (8888) per Workspace through its proxy; every tool must bind to it. The Domino Standard Environment ships the four entries below (start scripts under `/opt/domino/workspaces/`):
+The **Pluggable Workspace Tools** field of an environment definition is YAML mapping a tool key to how Domino starts and proxies it. A Workspace session is reachable on one port, the tool's `httpProxy.port`; the Domino Standard Environment tools all use 8888. The DSE ships the four entries below (start scripts under `/opt/domino/workspaces/`):
 
 ```yaml
 jupyter:
@@ -42,7 +42,7 @@ rstudio:
     requireSubdomain: false
 ```
 
-Keys per tool: `title`, `iconUrl`, `start` (command array), optional `supportedFileExtensions`, and `httpProxy` with `port` (required), `internalPath`, `rewrite` (URL rewriting, default false) and `requireSubdomain` (default false; needs a deployment configured for subdomains). The same structure is `workspaceTools[]` in the environments API ([API.md](./API.md)). Cluster-node environments leave this field empty.
+Keys per tool: `title`, `iconUrl`, `start` (command array), optional `supportedFileExtensions`, and `httpProxy` with `port` (required), `internalPath`, `rewrite` (URL rewriting, default false) and `requireSubdomain` (default false; needs a deployment configured for subdomains). The environments API carries the same data under different keys in `workspaceTools[]`: the map key becomes `name`, `start` becomes `startScripts`, `httpProxy` becomes `proxyConfig` ([API.md](./API.md)); do not POST the YAML keys. Cluster-node environments leave this field empty.
 
 Source: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environments/work-with-pluggable-workspaces/add-workspace-ides
 
@@ -56,9 +56,10 @@ Jupyter's own token check is handled inside Domino's start script because the Wo
 
 ## VS Code
 
-- Extensions on every launch (environment **Pre Run Script**):
+- Extensions on every launch (environment **Pre Run Script**; scripts run as root, so name the `ubuntu` home explicitly and hand ownership back):
   ```shell
-  code-server --install-extension <publisher.extension> --extensions-dir $HOME/.local/share/code-server/extensions
+  code-server --install-extension <publisher.extension> --extensions-dir /home/ubuntu/.local/share/code-server/extensions
+  chown -R ubuntu:ubuntu /home/ubuntu/.local/share/code-server
   ```
 - Extensions baked into the image:
   ```dockerfile
@@ -68,7 +69,7 @@ Jupyter's own token check is handled inside Domino's start script because the Wo
   USER ubuntu
   ```
   For a `.vsix`: `code-server --install-extension /tmp/ext.vsix --force`.
-- Adding VS Code to an image without it: install `code-server`, write a start script that runs `code-server $DOMINO_WORKING_DIR --user-data-dir $DOMINO_WORKING_DIR/.vscode --auth none --bind-addr 0.0.0.0:8888 --extensions-dir $HOME/.local/share/code-server/extensions`, and add a `vscode` entry to the tools YAML. `--auth none` is correct here because Domino's proxy authenticates the session. Full script: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/workspaces/launch-a-workspace/launch-a-vs-code-workspace
+- Adding VS Code to an image without it: install `code-server`, write a start script that runs `code-server $DOMINO_WORKING_DIR --user-data-dir $DOMINO_WORKING_DIR/.vscode --auth none --bind-addr 0.0.0.0:8888 --extensions-dir /home/ubuntu/.local/share/code-server/extensions` (start scripts run as `ubuntu`), and add a `vscode` entry to the tools YAML. `--auth none` is correct here because Domino's proxy authenticates the session. Full script: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/workspaces/launch-a-workspace/launch-a-vs-code-workspace
 
 ## RStudio preferences
 
