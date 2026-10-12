@@ -72,6 +72,37 @@ joblib.dump(model, out / "model.joblib")
 - `.dominoresults`: one path or glob per line (`*.pdf`, `results/*.png`, `**/*.txt`) selecting what the results view shows and the email attaches; if you use it, list `email.html` in it. `.dominoignore` patterns are excluded from the new file revision altogether (the files are not saved), so use it for scratch output, never to hide a result you still want.
 - MLflow is the recommended place for metrics ([domino-experiment-tracking](../domino-experiment-tracking/SKILL.md)); `dominostats.json` is the lightweight dashboard option.
 
+## Pin the commit after an upload
+
+In a DFS Project the Jobs service can resolve the head commit from before an upload for a few seconds after the files API already shows the file. A Job started in that window without `commitId` runs the previous commit and fails with `can't open file`. Pin the commit:
+
+- MCP: the upload tools (`upload_file_to_domino_project`, `sync_local_file_to_domino`, `smart_sync_file`) return `commitId`, and `run_domino_job` passes the newest commit containing recent uploads by itself (or takes an explicit `commit_id`).
+- REST: use the `commitId` the upload returned, or poll the DFS head until it contains your file, then pass it:
+
+```python
+import os, time, requests
+from urllib.parse import quote
+
+base = os.environ["DOMINO_API_PROXY"]                 # outside a run: DOMINO_API_HOST + Bearer token
+project_id = os.environ["DOMINO_PROJECT_ID"]
+path = quote("sum_squares.py", safe="")               # path relative to the Project root, URL-encoded
+
+for _ in range(30):
+    commit = requests.get(f"{base}/api/projects/beta/projects/{project_id}/commits/latest").json()["commitId"]
+    if requests.get(f"{base}/api/projects/v1/projects/{project_id}/files/{commit}/{path}/content").status_code == 200:
+        break                                         # the head now contains the uploaded file
+    time.sleep(2)
+else:
+    raise SystemExit("uploaded file is not in the DFS head yet")
+
+job = requests.post(f"{base}/api/jobs/v1/jobs", json={
+    "projectId": project_id, "runCommand": "python sum_squares.py", "commitId": commit,
+}).json()["job"]
+assert job["commitDetails"]["inputCommitId"] == commit
+```
+
+Both routes are in the 6.3 and Cloud specs. If the file existed before the upload, the 200 check cannot tell old content from new: compare the returned bytes with what you uploaded, or use the `commitId` the upload returned. Git-based Projects do not take `commitId`; pin code with `mainRepoGitRef` (`{"refType": "commitId", "value": "<sha>"}`) after pushing.
+
 ## Logs
 
 Everything written to stdout and stderr is captured. In the UI the Job's **Logs** tab offers Setup Output, User Output, Deployment Logs and a Support Bundle. From code:

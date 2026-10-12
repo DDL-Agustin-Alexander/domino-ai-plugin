@@ -68,7 +68,7 @@ def predict(features):
 
 The endpoint image is built from the Project's files at a commit, not from the Workspace file system. A file that exists only on the Workspace disk is absent from the image: the build succeeds, the version reaches `Running`, and the container then crash-loops with `FileNotFoundError: [Errno 2] No such file or directory: '/mnt/<username>/<project>/model.py'` followed by `*** no app loaded. GAME OVER ***` every 30 seconds or so, while the status alternates between `Running` and `Starting` and predictions return 503. Before publishing:
 
-- **DFS Project**: in the Workspace, **File Changes** > **Sync to Domino** (every file the function loads: the `.py`, model artifacts such as `.pkl` or `.joblib`, lookup files). From code, `python-domino` `files_upload(path, fileobj)` uploads one file (it uses the legacy `PUT /v1/projects/{owner}/{project}/{path}` route, Domino Internal API, may change between Domino versions; it takes a binary file object), and the bundled MCP server uploads any file type: `upload_file_to_domino_project` with `file_content` (text) or `content_base64` (binary, base64-encoded), or `sync_local_file_to_domino` for a file already on the Workspace disk (its bytes are uploaded unchanged, so `.joblib` and `.pkl` artifacts work). Then confirm the commit moved: `GET /api/projects/beta/projects/{projectId}/commits/latest`.
+- **DFS Project**: in the Workspace, **File Changes** > **Sync to Domino** (every file the function loads: the `.py`, model artifacts such as `.pkl` or `.joblib`, lookup files). From code, `python-domino` `files_upload(path, fileobj)` uploads one file (it uses the legacy `PUT /v1/projects/{owner}/{project}/{path}` route, Domino Internal API, may change between Domino versions; it takes a binary file object), and the bundled MCP server uploads any file type: `upload_file_to_domino_project` with `file_content` (text) or `content_base64` (binary, base64-encoded), or `sync_local_file_to_domino` for a file already on the Workspace disk (its bytes are uploaded unchanged, so `.joblib` and `.pkl` artifacts work). Then **pin the commit** rather than taking the head: the head can lag a few seconds behind an upload, and a version created six seconds after a sync was built from the previous commit and crash-looped. Use the `commitId` the MCP upload tool returned (the newest, if you uploaded several files), or read `GET /api/projects/beta/projects/{projectId}/commits/latest` (field `commitId`) and confirm `GET /api/projects/v1/projects/{projectId}/files/{commitId}/{path}/content` returns 200 for `model.py` and every artifact. Pass that id as `version.commitId` on create or `commitId` on `POST .../versions`; in the UI, publish only after that file check passes.
 - **Git-based Project**: commit and push the code; sync artifacts under `/mnt/artifacts` with **File Changes** > **Artifacts** > **Sync to Domino**. The version records the artifacts commit as `commitId` and pulls the repository at build time.
 
 Publish only after that. If a version is already crash-looping, sync the missing files and publish a new version; the running one never sees later file changes.
@@ -101,6 +101,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
     "replicas": 2,
     "version": {
       "projectId": "'"$DOMINO_PROJECT_ID"'",
+      "commitId": "'"$COMMIT_ID"'",
       "source": {"type": "File", "file": "model.py", "function": "predict", "excludeFiles": []},
       "logHttpRequestResponse": false,
       "monitoringEnabled": false
@@ -108,24 +109,48 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   }'
 ```
 
+`version.commitId` is the Project commit the image is built from: set it to the commit you verified after syncing ("Sync or commit first"); omitting it takes the head, which lags an upload by a few seconds.
+
 When `DOMINO_API_PROXY` is set, send the same request to `$DOMINO_API_PROXY/api/...` with no `Authorization` header. `source.type` is `File` (`file` + `function`) or `Registry` (`registeredModelName` + `registeredModelVersion`). The response is the `ModelApi` object; its `id` is the model ID used in prediction URLs. Poll `GET /api/modelServing/v1/modelApis/{id}` until `activeVersion.deployment.status` is `Running` and `isPending` is false (the `deployment` key is absent until a deployment exists), then run the health check below; `Running` alone is not proof that the endpoint works. The full REST lifecycle (new versions, stop and delete, logs, list filters) is in `domino-model-serving`. `python-domino` offers `model_publish(file, function, environment_id, name, description)` and `model_version_publish(model_id, file, function, environment_id, description)` on a client built with `Domino("owner/project")`; see `domino-python-sdk`.
 
 ## Health check after publishing
 
 `Running` means a container started; a crash-looping container reports `Running` between restarts. Treat a version as healthy only when all of these hold:
 
-1. **Instance logs are clean.** `GET /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/instanceLogs?tail=true&maxResults=200` (or the version's **Logs** column) contains no `Traceback`, `FileNotFoundError`, `ModuleNotFoundError` or `no app loaded`. The version id is `activeVersion.id` on the Model API.
+1. **The model container reported ready.** Fetch the instance logs **without** `tail` and with a large window, `GET /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/instanceLogs?maxResults=3000` (the version id is `activeVersion.id`), and keep only entries whose `tags` contain `kubernetes.container_name` with a value starting with `model-`. The `istio-proxy` sidecar writes hundreds of lines, so `tail=true` with a small `maxResults` returns sidecar lines only and a crash looks clean (observed on an internal Domino test cluster: `tail=true&maxResults=200` gave no model-container lines, `maxResults=3000` without `tail` gave the full traceback). Healthy: a model-container line `WSGI app 0 (mountpoint='') ready`. Crash loop: `no app loaded. GAME OVER` after a `Traceback`, and the exception line (`FileNotFoundError`, `ModuleNotFoundError`, ...) is the cause. No model-container lines at all means the container has not logged yet: wait and refetch; that is never "clean". The route also accepts `containerName`; whether it filters server-side was not verified, so filter on the tag.
 2. **The status holds.** Re-read the status a minute later: `Running` with `isPending: false` both times. Alternating `Running` / `Starting` or `isPending: true` after a `Running` reading is a restart loop.
 3. **One real prediction succeeds.** The **Tester** tab needs no token; a client call needs the URL and token from the user (next section). HTTP 200 with your result shape is the pass; 503 means no healthy instance behind the route, 401 means the wrong credential or auth mode, 400 means the request shape does not match the function signature.
 
-```bash
-TOKEN=$(curl -s http://localhost:8899/access-token)
-curl -s -H "Authorization: Bearer $TOKEN" \
-  "$DOMINO_API_HOST/api/modelServing/v1/modelApis/$MODEL_ID/versions/$VERSION_ID/instanceLogs?tail=true&maxResults=200" \
-  | grep -E -m5 'Traceback|FileNotFoundError|ModuleNotFoundError|no app loaded' || echo "instance logs clean"
+```python
+import os
+import requests
+
+if os.environ.get("DOMINO_API_PROXY"):
+    base, headers = os.environ["DOMINO_API_PROXY"], {}
+else:
+    base = os.environ["DOMINO_API_HOST"]
+    headers = {"Authorization": "Bearer " + requests.get("http://localhost:8899/access-token").text.strip()}
+
+r = requests.get(f"{base}/api/modelServing/v1/modelApis/{MODEL_ID}/versions/{VERSION_ID}/instanceLogs",
+                 headers=headers, params={"maxResults": 3000})          # no tail: the sidecar would crowd out the model container
+r.raise_for_status()
+model_lines = [e["log"] for e in r.json().get("logs", [])
+               if any(t["key"] == "kubernetes.container_name" and t["value"].startswith("model-")
+                      for t in e.get("tags", []))]
+text = "\n".join(model_lines)
+if not model_lines:
+    print("no model-container log lines yet: wait and refetch")
+elif "no app loaded. GAME OVER" in text:
+    errors = [line for line in model_lines if "Error" in line or "Exception" in line]
+    print("CRASH LOOP, cause:", errors[-1] if errors else "see the traceback below")
+    print(text[-3000:])
+elif "WSGI app 0 (mountpoint='') ready" in text:
+    print("model container ready")
+else:
+    print("model container still starting: refetch")
 ```
 
-A missing file means the Project commit predates it: sync or commit, then publish a new version. A missing module means the package is not in the environment Dockerfile (endpoint hosts ignore `requirements.txt`).
+A missing file means the Project commit predates it: sync or commit, pin the commit, then publish a new version. A missing module means the package is not in the environment Dockerfile (endpoint hosts ignore `requirements.txt`).
 
 ## Request JSON
 
