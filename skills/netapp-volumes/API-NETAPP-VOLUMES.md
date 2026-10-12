@@ -16,11 +16,12 @@ Follow [domino-api-intro](../domino-api-intro/SKILL.md#authentication). Two base
 - `remotefs_url` for `/remotefs/v1/*` volume, filesystem, snapshot and grant operations.
   **Inside a run these are reachable only on `DOMINO_REMOTE_FILE_SYSTEM_HOSTPORT`**
   (the volumes API page reserves the variable for these operations) **and only with an
-  explicit `Authorization: Bearer`**. Verified on Domino Cloud 6.4.0 from a Job: the same
-  `GET /remotefs/v1/volumes` returned 404 through `$DOMINO_API_PROXY` (with or without a
-  header) and through the in-run `$DOMINO_API_HOST`, 401 `Authorization header not found`
-  on the hostport without a header, and 200 on the hostport
-  (`http://remotefs.domino-platform:80` there) with the token from
+  explicit `Authorization: Bearer`**. Verified from a Job on an internal Domino test
+  cluster (6.4.0): the same `GET /remotefs/v1/volumes` returned 404 through
+  `$DOMINO_API_PROXY` (with or without a header) and through the in-run
+  `$DOMINO_API_HOST`, 401 `Authorization header not found` on the hostport without a
+  header, and 200 on the hostport (an in-cluster `http://host:port` value; use the
+  variable, never a copied hostname) with the token from
   `http://localhost:8899/access-token`. The same token is served at
   `$DOMINO_API_PROXY/access-token`. Outside Domino, the deployment URL with a PAT or
   service account token works (200).
@@ -105,13 +106,17 @@ The volume record: `id`, `name`, `uniqueName`, `description`, `filesystemId`,
 
 ```
 PATCH /remotefs/v1/volumes/{id}                          body: {"name": "new-name", "description": "..."} (both optional; a rename changes the mount path)
-POST  /remotefs/v1/rpc/attach-volume-to-project          body: {"projectId": "...", "volumeId": "..."}   -> 204
-POST  /remotefs/v1/rpc/detach-volume-from-project        body: {"projectId": "...", "volumeId": "..."}   -> 204
-POST  /remotefs/v1/rpc/mark-volume-for-deletion          body: {"volumeId": "..."}   -> 204 (status MarkedForDeletion)
-POST  /remotefs/v1/rpc/restore-volume                    body: {"volumeId": "..."}   -> 204 (undo mark-for-deletion)
-POST  /remotefs/v1/rpc/delete-volume                     body: {"volumeId": "..."}   (permanent; needs delete permission)
+POST  /remotefs/v1/rpc/attach-volume-to-project          body: {"projectId": "...", "volumeId": "..."}   -> 200, the volume record
+POST  /remotefs/v1/rpc/detach-volume-from-project        body: {"projectId": "...", "volumeId": "..."}   -> 200, the volume record
+POST  /remotefs/v1/rpc/mark-volume-for-deletion          body: {"volumeId": "..."}   -> 200, status MarkedForDeletion
+POST  /remotefs/v1/rpc/restore-volume                    body: {"volumeId": "..."}   -> 200, status Active (undo mark-for-deletion)
+POST  /remotefs/v1/rpc/delete-volume                     body: {"volumeId": "..."}   -> 204 (permanent; needs delete permission; works on an Active volume, marking first is not required)
 POST  /remotefs/v1/rpc/bulk-attach-volumes-to-project, /rpc/bulk-copy-volumes-to-project
 ```
+
+The spec lists 204 for the attach, detach, mark and restore RPCs; on an internal Domino
+test cluster (6.4.0) all four returned 200 with the volume record, and `delete-volume`
+returned 204 (volume and its snapshot 404 afterwards). Accept either.
 
 ```python
 requests.post(f"{remotefs_url}/remotefs/v1/rpc/attach-volume-to-project", headers=remotefs_headers,
@@ -142,32 +147,44 @@ reserved for Domino services.
 GET  /remotefs/v1/snapshots?volume_id=<id>&run_id=<runId>&limit=&offset=
 GET  /remotefs/v1/snapshots/{id}
 PUT  /remotefs/v1/snapshots/{id}                     body: {"description": "..."} (required; edits the commit message)
-POST /remotefs/v1/snapshots                          body: {"volumeId": "...", "description": "...", "tagNames": ["v2.0"]} (volumeId required)
+POST /remotefs/v1/snapshots                          body: {"volumeId": "...", "description": "...", "tagNames": ["v2-0"]} (volumeId required)
 POST /remotefs/v1/snapshots/{id}/tags                body: {"name": "production"}
-DELETE /remotefs/v1/snapshots/{id}/tags/{name}
-POST /remotefs/v1/rpc/create-snapshot-from-run       body: {"volumeId": "...", "runId": "...", "userId": "...", "description": "..."} (first three required)
-POST /remotefs/v1/rpc/restore-snapshot               body: {"snapshotId": "..."}   -> 204
-POST /remotefs/v1/rpc/delete-snapshot                body: {"snapshotId": "..."}
+DELETE /remotefs/v1/snapshots/{id}/tags/{name}       -> 204
+POST /remotefs/v1/rpc/restore-snapshot               body: {"snapshotId": "..."}   -> 200, the snapshot record (spec says 204)
+POST /remotefs/v1/rpc/delete-snapshot                body: {"snapshotId": "..."}   -> 204 (also deletes the snapshot's tags)
+POST /remotefs/v1/rpc/create-snapshot-from-run       body: {"volumeId", "runId", "userId", "description"}; spec: "must be called by super user"
 GET  /remotefs/v1/volumes/{id}/snapshots/{version}
 ```
 
-`description` is the commit message shown in the UI. Query filters on the snapshot list
-are snake_case (`volume_id`, `run_id`), unlike the Nucleus routes.
+`description` is the commit message shown in the UI; `tagNames` are applied in the order
+given. **Tag names may contain only letters, numbers, underscores and hyphens, at most 50
+characters**: a dotted name such as `v2.0` is rejected (live: `500 Tags can only contain
+letters, numbers, underscores, and hyphens with maximum length 50`), so use `v2-0`. A tag
+name is unique within the volume: adding one that already sits on another snapshot
+returns `409 Duplicate Snapshot tag in Volume`; delete it from the old snapshot first. A
+snapshot created without tags comes back with `tags: null`, not `[]`. Query filters on
+the snapshot list are snake_case (`volume_id`, `run_id`), unlike the Nucleus routes.
+
+`create-snapshot-from-run` is reserved for super users: for a normal user it returned
+`403 Missing required permissions for this action` both from a run and from outside
+(it needs the `data.manage_volumes_for_execution` action). As a user, snapshot a volume
+with `POST /remotefs/v1/snapshots`, or, where the deployment enables it, set
+`snapshotNetAppVolumesOnCompletion: true` on the job (see "Mount volumes in a job").
 
 ```python
 snapshot = requests.post(f"{remotefs_url}/remotefs/v1/snapshots", headers=remotefs_headers, json={
     "volumeId": volume_id,
     "description": "Added Q4 customer records, 50M new rows",
-    "tagNames": ["v2.0"],
+    "tagNames": ["v2-0"],
 }).json()
-print(snapshot["id"], snapshot["version"], [t["name"] for t in snapshot.get("tags", [])])
+print(snapshot["id"], snapshot["version"], [t["name"] for t in (snapshot.get("tags") or [])])
 
 requests.post(f"{remotefs_url}/remotefs/v1/snapshots/{snapshot['id']}/tags",
               headers=remotefs_headers, json={"name": "production"})
 
-requests.post(f"{remotefs_url}/remotefs/v1/rpc/create-snapshot-from-run", headers=remotefs_headers,
-              json={"volumeId": volume_id, "runId": os.environ["DOMINO_RUN_ID"], "userId": user_id,
-                    "description": "post-training snapshot"})
+# Edit the commit message later
+requests.put(f"{remotefs_url}/remotefs/v1/snapshots/{snapshot['id']}", headers=remotefs_headers,
+             json={"description": "Q4 customer records (validated)"})
 ```
 
 Snapshot record: `id`, `volumeId`, `version` (links to the ONTAP snapshot name and is the
@@ -206,11 +223,15 @@ File operations run on a different host than volume operations
 
 - Outside a Domino execution: prefix the path with `/webvfs` on the deployment URL, for
   example `GET https://<deployment>/webvfs/remotefs/v1/volumes/{id}/files?path=raw`, with
-  your PAT or service account token.
+  your PAT or service account token. Verified live: `path=` (empty) lists the root and
+  `path=/` returns `400 invalid path input`; without the prefix the route is 404. Rows
+  look like `{"name": {"label", "isDirectory"}, "size": {"label", "sizeInBytes"}, "lastModified"}`,
+  and `/files/raw/{path}` returns the file body.
 - Inside an execution: call `http://data-webvfs-service.domino-compute:80` with the path
   exactly as above (no prefix). Send the same access-token bearer as for the other
-  remotefs routes; the published spec binds no security scheme to these operations, so if
-  a deployment rejects it, check its `/docs/openapi/data_webvfs_service-swagger.json`.
+  remotefs routes. The published spec binds no security scheme to any `/remotefs/v1`
+  operation, so the auth mode comes from the live behaviour above; if a deployment rejects
+  the bearer on a file route, check its `/docs/openapi/data_webvfs_service-swagger.json`.
 
 Inside a Workspace or Job, reading and writing the mount path is simpler than the file API
 ([DATA-ACCESS.md](./DATA-ACCESS.md)).
@@ -226,9 +247,16 @@ requests.post(f"{base_url}/api/jobs/v1/jobs", headers=headers, json={
     "title": "train on shared volume",               # optional
     "hardwareTier": "small-k8s",                     # optional hardware tier id
     "netAppVolumeIds": [volume_id],
-    "snapshotNetAppVolumesOnCompletion": True,       # snapshot every mounted volume when the job ends
 })
 ```
+
+Verified live: the job mounted the volume read-write at `/domino/netapp-volumes/<name>`
+(DFS project) with snapshots under `/domino/netapp-volumes/snapshots/<name>`, and wrote
+to it. Adding `"snapshotNetAppVolumesOnCompletion": true` (snapshot every mounted volume
+when the job ends) depends on deployment configuration: on the test cluster it returned
+`400 feature flag EnableDominoNetAppSnapshotsOnExecutionCompletion is disabled for user`.
+Send it only where an administrator has enabled that flag, and fall back to
+`POST /remotefs/v1/snapshots` from the job's last step otherwise.
 
 Only `projectId` and `runCommand` are required; `environmentId` is optional. Full body:
 [API-JOBS.md](../domino-python-sdk/API-JOBS.md#start-a-job). Workspace sessions take the

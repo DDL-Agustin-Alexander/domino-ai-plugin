@@ -1,10 +1,11 @@
-# Bulk operations, merging and copying
+# Bulk operations and merging
 
 Routes for bulk lifecycle work on a taxonomy:
 
 - `POST /tags/bulk-delete` and `POST /namespaces/bulk-delete`
 - `POST /rpc/merge-tags`: collapse duplicate tags into one
-- `POST /rpc/copy-entity-tags` and `POST /rpc/copy-property-values`: copy from one entity to another
+- `POST /rpc/copy-entity-tags` and `POST /rpc/copy-property-values` exist but are
+  internal (see the last section)
 
 All assume `BASE` and `H` from [SKILL.md](./SKILL.md#configuration).
 
@@ -21,35 +22,41 @@ curl -s -X POST -H "$H" -H "Content-Type: application/json" \
 ```
 
 Both routes take `{"ids": [...]}` (`ids` required, at least one id) and return
-`{"deletedCount": N}`, per both published specs. Deleting tags removes their assignments;
-deleting namespaces removes their tags and assignments. There is no undo, so confirm with
-the user first and prefer `status: deprecated` on shared deployments.
+`{"deletedCount": N}`, per both published specs. Deleting a tag removes its entity
+assignments ("Delete a tag and unassign all its entity assignments"). Deleting a
+namespace removes its tags, but the single-namespace delete is specified to fail while
+any of those tags still has assignments; expect the bulk route to apply the same rule
+and untag (or bulk-delete the tags) first. There is no undo, so confirm with the user and
+prefer `status: deprecated` on shared deployments.
 
 ## Merge tags
 
 ```bash
-curl -s -X POST -H "$H" -H "Content-Type: application/json" \
-  -d '{"sourceTagIds":["<dup-1>","<dup-2>"],"targetTagId":"<canonical>"}' "$BASE/rpc/merge-tags"
-# 200 -> {"targetTag":{"id","label","namespace","fullPath"},"mergedCount":2,"reassignedEntities":17}
+for dup in "<dup-1>" "<dup-2>"; do
+  curl -s -X POST -H "$H" -H "Content-Type: application/json" \
+    -d "{\"sourceTagIds\":[\"$dup\"],\"targetTagId\":\"<canonical>\"}" "$BASE/rpc/merge-tags"
+done
+# 200 -> {"targetTag":{"id","label"},"mergedCount":1,"reassignedEntities":17}
 ```
 
 `sourceTagIds` and `targetTagId` are required. Every assignment on the source tags moves
 to the target and the source tags are deleted; the docs state merging cannot be undone.
+Merge **one source tag per call**: on an internal Domino test cluster (6.4.0), a single
+call with two source tags that sat on the same entity returned `500 failed to merge
+tags`, while one source at a time succeeded (`reassignedEntities` is 0 when the entity
+already carried the target).
 
-## Copy tags or property values between entities
+## Copy routes (internal, service-account only)
 
-```bash
-curl -s -X POST -H "$H" -H "Content-Type: application/json" \
-  -d '{"entityType":"project","sourceEntityId":"<from-id>","targetEntityId":"<to-id>"}' \
-  "$BASE/rpc/copy-entity-tags"
-
-curl -s -X POST -H "$H" -H "Content-Type: application/json" \
-  -d '{"entityType":"project","sourceEntityId":"<from-id>","targetEntityId":"<to-id>"}' \
-  "$BASE/rpc/copy-property-values"
-```
-
-All three fields are required; both entities share one `entityType`. Useful when a new
-project should start with the same classification as an existing one.
+`POST /rpc/copy-entity-tags` and `POST /rpc/copy-property-values` take
+`{"entityType", "sourceEntityId", "targetEntityId"}` (all required, same type). Both
+specs describe them as "Internal, service-account only" and say they copy the source's
+assignments **replacing the target's existing tags** (or values). Do not offer them as a
+user workflow: with a user token both return
+`403 insufficient permissions: requires service account` (verified live), and a
+service-account call against an entity that already has tags or values wipes them. To give a new project the same
+classification as an existing one, create it from a Project Template (tags and property
+values carry over) or re-apply the tags with `POST /rpc/tag-entity`.
 
 ## Patterns
 
@@ -77,5 +84,6 @@ For thousands of rows, parallelize with `xargs -P` and refresh the token periodi
 ### Retire a dimension
 
 Deprecate the namespace (`PUT /namespaces/{id}` with `status: deprecated`) to stop new
-assignments while keeping history, or `POST /namespaces/bulk-delete` to remove it and
-all assignments.
+assignments while keeping history. To remove it outright, delete its tags first
+(`POST /tags/bulk-delete` unassigns them), then `DELETE /namespaces/{id}`; the namespace
+delete is refused while assignments remain.

@@ -64,17 +64,24 @@ curl -s -X PATCH -H "$H" -H "Content-Type: application/json" \
 
 Details, versioned entities and copy policies: [PROPERTY-VALUES.md](./PROPERTY-VALUES.md).
 
-## Workflow 7: clone classification onto a new project
+## Workflow 7: give a new project the same classification
+
+Create the project from a Project Template: a project created from a template inherits
+the template's tags, and its property values according to the `copyPolicy` chosen per
+property ([PROPERTY-VALUES.md](./PROPERTY-VALUES.md#copy-policy-templates)). For an
+existing project, read the source's tags with `GET /entity-tags` and apply them with
+`POST /rpc/tag-entity`:
 
 ```bash
+TAGS=$(curl -s -H "$H" "$BASE/entity-tags?entityType=project&entityIds=<source-id>" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin)['data']; print(json.dumps([t['id'] for t in next(iter(d.values()))]))")
 curl -s -X POST -H "$H" -H "Content-Type: application/json" \
-  -d '{"entityType":"project","sourceEntityId":"<template-like-project>","targetEntityId":"<new-project>"}' \
-  "$BASE/rpc/copy-entity-tags"
+  -d "{\"entityType\":\"project\",\"entityId\":\"<new-id>\",\"tagIds\":$TAGS}" "$BASE/rpc/tag-entity"
 ```
 
-Project Templates do this at creation time: a project created from a template inherits
-the template's tags, and its property values according to the `copyPolicy` chosen per
-property ([PROPERTY-VALUES.md](./PROPERTY-VALUES.md#copy-policy-templates)).
+`POST /rpc/copy-entity-tags` and `/rpc/copy-property-values` are internal,
+service-account-only routes that replace the target's data; see
+[BULK-OPS.md](./BULK-OPS.md#copy-routes-internal-service-account-only).
 
 ## Design practices
 

@@ -78,6 +78,13 @@ env = requests.post(f"{base_url}/api/environments/v2/environments", headers=head
 }).json()["environment"]
 ```
 
+Verified on an internal Domino test cluster (6.4.0) with this body: 200, the record came
+back with `latestRevision.status: "Queued"` and `selectedRevision: null`, and the build
+reached `Succeeded` in about two minutes. The Public API does not expose a base image
+URI; copy one from an existing environment's details page (the DSE image) or your
+registry. `PUT .../description` works, but the description is not returned by the
+Public `GET`.
+
 **6.3** (`POST /api/environments/beta/environments`): the same fields flat.
 
 ```python
@@ -91,7 +98,9 @@ env = requests.post(f"{base_url}/api/environments/beta/environments", headers=he
 }).json()["environment"]
 ```
 
-Duplicate an existing environment instead (either target; nothing else in the body):
+Duplicate an existing environment instead (either target; nothing else in the body).
+Verified live: the copy is named "Duplicate of <name>" and reuses the source's built
+revision, so no new build runs.
 
 ```python
 env = requests.post(f"{base_url}/api/environments/beta/environments", headers=headers,
@@ -115,6 +124,9 @@ Returns `{"environment": {...}, "metadata": {...}}` with the fields listed under
 DELETE /api/environments/v1/environments/{environmentId}
 ```
 
+A soft archive: the response is the environment with `archived: true`, and `GET` still
+returns it (verified live).
+
 ## Revisions
 
 ```
@@ -123,14 +135,32 @@ POST  /api/environments/beta/environments/{environmentId}/revisions   6.3: the f
 PATCH /api/environments/beta/environments/{environmentId}/revisions/{revisionId}   body: {"isRestricted": true}
 ```
 
-Both create responses are `{"environmentRevision": {"id", "number", "status", "availableTools"}, "metadata"}`.
-`isRestricted` is required on `PATCH`.
+**`image` is required on both revision routes**: without it the server returns
+`400 image is required` (verified live on both routes), even though the schema marks it
+optional. Pass the base image URI the environment already uses. The create responses
+are `{"environmentRevision": {"id", "number", "availableTools"}, "metadata"}`; live, the v2
+response carried `architectures` and neither carried `status`, so poll the environment
+(below) for the build state. `isRestricted` is required on `PATCH`.
 
 ```python
 rev = requests.post(f"{base_url}/api/environments/beta/environments/{env_id}/revisions",
                     headers=headers, json={
+    "image": "<base-image-uri>",
     "dockerfileInstructions": "USER root\nRUN pip install --no-cache-dir pandas==2.2.2 scikit-learn==1.5.1\nUSER ubuntu",
     "summary": "pin pandas and scikit-learn",
+}).json()["environmentRevision"]
+```
+
+On Cloud, the same fields go under `buildConfiguration` on the v2 route:
+
+```python
+rev = requests.post(f"{base_url}/api/environments/v2/environments/{env_id}/revisions",
+                    headers=headers, json={
+    "image": "<base-image-uri>",
+    "architectures": ["amd64"],
+    "buildConfiguration": {"dockerfileInstructions": "USER root\nRUN pip install --no-cache-dir pandas==2.2.2\nUSER ubuntu"},
+    "environmentVariables": [{"key": "MODEL_PATH", "value": "/mnt/artifacts/model.pkl"}],
+    "summary": "pin pandas",
 }).json()["environmentRevision"]
 ```
 
@@ -138,7 +168,7 @@ rev = requests.post(f"{base_url}/api/environments/beta/environments/{env_id}/rev
 
 Poll `GET /api/environments/v1/environments/{environmentId}` and read
 `environment.latestRevision.status`. The spec enum is lowercase (`queued`, `starting`,
-`pulling`, `building`, `pushing`, `succeeded`, `failed`, `killed`) but Domino Cloud 6.4.0
+`pulling`, `building`, `pushing`, `succeeded`, `failed`, `killed`) but an internal Domino test cluster (6.4.0)
 returns capitalized values (`Succeeded`, `Failed`, `Killed`), so compare
 case-insensitively. `latestRevision` is the newest build; `selectedRevision` is the one
 executions use, and the two differ when the newest build failed or was killed.

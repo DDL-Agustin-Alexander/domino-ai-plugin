@@ -27,16 +27,16 @@ Request body (`projectId` and `runCommand` are the only required fields):
 | `hardwareTier` | string | Hardware tier **id** (for example `small-k8s`); project default when omitted. List ids with `GET /api/hardwaretiers/v1/hardwaretiers` (needs the ViewHardwareTiers permission) or python-domino `hardware_tiers_list()` (tiers usable by the project) |
 | `environmentId` | string | Environment id; project default when omitted |
 | `environmentRevisionSpec` | string | `ActiveRevision`, `LatestRevision` or `SomeRevision(<revisionId>)` |
-| `commitId` | string | DFS commit to run against; defaults to the project's head. Applies only to the project's internal DFS history: it cannot pin a commit on a Git-based project's main repository (use `mainRepoGitRef` with `commitId` for that) |
-| `mainRepoGitRef` | object | `{"refType": "head" | "branches" | "tags" | "commitId", "value": "..."}` (`refType` required; `value` for all but `head`). These are the spec's values for jobs; the project-repository `defaultRef` uses a different set. Live check (Domino Cloud 6.4.0): `branches` runs on the branch; `branch` is accepted with 200 and the job then fails with `Unknown reference type` |
+| `commitId` | string | DFS commit to run against; defaults to the project's head. The Cloud spec adds that it applies only to the project's internal DFS history and cannot pin a commit on a Git-based project's main repository (use `mainRepoGitRef` with `commitId` for that) |
+| `mainRepoGitRef` | object | `{"refType": "head" | "branches" | "tags" | "commitId", "value": "..."}` (`refType` required; `value` for all but `head`). These are the spec's values for jobs; the project-repository `defaultRef` uses a different set. Live check (internal Domino test cluster, 6.4.0): `branches` runs on the branch; `branch` is accepted with 200 and the job then fails with `Unknown reference type` |
 | `externalVolumeMountIds` | string[] | External data volume ids |
 | `netAppVolumeIds` | string[] | NetApp volume ids; see [netapp-volumes](../netapp-volumes/API-NETAPP-VOLUMES.md) |
-| `snapshotDatasetsOnCompletion`, `snapshotNetAppVolumesOnCompletion` | boolean | Snapshot mounted datasets / volumes when the job ends |
+| `snapshotDatasetsOnCompletion`, `snapshotNetAppVolumesOnCompletion` | boolean | Snapshot mounted datasets / volumes when the job ends. The NetApp flag depends on deployment configuration: where the feature flag `EnableDominoNetAppSnapshotsOnExecutionCompletion` is off the job is rejected with 400 (observed on an internal Domino test cluster, 6.4.0) |
 | `computeCluster` | object | `clusterType` (`dask`, `mpi`, `ray`, `slurm`, `spark`), `computeEnvironmentId`, `workerCount`, `workerHardwareTier` required; optional `masterHardwareTierId`, `maxWorkerCount`, `workerStorageMB`, `computeEnvironmentRevisionSpec` |
 | `capacityType` | string | |
 
 There is no `hardwareTierId`, `isDirectHardwareTierId` or `commandToRun` field. The
-server does not reject unknown fields or unknown tier ids: on Domino Cloud 6.4.0,
+server does not reject unknown fields or unknown tier ids: on an internal Domino test cluster (6.4.0),
 `"hardwareTierId": "medium-k8s"` and `"hardwareTier": "no-such-tier-k8s"` both returned
 200 and the job ran on the project default tier. The Public job object does not report
 the tier it ran on; to confirm it, read `GET /v4/jobs/{jobId}/runtimeExecutionDetails`
@@ -122,7 +122,7 @@ for entry in logs["logs"]["logContent"]:          # each entry: {"timestamp", "l
 print("complete:", logs["logs"]["isComplete"])
 ```
 
-Observed on Domino Cloud 6.4.0: `timestamp` is an ISO string and the `logType` inside
+Observed on an internal Domino test cluster (6.4.0): `timestamp` is an ISO string and the `logType` inside
 each entry is capitalized (`StdOut`), unlike the lowercase query parameter.
 
 ## Poll for completion
@@ -155,7 +155,7 @@ The Public API has no stop route. Options:
 
 - python-domino `domino.job_stop(job_id, commit_results=True)`; it calls
   `POST /v4/jobs/stop` with `{"jobId", "commitResults"}` (internal API, may change
-  between Domino versions; verified on Domino Cloud 6.4.0: the job reports `Stopped`
+  between Domino versions; verified on an internal Domino test cluster (6.4.0): the job reports `Stopped`
   with `isCompleted: true` within seconds). See [SDK-EXAMPLES.md](./SDK-EXAMPLES.md#jobs).
 - The Jobs page in the Domino UI.
 

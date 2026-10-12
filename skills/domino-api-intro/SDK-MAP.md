@@ -36,15 +36,14 @@ it signs in through the browser or a device code. The R package wraps its file a
 
 ## LLM access
 
-Calling external LLM providers through Domino is covered by the `domino-llm-access`
-skill (shipped as `domino-ai-gateway` until that rename lands in this release). On
-Domino 6.3 the AI Gateway routes (`/api/aigateway/v1/*`) exist in the 6.3 spec; Domino
+| Need | Skill |
+|------|-------|
+| Call an LLM from code: external provider with a key in a Domino environment variable, a Domino-hosted model endpoint, or the legacy AI Gateway on 6.3 | [domino-llm-access](../domino-llm-access/SKILL.md) |
+| Host an LLM endpoint and manage it over `/api/gen-ai/beta/endpoints` (both specs) | [domino-llm-access/HOST-AN-LLM-API.md](../domino-llm-access/HOST-AN-LLM-API.md) |
+| LLM Gateway 2.0 (admin setup, calling models through the gateway, coding assistants) | [domino-llm-gateway](../domino-llm-gateway/SKILL.md) |
+
+The legacy AI Gateway routes (`/api/aigateway/v1/*`) exist only in the 6.3 spec; Domino
 Cloud has removed them, so nothing under `/api/aigateway` is callable there.
-
-GenAI endpoint management (`/api/gen-ai/beta/endpoints`) is in both specs; see
-[domino-model-endpoints](../domino-model-endpoints/SKILL.md).
-
-Calling LLMs from code (provider SDKs, LLM Gateway 2.0, Domino-hosted models, and the legacy AI Gateway on 6.3): [domino-llm-access](../domino-llm-access/SKILL.md).
 
 ## Discovery for agents
 

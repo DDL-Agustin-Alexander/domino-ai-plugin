@@ -30,7 +30,7 @@ Or register an existing run's model: `mlflow.register_model("runs:/<run_id>/mode
 
 ### By REST (Domino)
 
-`POST /api/registeredmodels/v2` registers from an MLflow run or a Hugging Face model (`modelName`, `modelSource{sourceType, mlflowSource{experimentRunId, artifactPath}|huggingFaceSource{modelId}}`, `create`, optional `projectId`, `description`, `discoverable`). `POST /api/registeredmodels/v1/{modelName}/versions` is deprecated since 6.2.1. Worked example: [LIFECYCLE.md](../domino-model-serving/LIFECYCLE.md).
+`POST /api/registeredmodels/v2` registers from an MLflow run or a Hugging Face model (`modelName`, `modelSource{sourceType, mlflowSource{experimentRunId, loggedModelId|artifactPath}|huggingFaceSource{modelId}}`, `create`, optional `projectId`, `description`, `discoverable`). With an MLflow 3 client pass `loggedModelId` (`m-<id>`): a version registered with `artifactPath: "model"` points at a run artifact that MLflow 3 never wrote and does not load (verified on an internal Domino test cluster, 6.4.0). `POST /api/registeredmodels/v1/{modelName}/versions` is deprecated since 6.2.1. Worked example: [LIFECYCLE.md](../domino-model-serving/LIFECYCLE.md).
 
 ## Versions, aliases and tags
 

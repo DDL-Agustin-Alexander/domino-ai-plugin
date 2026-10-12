@@ -69,8 +69,9 @@ separate resources with separate lifecycles; do not mix their ids.
 `.../request-metrics`, `.../pod-resource-metrics`, `.../vllm-*-metrics`,
 `GET /api/gen-ai/beta/default-endpoint-environment`,
 `GET /api/gen-ai/beta/vanity-url-availability/{vanityUrl}` are in both specs. Invoke a
-GenAI endpoint at the URL the endpoint's page shows, not at a management route. Workflow:
-[domino-model-endpoints](../domino-model-endpoints/SKILL.md).
+GenAI endpoint at the URL the endpoint's page shows, not at a management route. These
+are Domino-hosted LLM endpoints; the routes, bodies and calling pattern are in
+[domino-llm-access/HOST-AN-LLM-API.md](../domino-llm-access/HOST-AN-LLM-API.md).
 
 ## Discovery
 

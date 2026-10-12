@@ -23,7 +23,7 @@ GET /api/apps/beta/apps
 | `status` | Most recent instance status: `Queued`, `Scheduled`, `Pending`, `Preparing`, `Building`, `Pulling`, `Running`, `Serving`, `StopRequested`, `StopAndDiscardRequested`, `Stopping`, `Finishing`, `Stopped`, `Succeeded`, `Failed`, `Error` |
 | `tagIds` | Taxonomy tag ids, comma-separated, AND semantics |
 | `includeTemplateApps` | Default false |
-| `sortField` (`name`, `lastUpdated`, `status`, `views`, `lastViewed`, `published`), `sortOrder` (`asc`, `desc`) | |
+| `sortField` (`name`, `lastUpdated`, `status`, `views`, `lastViewed`; `published` on **Cloud** only), `sortOrder` (`asc`, `desc`) | |
 | `limit`, `offset` | `limit` defaults to no limit |
 | `configurationType` (`STANDARD`, `AISYSTEM`), `accessStatus` (`granted`, `pending`, `noAccess`), `prioritizePinned` | **Cloud** only |
 
@@ -95,7 +95,7 @@ POST  /api/apps/beta/apps/{appId}/versions/{versionId}/stop
 ```
 
 Use `start` and `stop` on a version to run or halt the app; the beta routes accept an
-empty request (verified on Domino Cloud 6.4.0: start with no body returned 200 and the
+empty request (verified on an internal Domino test cluster (6.4.0): start with no body returned 200 and the
 instance was `Running` about 35 s later). A version record carries `currentInstance`
 (`id`, `status`, `createdAt`, `dfsCommitId`, `gitCommitId`). Instance statuses seen live:
 `Queued`, `Pending`, `Preparing`, `Running`, `Stopped`.

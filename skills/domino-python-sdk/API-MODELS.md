@@ -37,7 +37,7 @@ items = requests.get(f"{base_url}/api/modelServing/v1/modelApis", headers=header
 ### Create
 
 ```
-POST /api/modelServing/v1/modelApis        -> the Model API record (spec says 201; Domino Cloud 6.4.0 returned 200)
+POST /api/modelServing/v1/modelApis        -> the Model API record (spec says 201; an internal Domino test cluster (6.4.0) returned 200)
 ```
 
 Required: `name`, `description`, `environmentId`, `isAsync`, `strictNodeAntiAffinity`,
@@ -71,11 +71,15 @@ model_api = requests.post(f"{base_url}/api/modelServing/v1/modelApis", headers=h
 model_api_id = model_api["id"]
 ```
 
-Verified live (Domino Cloud 6.4.0) with this body: the record came back with
-`hardwareTierId: "small-k8s"` (the project default, not the deployment's
-`isDefaultForModelApi` tier), an access token created automatically (id only, no value),
-and `activeVersion` without a `deployment` key until the build finished; after about
-2.5 minutes `activeVersion.deployment` was `{"status": "Running", "isPending": false}`.
+Live check on an internal Domino test cluster (6.4.0) used a smaller body than the one
+above: the required fields, `replicas: 1`, `source.excludeFiles: []`, and **no**
+`hardwareTierId`, `shouldDeploy` or version `description`. With `hardwareTierId`
+omitted, the record came back with `hardwareTierId: "small-k8s"` (the project default,
+not the deployment's `isDefaultForModelApi` tier); an access token was created
+automatically (id only, no value); `activeVersion` had no `deployment` key until the
+build finished, and after about 2.5 minutes `activeVersion.deployment` was
+`{"status": "Running", "isPending": false}`. The optional fields in the example above
+come from the spec and were not exercised.
 
 ```python
 import time
@@ -106,16 +110,22 @@ Public API has no stop route; stop it first with
 internal API, may change between Domino versions) or from the UI, then `DELETE`. After
 deletion `GET` returns 404 and the list no longer includes the record.
 
-**Cloud only:** `PUT /api/modelServing/beta/modelApis/{modelApiId}/access` (body
-`collaborators[]` with `id`, `isOrganization`, `role` `Owner`/`Editor`/`Operator`/`Viewer`,
-plus `visibility` `Public`/`Discoverable`/`Private`), `GET/PUT .../visibility`,
-`GET/POST .../collaborators`, `GET .../consumer/access`.
+**Cloud only:** `PUT /api/modelServing/beta/modelApis/{modelApiId}/access` saves
+`visibility` (`Public`/`Discoverable`/`Private`) and the **complete** collaborator list
+(`collaborators[]` with `id`, `isOrganization`, `role` `Owner`/`Editor`/`Operator`/`Viewer`)
+in one request: per the spec, "anyone omitted loses the assigned role, including the
+caller", and the last Owner cannot be omitted, so load the current list from
+`GET .../collaborators` and send it back with your change. `POST .../collaborators`
+adds one principal (fails if the id is already assigned; only Owners can add);
+`PUT .../collaborators/{collaboratorId}` changes a role; `GET/PUT .../visibility`
+reads or sets visibility alone (the v1 record's `access.isPublic` is a separate legacy
+flag); `GET .../consumer/access` reports the caller's access.
 
 ### Versions and logs
 
 ```
 GET  /api/modelServing/v1/modelApis/{modelApiId}/versions
-POST /api/modelServing/v1/modelApis/{modelApiId}/versions        -> 201
+POST /api/modelServing/v1/modelApis/{modelApiId}/versions        -> the version record (spec says 201; live returned 200)
 GET  /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}
 GET  /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/buildLogs
 GET  /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/exportLogs
@@ -124,8 +134,9 @@ GET  /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/in
 
 New-version body is the `version` object above (`projectId`, `source`,
 `logHttpRequestResponse`, `monitoringEnabled` required; `description` optional). The
-response includes `deployment.status`, `deployment.isPending`, `environmentRevisionId`,
-`number`.
+response includes `environmentRevisionId` and `number`, and `deployment.status` /
+`deployment.isPending` once deployed. `shouldDeploy: false` still builds the image (the
+build logs complete) but creates no deployment (verified live).
 
 ## Model Deployments
 
@@ -161,20 +172,29 @@ creation goes through `POST /api/registeredmodels/v2` as well: the v1 route
 ```
 GET  /api/registeredmodels/v2            params: projectId, searchPattern, modelCategory (genai|ml), pageToken, maxResults (default 25), orderBy
 POST /api/registeredmodels/v2            register a model or add a version
-GET  /api/registeredmodels/v1            same list, without modelCategory
+GET  /api/registeredmodels/v1            ML models only (spec: "Returns only ML models"); v2 returns all categories by default
 GET  /api/registeredmodels/v1/{modelName};  PATCH /api/registeredmodels/v1/{modelName}
 GET  /api/registeredmodels/v1/{modelName}/versions;  GET .../versions/{version};  GET .../versions/{version}/modelapis
 GET  /api/registeredmodels/v2/{modelName}/versions[/{version}]
 ```
 
 Register (`POST /api/registeredmodels/v2`) requires `modelName`, `modelSource` and
-`create` (true to create the registered model, false to add a version to an existing
-one). `modelSource` is
-`{"sourceType": "mlflow", "mlflowSource": {"experimentRunId": "...", "artifactPath": "model", "loggedModelId": "..."}}`
-or `{"sourceType": "huggingface", "huggingFaceSource": {"modelId": "org/model", "modelRevision": "...", "huggingFaceToken": "..."}}`.
+`create` (true to create the registered model; false to add a version to an existing
+one, and `true` on an existing name is a 400). `modelSource` is
+`{"sourceType": "mlflow", "mlflowSource": {"experimentRunId": "...", "loggedModelId": "m-..."}}`
+(or `"artifactPath": "..."` instead of `loggedModelId`), or
+`{"sourceType": "huggingface", "huggingFaceSource": {"modelId": "org/model", "modelRevision": "...", "huggingFaceToken": "..."}}`.
 Optional: `description`, `discoverable`, `modelCategory` (`genai`, `ml`), `modelType`,
 `projectId` (required for Hugging Face sources only; MLflow sources take the project from
 the run). Response: `{"registeredModel": {...}, "modelVersion": {...}}`.
+
+**Use `loggedModelId` for models logged with MLflow 3.** MLflow 3 clients store
+`log_model` output as a LoggedModel (`m-<id>`) rather than as a run artifact, so a
+version registered with `artifactPath: "model"` points at a path that does not exist and
+`mlflow.pyfunc.load_model("models:/<name>/<version>")` fails. Verified on an internal
+Domino test cluster (6.4.0, MLflow client 3.3.2): both bodies return 200, only the
+`loggedModelId` version loads. Get the id from the run (`mlflow.last_logged_model()`, or
+the `model_id` on the logged model info).
 
 ```python
 result = requests.post(f"{base_url}/api/registeredmodels/v2", headers=headers, json={
@@ -182,7 +202,7 @@ result = requests.post(f"{base_url}/api/registeredmodels/v2", headers=headers, j
     "description": "Random forest fraud classifier",
     "create": True,
     "modelSource": {"sourceType": "mlflow",
-                    "mlflowSource": {"experimentRunId": run_id, "artifactPath": "model"}},
+                    "mlflowSource": {"experimentRunId": run_id, "loggedModelId": logged_model_id}},
 }).json()
 print(result["modelVersion"]["modelVersion"])
 ```
@@ -210,13 +230,15 @@ response = requests.post(
 prediction = response.json()
 ```
 
-Asynchronous endpoints use the Public API routes on the deployment URL. Send them to
-`$DOMINO_API_HOST` (or the deployment URL from outside), not through `$DOMINO_API_PROXY`:
-the endpoint expects its own access token, and the proxy injects a platform token.
+Asynchronous endpoints use the Public API routes with the endpoint's own access token.
+Call them on the deployment URL (the same base the Model API page shows), not through
+`$DOMINO_API_PROXY`, which would inject a platform token. From outside Domino that is the
+URL you sign in at; from inside a run, prefer the deployment URL as well, since the
+in-run `DOMINO_API_HOST` base was not tested with an endpoint token.
 
 ```python
 import time
-async_base = os.environ["DOMINO_API_HOST"].rstrip("/")
+async_base = "https://<deployment-url>"      # the host the Model API page shows
 auth = {"Authorization": f"Bearer {model_access_token}"}
 
 submitted = requests.post(f"{async_base}/api/modelApis/async/v1/{model_api_id}", headers=auth,

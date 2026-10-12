@@ -66,9 +66,9 @@ Legacy v1 Runs API (source docstring: "For new work, prefer job_start()"):
 |--------|-------|
 | `files_list(commit_id=None, path="/")` | Lists project files at a commit. Pass `commit_id` (from `commits_list()`): the default `None` is concatenated into the URL and raises `TypeError`. |
 | `files_upload(path, file)` | `path` inside the project (leading `/` added if missing); `file` is an open binary file object. Uploads one file. |
-| `files_download(path, commit_id=None)` | Resolves the latest commit when `commit_id` is omitted and returns the raw response stream from `blobs_get_v2`; read it with `.read()` / `.data`. |
+| `files_download(path, commit_id=None)` | Returns the raw response stream from `blobs_get_v2`; read it with `.read()` / `.data`. **Always pass `commit_id`**: the 2.2.0 default path does `commits_list()[0]["id"]`, but `commits_list()` returns strings (below), so it raises `TypeError`. |
 | `blobs_get_v2(path, commit_id, project_id)` | Public API `GET /api/projects/v1/projects/{projectId}/files/{commitId}/{path}/content`. `blobs_get(key)` is deprecated. |
-| `commits_list()` | Commits of the project; `[0]` is the latest. |
+| `commits_list()` | A list of commit-id **strings**, newest first (`["fb28...", "3c8a..."]`; verified with a read-only call to the legacy `/v1/projects/{owner}/{project}/commits` route on a 6.4.0 deployment, and the SDK's own integration tests pass `commits_list()[0]` straight in as a commit id). `[0]` is the latest commit id. |
 
 ### Projects, collaborators, project tags
 
@@ -178,11 +178,11 @@ for j, s in statuses.items():
 with open("data/local.csv", "rb") as fh:
     domino.files_upload("/data/local.csv", fh)
 
-latest_commit = domino.commits_list()[0]["id"]
-for f in domino.files_list(commit_id=latest_commit, path="/"):
+latest_commit = domino.commits_list()[0]            # commit ids are plain strings
+for f in domino.files_list(commit_id=latest_commit, path="/")["data"]:
     print(f)
 
-content = domino.files_download("/results/output.csv").read()
+content = domino.files_download("/results/output.csv", commit_id=latest_commit).read()
 ```
 
 ### Datasets
@@ -201,8 +201,10 @@ for ds in domino.datasets_list(domino.project_id):
 for env in domino.environments_list():
     print(env)
 env = domino.get_environment("<environment-id>")
-rev = domino.create_environment_revision("<environment-id>",
-                                         dockerfile_instructions="RUN pip install pandas==2.2.2")
+rev = domino.create_environment_revision(
+    "<environment-id>",
+    dockerfile_instructions="USER root\nRUN pip install --no-cache-dir pandas==2.2.2\nUSER ubuntu",
+)
 ```
 
 ### Publish a Model API
@@ -213,7 +215,8 @@ model = domino.model_publish(
     name="my-classifier", description="Classification model",
 )
 model_id = model["data"]["_id"]                      # shape used by the SDK's own tests
-versions = domino.model_versions_get(model_id)["data"]
+versions = sorted(domino.model_versions_get(model_id)["data"],
+                  key=lambda v: v["metadata"]["number"], reverse=True)   # as in the SDK's examples
 latest_version_id = versions[0]["_id"]
 ```
 

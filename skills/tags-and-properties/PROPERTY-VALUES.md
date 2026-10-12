@@ -113,8 +113,10 @@ curl -s -X PATCH -H "$H" -H "Content-Type: application/json" \
 ```
 
 Values on a template's Datasets, NetApp Volumes and Apps carry over to the corresponding
-assets in the new project. Copy values between two existing entities with
-`POST /rpc/copy-property-values` ([BULK-OPS.md](./BULK-OPS.md)).
+assets in the new project. `POST /rpc/copy-property-values` is an internal,
+service-account-only route that replaces the target's values
+([BULK-OPS.md](./BULK-OPS.md#copy-routes-internal-service-account-only)); to copy values
+between two existing entities as a user, `GET` the source and `PATCH` the target.
 
 ## Delete all values
 

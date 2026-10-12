@@ -75,7 +75,7 @@ else:
 import pandas as pd
 
 df = pd.read_parquet(f"{netapp_root}/large-training-data/features.parquet")                      # live data
-df_v2 = pd.read_parquet(f"{netapp_root}/snapshot-tags/large-training-data/v2.0/features.parquet")  # tagged snapshot
+df_v2 = pd.read_parquet(f"{netapp_root}/snapshot-tags/large-training-data/v2-0/features.parquet")  # tagged snapshot (tag names cannot contain dots)
 df_n3 = pd.read_parquet(f"{netapp_root}/snapshots/large-training-data/3/features.parquet")        # snapshot number 3
 ```
 
@@ -113,12 +113,14 @@ process_data()
 
 Setup for `remotefs_url` and `remotefs_headers`: [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#authentication-and-base-urls).
 For Jobs, `snapshotNetAppVolumesOnCompletion: true` on `POST /api/jobs/v1/jobs` does
-this automatically at the end of the run.
+this automatically at the end of the run on deployments where an administrator has
+enabled it (otherwise the job is rejected with 400; see
+[API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#mount-volumes-in-a-job)).
 
 ### Reference tags, not numbers, in reproducible runs
 
 ```python
-TRAINING_DATA = f"{netapp_root}/snapshot-tags/dataset/v2.0"
+TRAINING_DATA = f"{netapp_root}/snapshot-tags/dataset/v2-0"     # tag names: letters, digits, _ and - only
 df = pd.read_parquet(f"{TRAINING_DATA}/features.parquet")
 ```
 

@@ -31,7 +31,7 @@ the 6.3 spec. Everything else is in both.
 | GET | `/api/users/v1/self` | Current user: `{"user": {...}, "metadata": {...}}` |
 | GET | `/api/users/v1/users` | `offset`, `limit` |
 | GET | `/api/users/v1/user/{userId}` | |
-| GET, POST | `/api/users/v1/user/{userId}/roles` | POST body `{"roles": [...]}` (no PUT) |
+| GET, POST | `/api/users/v1/user/{userId}/roles` | POST body `{"roles": [...]}` **replaces** the user's roles (unlisted roles are revoked); no PUT |
 | GET | `/api/users/beta/credentials/{userId}` | Git credentials |
 | PUT | `/api/users/v1/user/{userId}/tokenCredentials/{credentialId}` | |
 | GET, POST, DELETE | `/api/pat/v1/tokens` and sub-routes | Personal Access Tokens (self); `/api/pat/v1/users/...` for admins |
@@ -109,7 +109,7 @@ the 6.3 spec. Everything else is in both.
 | POST, GET | `/api/modelApis/async/v1/{asyncModelId}[/{asyncPredictionId}]` (async predictions) |
 | GET, POST | `/api/registeredmodels/v2` (register and add versions); GET `/api/registeredmodels/v2/{modelName}/versions[/{version}]` |
 | GET, PATCH | `/api/registeredmodels/v1/{modelName}`; GET `/versions`, `/versions/{version}`, `/modelapis`, build logs; POST `/versions` is deprecated (use v2) |
-| GET, POST | `/api/gen-ai/beta/endpoints` and version/start/stop/metrics sub-routes (GenAI endpoints) |
+| GET, POST | `/api/gen-ai/beta/endpoints` and version/start/stop/metrics sub-routes (Domino-hosted LLM endpoints): [domino-llm-access](../domino-llm-access/HOST-AN-LLM-API.md) |
 
 ### Apps and extensions
 
@@ -127,7 +127,7 @@ the 6.3 spec. Everything else is in both.
 | `/api/taxonomy/v1` | [tags-and-properties](../tags-and-properties/SKILL.md) |
 | `/remotefs/v1` | [netapp-volumes](../netapp-volumes/SKILL.md) |
 | `/model-monitor/v2/api`, `/api/metricValues/v1`, `/api/metricAlerts/v1` | [domino-model-monitoring](../domino-model-monitoring/SKILL.md) |
-| `/api/aigateway/v1` (**6.3**; removed on Cloud) | `domino-llm-access` skill (named `domino-ai-gateway` until that rename lands) |
+| `/api/aigateway/v1` (**6.3**; removed on Cloud) | [domino-llm-access](../domino-llm-access/SKILL.md); LLM Gateway 2.0 is [domino-llm-gateway](../domino-llm-gateway/SKILL.md) |
 
 ## Workspace sessions
 
@@ -149,13 +149,15 @@ no create route in the Public API. See [domino-workspaces](../domino-workspaces/
 |------|---------|
 | 200 | Success. Job start, project create and most creates return 200 with the object. |
 | 201 | Created (taxonomy creates). |
-| 204 | No content (taxonomy deletes, some remotefs RPCs). |
+| 204 | No content (taxonomy deletes; remotefs `delete-volume`, `delete-snapshot` and tag delete). The remotefs attach, detach, mark, restore-volume and restore-snapshot RPCs are specified as 204 but returned 200 with a record live. |
 | 400, 401, 403, 404, 409, 500 | See [ERRORS.md](../domino-api-intro/ERRORS.md). |
 
 ### Error body
 
-Nucleus routes: `{"errors": ["..."], "requestId": "..."}`. Taxonomy and NetApp services:
-`{"message": "..."}`. Details: [ERRORS.md](../domino-api-intro/ERRORS.md#error-bodies).
+Read whichever of `errors`, `error` and `message` is present: the specs declare
+`{"error"}` for most Nucleus 4xx/5xx, `{"code", "message"}` for 401/403 and
+`{"errors", "requestId"}` for a few routes (the shape live 400/500 bodies have used);
+taxonomy and NetApp return `{"message"}`. Details: [ERRORS.md](../domino-api-intro/ERRORS.md#error-bodies).
 
 ### Pagination
 

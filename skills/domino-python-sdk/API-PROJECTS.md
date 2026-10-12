@@ -173,8 +173,13 @@ content = requests.get(
 
 ```
 GET /api/projects/beta/projects/{projectId}/results-settings
-PUT /api/projects/beta/projects/{projectId}/results-settings      body: {"branch": "main"}
+PUT /api/projects/beta/projects/{projectId}/results-settings      body: {"branch": "isolated" | "main"}
 ```
+
+Response: `{"resultsSettings": {"branch"}, "metadata"}`. These settings concern Git-based
+projects. On a DFS project (internal Domino test cluster, 6.4.0) `GET` returned
+`400 an implementation is missing` while `PUT` returned 200, so expect `GET` to work only
+on Git-based projects.
 
 ## Project settings and defaults
 

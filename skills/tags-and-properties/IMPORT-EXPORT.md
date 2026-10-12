@@ -55,7 +55,9 @@ curl -s -X POST -H "$H" -F "file=@taxonomy-import.csv" "$BASE/rpc/validate-file"
 
 Multipart form data with the field name `file` (`-F "file=@<path>"`). Validation checks
 structure and limits (`maxLabelLength`, `maxDepth` from `GET /config`) without changing
-anything; a failing file returns a 4xx with `{"message": "..."}`. Because the file has no
+anything. A file that fails validation (on `validate-file` or `import-from-file`) returns
+`422 {"errors": [{"line": N, "message": "..."}]}`; a bad request, missing token or
+missing permission returns 400/401/403 with `{"message": "..."}`. Because the file has no
 header row, a stray header line would be imported as a namespace named
 `namespace_label`: check the first line yourself when generating files.
 
