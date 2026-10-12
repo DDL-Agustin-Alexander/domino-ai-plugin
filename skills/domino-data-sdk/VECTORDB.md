@@ -1,209 +1,112 @@
-# Domino Vector Database Integration
+# Vector databases: Pinecone through a Domino Data Source
 
-The `vectordb` module provides integration with Pinecone vector databases through Domino's data source framework.
+`domino_data.vectordb` holds two helpers that point the official Pinecone Python client at
+Domino's Data API gateway, which injects the API key stored in the Pinecone Data Source. The
+key never reaches your code. Everything after initialisation is the standard Pinecone client.
 
-## Overview
+Docs: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/data-source-connectors/connect-to-pinecone
+and https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/data-source-connectors/vector-databases.
+Source: `domino_data/vectordb.py` (26 lines).
 
-Domino's VectorDB integration allows you to:
-- Connect to Pinecone through Domino data sources
-- Use Domino's credential management for API keys
-- Access vector indexes for similarity search
-- Build RAG (Retrieval Augmented Generation) applications
+Qdrant has a Data Source connector too (`connect-to-qdrant` on the same docs path) but no helper
+in this library; use the UI code snippet for it.
 
 ## Prerequisites
 
-1. Pinecone data source configured in Domino
-2. Pinecone Python client installed:
-   ```bash
-   pip install pinecone-client>=3.0.0
-   ```
+1. A Pinecone Data Source (created with the Pinecone API key; environment name and project ID
+   are needed only when the Data Source is used from `pinecone-client<3.0.0`), added to the
+   Project.
+2. The Pinecone client at a version the Domino helpers support: **3.x through 8.x**. From
+   `pinecone` 9.0.0 (May 2026) `Pinecone.Index()` rejects every keyword except `pool_threads`
+   with `TypeError`, and `domino_pinecone3x_index_params` passes `host` and
+   `additional_headers`, so an unpinned install (10.0.0 today) breaks the recipe below. The PyPI
+   package is `pinecone`; `pinecone-client` (frozen at 6.0.0, which also works) is the deprecated
+   former name and must be uninstalled first because the two conflict. The docs page still shows
+   `pinecone-client`.
 
-## Pinecone 3.x Integration
+```dockerfile
+USER root
+RUN python -m pip install "pinecone>=3,<9" "dominodatalab-data>=6.7.4"
+USER ubuntu
+```
 
-### Initialize Pinecone Client
+The gRPC client (`pinecone[grpc]`) is not supported through the gateway.
+
+## Initialise
 
 ```python
-from domino_data.vectordb import domino_pinecone3x_init_params
+from domino_data.vectordb import domino_pinecone3x_init_params, domino_pinecone3x_index_params
 from pinecone import Pinecone
 
-# Get initialization parameters from Domino data source
-init_params = domino_pinecone3x_init_params("my-pinecone-datasource")
+datasource_name = "pinecone-ds"            # Data Source name in Domino
+pc = Pinecone(**domino_pinecone3x_init_params(datasource_name))
+print(pc.list_indexes())
 
-# Initialize Pinecone client
-pc = Pinecone(**init_params)
-
-# List indexes
-indexes = pc.list_indexes()
-print(indexes)
+index = pc.Index(**domino_pinecone3x_index_params(datasource_name, "embeddings"))
+print(index.describe_index_stats())
 ```
 
-### Access Index
+What the helpers return:
+
+| Helper | Returns |
+|---|---|
+| `domino_pinecone3x_init_params(datasource_name)` | `{"api_key": "domino", "host": <gateway>, "additional_headers": {"X-Domino-Datasource": datasource_name}}` |
+| `domino_pinecone3x_index_params(datasource_name, index_name)` | `{"host": <gateway>, "additional_headers": {"X-Domino-Datasource": ..., "X-Domino-Pinecone-Index": index_name}}` |
+
+`<gateway>` is `DOMINO_DATA_API_GATEWAY`, default `http://127.0.0.1:8766`, injected in
+executions. The placeholder `api_key` satisfies the client; the gateway substitutes the real
+one. Get a copy-ready version from **Data > Data Sources > Code snippet > Python**.
+
+## Vector operations (standard Pinecone client)
 
 ```python
-from domino_data.vectordb import domino_pinecone3x_index_params
-from pinecone import Pinecone
-
-# Initialize client
-init_params = domino_pinecone3x_init_params("my-pinecone-datasource")
-pc = Pinecone(**init_params)
-
-# Get index parameters
-index_params = domino_pinecone3x_index_params(
-    datasource_name="my-pinecone-datasource",
-    index_name="embeddings-index"
+index.upsert(
+    vectors=[
+        {"id": "doc1", "values": embedding_1, "metadata": {"text": "...", "source": "wiki"}},
+        {"id": "doc2", "values": embedding_2, "metadata": {"text": "...", "source": "blog"}},
+    ],
+    namespace="default",
 )
 
-# Connect to index
-index = pc.Index(**index_params)
-```
-
-## Vector Operations
-
-### Upsert Vectors
-
-```python
-# Prepare vectors with metadata
-vectors = [
-    {
-        "id": "doc1",
-        "values": [0.1, 0.2, 0.3, ...],  # 1536 dimensions for OpenAI
-        "metadata": {"text": "Document content", "source": "wiki"}
-    },
-    {
-        "id": "doc2",
-        "values": [0.4, 0.5, 0.6, ...],
-        "metadata": {"text": "Another document", "source": "blog"}
-    }
-]
-
-# Upsert to index
-index.upsert(vectors=vectors, namespace="default")
-```
-
-### Query Vectors
-
-```python
-# Query by vector
-results = index.query(
-    vector=[0.1, 0.2, 0.3, ...],
-    top_k=10,
-    include_metadata=True,
-    namespace="default"
-)
-
-# Process results
+results = index.query(vector=query_embedding, top_k=10, include_metadata=True,
+                      namespace="default", filter={"source": {"$eq": "wiki"}})
 for match in results.matches:
-    print(f"ID: {match.id}, Score: {match.score}")
-    print(f"Metadata: {match.metadata}")
-```
+    print(match.id, match.score, match.metadata)
 
-### Query with Filters
-
-```python
-# Query with metadata filter
-results = index.query(
-    vector=query_vector,
-    top_k=5,
-    filter={"source": {"$eq": "wiki"}},
-    include_metadata=True
-)
-```
-
-### Delete Vectors
-
-```python
-# Delete by ID
-index.delete(ids=["doc1", "doc2"], namespace="default")
-
-# Delete by filter
-index.delete(filter={"source": {"$eq": "old-source"}})
-
-# Delete all in namespace
+index.delete(ids=["doc1"], namespace="default")
+index.delete(filter={"source": {"$eq": "old"}})
 index.delete(delete_all=True, namespace="test")
 ```
 
-## Configuration
-
-### Environment Variables
-
-| Variable | Purpose |
-|----------|---------|
-| `DOMINO_DATA_API_GATEWAY` | Data API gateway URL (default: `http://127.0.0.1:8766`) |
-
-### Headers
-
-The module adds these headers for Domino routing:
-
-| Header | Purpose |
-|--------|---------|
-| `X-Domino-Datasource` | Data source identifier |
-| `X-Domino-Pinecone-Index` | Target Pinecone index |
-
-## RAG Application Example
+## Retrieval-augmented generation sketch
 
 ```python
-from domino_data.vectordb import (
-    domino_pinecone3x_init_params,
-    domino_pinecone3x_index_params
-)
-from pinecone import Pinecone
-from openai import OpenAI
+def embed(text: str) -> list[float]:
+    ...   # your embedding model; call hosted LLMs through AI Gateway (domino-llm-access skill)
 
-# Initialize clients
-pc = Pinecone(**domino_pinecone3x_init_params("pinecone-ds"))
-index = pc.Index(**domino_pinecone3x_index_params("pinecone-ds", "docs"))
-openai_client = OpenAI()
+def retrieve(question: str, top_k: int = 5) -> list[str]:
+    hits = index.query(vector=embed(question), top_k=top_k, include_metadata=True)
+    return [m.metadata["text"] for m in hits.matches]
 
-def get_embedding(text):
-    """Get embedding from OpenAI."""
-    response = openai_client.embeddings.create(
-        model="text-embedding-3-small",
-        input=text
-    )
-    return response.data[0].embedding
-
-def search_documents(query, top_k=5):
-    """Search for relevant documents."""
-    query_embedding = get_embedding(query)
-    results = index.query(
-        vector=query_embedding,
-        top_k=top_k,
-        include_metadata=True
-    )
-    return [match.metadata["text"] for match in results.matches]
-
-def generate_answer(query, context_docs):
-    """Generate answer using context."""
-    context = "\n\n".join(context_docs)
-    response = openai_client.chat.completions.create(
-        model="gpt-4",
-        messages=[
-            {"role": "system", "content": f"Answer based on this context:\n{context}"},
-            {"role": "user", "content": query}
-        ]
-    )
-    return response.choices[0].message.content
-
-# RAG query
-query = "What is Domino Data Lab?"
-docs = search_documents(query)
-answer = generate_answer(query, docs)
-print(answer)
+context = "\n\n".join(retrieve("What is a Domino Dataset?"))
 ```
 
-## Best Practices
+Trace the pipeline with the domino-genai-tracing skill when it runs as an agent or App.
 
-1. **Batch operations**: Upsert vectors in batches of 100
-2. **Namespaces**: Use namespaces to organize vectors
-3. **Metadata**: Store useful context in metadata fields
-4. **Dimensionality**: Match vector dimensions to your embedding model
-5. **Index management**: Create indexes appropriate for your use case
+## Practices
+
+1. Upsert in batches of about 100 vectors.
+2. Use namespaces to separate corpora; store the source text or a pointer in metadata.
+3. Keep vector dimensions equal to the index dimension; mismatches fail at upsert.
+4. Dense and sparse index creation is done in Pinecone, not through Domino.
 
 ## Troubleshooting
 
-| Issue | Solution |
-|-------|----------|
-| Connection timeout | Check DOMINO_DATA_API_GATEWAY is accessible |
-| Authentication error | Verify data source credentials in Domino |
-| Index not found | Confirm index name matches Pinecone |
-| Dimension mismatch | Ensure vectors match index dimensions |
+| Issue | Check |
+|---|---|
+| Connection refused or timeout | `DOMINO_DATA_API_GATEWAY` is set and reachable; you are inside a Domino execution |
+| 401 or 403 from the gateway | The Pinecone Data Source is added to the Project and its stored key is valid |
+| Index not found | `index_name` matches `pc.list_indexes()`; a `pinecone-client<3.0.0` setup needs environment name and project ID on the Data Source |
+| `TypeError: Pinecone.Index() got unexpected keyword arguments: ['additional_headers', 'host']` | `pinecone` 9.x or later installed; pin `pinecone>=3,<9` |
+| `ImportError` for `Pinecone` | `pinecone` (3.x or later) installed and `pinecone-client` removed |
+| Dimension mismatch | Embedding model output size versus index dimension |
