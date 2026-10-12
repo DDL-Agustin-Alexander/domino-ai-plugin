@@ -1,6 +1,6 @@
 ---
 name: domino-python-sdk
-description: Programmatically interact with Domino using the python-domino SDK and the Domino REST API. Covers authentication, starting and monitoring jobs, managing projects, files, datasets, environments and Model APIs, and automation from CI/CD. Use when automating Domino workflows, integrating Domino with external systems, or building custom tooling around Domino.
+description: Programmatically interact with Domino using the python-domino SDK and the Domino REST API. Covers authentication, starting and monitoring jobs, managing projects, files, datasets, environments and Model APIs, and automation from CI/CD. Use when automating Domino workflows, integrating Domino with external systems, or building custom tooling around Domino. For Airflow or Kubeflow pipelines use domino-airflow-kubeflow; for exporting a model image from CI/CD use domino-model-delivery; for the domino command-line client and the R package use domino-cli.
 compatibility: Domino 6.3 and Domino Cloud. Requires DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token. python-domino (dominodatalab 2.2.0) needs Python 3.10 or later.
 ---
 
@@ -112,6 +112,17 @@ Per-area files:
   `hardware_tier_id`.
 - Treat beta routes (`metadata.notices` says "Beta endpoint with known limitations") as
   subject to change.
+
+## Related skills
+
+- [domino-airflow-kubeflow](../domino-airflow-kubeflow/SKILL.md): `domino.airflow` (`DominoOperator`,
+  `DominoSparkOperator`), why their pins clash with Airflow's constraints, and the `requests`-only
+  task on the Public Jobs API; Kubeflow components.
+- [domino-model-delivery](../domino-model-delivery/EXPORT-API.md): what `model_version_export`,
+  `model_version_export_status` and `model_version_export_logs` call, the build step the SDK does
+  not wrap, and a CI/CD pipeline that exports the image.
+- [domino-cli](../domino-cli/SKILL.md): the `domino` command-line client and the R package, for
+  syncing project files and starting Jobs from a laptop without writing API calls.
 
 ## Documentation
 

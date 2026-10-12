@@ -24,6 +24,8 @@ A project holds the code, data links, artifacts and people for one piece of work
 
 Git LFS is not supported; files over 2 GB in a repository can break Workspace setup. Keep bulk data in Datasets, not in code or artifacts (projects hold at most 10,000 files by default).
 
+From a laptop, the Domino CLI (`domino get`, `sync`, `download`, `upload`, `run`) works on a DFS project's files and on a Git-based project's Artifacts; code in a Git-based project goes through git: [domino-cli](../domino-cli/SKILL.md).
+
 ## Create a project
 
 UI: **Develop** > **Projects** > **Create Project**: name, template or none, **Visibility**, then the Git provider (credentials, an existing repository URL, or a repository Domino creates) or **Domino (local hosting)** for DFS. Private repositories, pushes and SSH need Git credentials under **Account Settings** > **Git Credentials** (SSH key, personal access token, or username and password; Bitbucket Data Center needs username plus token; Bitbucket Cloud an app password).

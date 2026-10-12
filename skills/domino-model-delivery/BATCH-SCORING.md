@@ -74,6 +74,11 @@ curl -sS -X POST "$BASE/api/jobs/v1/jobs" -H "$AUTH" -H "Content-Type: applicati
 default to the project settings. Add `computeCluster` for Spark, Ray or Dask. The response's
 `job.id` is the Job id for polling.
 
+Other ways to start the same Job: `domino run --wait score.py --input ... --output ...` from a
+laptop with the Domino CLI ([domino-cli](../domino-cli/SKILL.md)); a Launcher, when business
+users should pick the input file or date in a web form
+([domino-launchers](../domino-launchers/SKILL.md)).
+
 ## 3. Schedule it
 
 **Jobs > Schedules > Schedule a Job**:
@@ -91,6 +96,10 @@ default to the project settings. Add `computeCluster` for Spark, Ray or Dask. Th
 There is no Public API route for scheduled Jobs (stated on
 https://docs.domino.ai/cloud/platform-capabilities/core-concepts/jobs/schedule-a-job). Create and
 edit schedules in the UI. There is no pause: edit the schedule to a far-future start time.
+
+If Apache Airflow or Kubeflow Pipelines already owns the nightly schedule, keep it there: a task
+starts this Job over the same `POST /api/jobs/v1/jobs`, waits for it and collects the result file
+([domino-airflow-kubeflow](../domino-airflow-kubeflow/SKILL.md)).
 
 ## 4. Monitor and collect results
 

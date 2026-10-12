@@ -60,7 +60,7 @@ UI lists mounted paths under **Data > Datasets** (Workspace) and **Details > Dat
 - **CLI** (larger uploads): `domino upload-dataset [--fileUploadSetting Ignore|Overwrite|Rename]
   [--targetRelativePath <dir>] <owner>/<project>/<dataset> <local-folder>`; flags and values
   are case-sensitive; tune with `DOMINO_UPLOAD_CHUNK_BYTES` (default 3 MB) and
-  `DOMINO_UPLOAD_THREADS` (default 8). Install: https://docs.domino.ai/cloud/reference/cli/install-the-cli
+  `DOMINO_UPLOAD_THREADS` (default 8). Install and sign in: [domino-cli](../domino-cli/SKILL.md).
 - **From code**: write to the mount path; every execution sees the change at once, and it
   becomes a version when you snapshot.
 - **python-domino**: `datasets_upload_files(dataset_id, local_path, ...)`; signature in

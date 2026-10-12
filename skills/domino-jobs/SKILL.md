@@ -1,6 +1,6 @@
 ---
 name: domino-jobs
-description: Create, run, and manage Domino Jobs - batch executions for scripts, training, and data processing. Covers starting a Job from the UI, CLI or REST API, hardware tiers and environments, scheduled Jobs with Quartz cron, checking status and logs through the Jobs API, stopping Jobs, results and notifications. Use when running batch workloads, scheduling recurring tasks, or automating training pipelines.
+description: Create, run, and manage Domino Jobs - batch executions for scripts, training, and data processing. Covers starting a Job from the UI, CLI or REST API, hardware tiers and environments, scheduled Jobs with Quartz cron, checking status and logs through the Jobs API, stopping Jobs, results and notifications. Use when running batch workloads, scheduling recurring tasks, or automating training pipelines. For the CLI itself use domino-cli; for Jobs from Airflow or Kubeflow use domino-airflow-kubeflow; for batch scoring with a model use domino-model-delivery.
 compatibility: Domino 6.3 and Domino Cloud. Requires DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token.
 ---
 
@@ -8,7 +8,7 @@ compatibility: Domino 6.3 and Domino Cloud. Requires DOMINO_API_HOST; in a run u
 
 Applies to Domino 6.3 and Domino Cloud.
 
-A Job runs one command to completion in its own container on a hardware tier, recording the Project files, environment revision, data mounts and inputs for reproducibility. Interactive work: [domino-workspaces](../domino-workspaces/SKILL.md); web forms that start Jobs: [domino-launchers](../domino-launchers/SKILL.md).
+A Job runs one command to completion in its own container on a hardware tier, recording the Project files, environment revision, data mounts and inputs for reproducibility. Interactive work: [domino-workspaces](../domino-workspaces/SKILL.md); web forms that start Jobs: [domino-launchers](../domino-launchers/SKILL.md); batch scoring with a trained model: [domino-model-delivery](../domino-model-delivery/SKILL.md).
 
 Authentication: [domino-api-intro](../domino-api-intro/SKILL.md). In a run call `$DOMINO_API_PROXY` with no `Authorization` header; outside a run call `$DOMINO_API_HOST` with a Personal Access Token or service-account bearer token.
 
@@ -16,7 +16,7 @@ Authentication: [domino-api-intro](../domino-api-intro/SKILL.md). In a run call 
 
 **UI**: **Jobs > Run**. Enter the **Command or File Name** with arguments (`train.py --epochs 100`), pick the environment and revision and volume size, **Next**, pick the hardware tier, optionally a compute cluster ([domino-distributed-computing](../domino-distributed-computing/SKILL.md)) and per-asset snapshot pins, then start.
 
-**CLI**: `domino run <file> [args]` (`--wait` blocks, `--direct "<shell command>"`) from a logged-in Domino CLI Project directory.
+**CLI**: `domino run <file> [args]` (`--wait` blocks, `--direct "<shell command>"`) from a logged-in Domino CLI Project directory; install, sign-in, all commands: [domino-cli](../domino-cli/SKILL.md).
 
 **REST**: `POST /api/jobs/v1/jobs` (both specs). Only `projectId` and `runCommand` are required; everything else defaults from the Project. An unknown field (such as a misspelt `hardwareTierId`) or an unknown `hardwareTier` id still returns 200 and the Job silently runs on the Project default tier, so verify what a Job ran on (below).
 
@@ -27,15 +27,15 @@ r = requests.post(f"{os.environ['DOMINO_API_PROXY']}/api/jobs/v1/jobs", json={
     "projectId": os.environ["DOMINO_PROJECT_ID"],
     "runCommand": "python train.py --epochs 100",
     "title": "Training run",
-    # "hardwareTier": "small-k8s",                # tier id from GET /api/hardwaretiers/v1/hardwaretiers
+    # "hardwareTier": "small-k8s",   # tier id from GET /api/hardwaretiers/v1/hardwaretiers
     # "environmentId": "<id>", "environmentRevisionSpec": "ActiveRevision",
     # "mainRepoGitRef": {"refType": "branches", "value": "main"},   # Git-based; refType: head | commitId | tags | branches
     #     ("branch" is accepted, then the Job fails)
-    # "commitId": "<DFS commit>",                 # DFS history only, never a Git commit
+    # "commitId": "<DFS commit>",   # DFS history only, never a Git commit
     # also: computeCluster, netAppVolumeIds, externalVolumeMountIds, snapshotDatasetsOnCompletion
 })
 r.raise_for_status()
-job = r.json()["job"]                              # response: {"job": {...}, "metadata": {...}}
+job = r.json()["job"]   # response: {"job": {...}, "metadata": {...}}
 print(job["id"], job["number"], job["status"]["executionStatus"])
 ```
 
@@ -64,20 +64,9 @@ Both specs; responses carry a beta notice in `metadata.notices`.
 
 Configured only in the UI: **Jobs > Schedules > Schedule a Job**. The Public API has no scheduled-Job routes; `/v4/projects/{projectId}/scheduledjobs` exists (internal API, may change between Domino versions). Fields: name, Git ref, file and arguments, hardware tier, data mounts, environment and revision, optional cluster, schedule, **Run sequentially** (no overlapping runs), **Notify emails**, **Update Domino endpoint** (republish after success). No pause exists: set a far-future start to suspend.
 
-**Schedule** is a repeat interval or a **Quartz CronTrigger** expression, not five-field crontab: six required fields plus an optional year, seconds first, and `?` in exactly one of day-of-month or day-of-week.
+**Schedule** is a repeat interval or a **Quartz CronTrigger** expression, not five-field crontab: six required fields plus an optional year, seconds first, and `?` in exactly one of day-of-month or day-of-week (`0 0 0 * * ?` daily at 00:00, `0 0 9 ? * MON` Mondays at 09:00). Field layout and special characters: [SCRIPT-PATTERNS.md](./SCRIPT-PATTERNS.md#quartz-cron-expressions).
 
-```
-sec   min   hour  day-of-month  month         day-of-week                  [year]
-0-59  0-59  0-23  1-31 or ?     1-12/JAN-DEC  1-7 or SUN-SAT (1=SUN) or ?
-```
-
-| Schedule | Expression |
-|---|---|
-| Every hour on the hour | `0 0 * * * ?` |
-| Daily at 00:00 | `0 0 0 * * ?` |
-| Mondays at 09:00 | `0 0 9 ? * MON` |
-
-Special characters (`-`, `/`, `L`, `W`, `#`): https://www.quartz-scheduler.org/documentation/quartz-2.3.0/tutorials/crontrigger.html
+Airflow or Kubeflow as the scheduler: [domino-airflow-kubeflow](../domino-airflow-kubeflow/SKILL.md).
 
 ## Results and notifications
 
@@ -86,8 +75,7 @@ Every file created or modified under the Project files during the run is a resul
 ## Troubleshooting
 
 - `400` from `POST /api/jobs/v1/jobs`: a `commitId` not in the Project's DFS history (use `mainRepoGitRef` for Git) or an environment the Project cannot use. A wrong tier id gives no error: check the runtime details.
-- Stuck in Queued: tier capacity or the per-user execution limit; Building/Pulling: the environment is still building.
-- Failed = non-zero exit (`stdErr` logs); Error = platform problem (`prepareOutput` logs, support bundle).
+- Queued or Building, Failed vs Error, missing results: [SCRIPT-PATTERNS.md](./SCRIPT-PATTERNS.md#troubleshooting-failed-jobs).
 
 ## Reference files and docs
 

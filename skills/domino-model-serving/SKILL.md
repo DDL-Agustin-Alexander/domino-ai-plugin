@@ -1,6 +1,6 @@
 ---
 name: domino-model-serving
-description: Automate Domino endpoints (Model APIs) and registered models over REST. Covers the /api/modelServing/v1 lifecycle (create an endpoint from a file or a registered model, add versions, poll deployment status, list, update replicas or hardware tier, archive, build and instance logs), registered models v1 vs v2 routes, MLflow tracking vs the registry API, management URL vs prediction URL, and sync Basic vs async Bearer prediction auth. Use when scripting deployments from CI, a Job or a notebook, registering a model version by API, or debugging stop, archive and delete behaviour. For UI publishing, the predict function, scaling and health settings use domino-model-endpoints; for drift and quality monitoring use domino-model-monitoring.
+description: Automate Domino endpoints (Model APIs) and registered models over REST. Covers the /api/modelServing/v1 lifecycle (create an endpoint from a file or a registered model, add versions, poll deployment status, list, update replicas or hardware tier, archive, build and instance logs), registered models v1 vs v2 routes, MLflow tracking vs the registry API, management URL vs prediction URL, and sync Basic vs async Bearer prediction auth. Use when scripting deployments from CI, a Job or a notebook, registering a model version by API, or debugging stop, archive and delete behaviour. For UI publishing, the predict function, scaling and health settings use domino-model-endpoints; for drift and quality monitoring use domino-model-monitoring; for exporting a model out of Domino (image to your registry, NVIDIA Fleet Command, Snowflake UDF, SageMaker) or batch scoring Jobs use domino-model-delivery.
 compatibility: Domino 6.3 and Domino Cloud. Requires DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token or service-account token. The modelServing beta visibility and collaborator routes exist only on Domino Cloud.
 ---
 
@@ -73,5 +73,6 @@ Domino Cloud adds `/api/modelServing/beta/modelApis/{modelApiId}/visibility` (`P
 - [LIFECYCLE.md](./LIFECYCLE.md): request and response examples for each step
 - [API-MODEL-SERVING.md](../domino-python-sdk/API-MODEL-SERVING.md), [API-MODELS.md](../domino-python-sdk/API-MODELS.md)
 - [domino-model-endpoints](../domino-model-endpoints/SKILL.md): UI, predict code, scaling, health, logs
+- [domino-model-delivery](../domino-model-delivery/SKILL.md): Model Export API, Fleet Command, Snowflake, SageMaker, batch scoring Jobs
 - Route discovery: [API-SPECS.md](../domino-api-intro/API-SPECS.md)
 - Model registry: https://docs.domino.ai/cloud/platform-capabilities/features/models/register-and-govern/model-registry

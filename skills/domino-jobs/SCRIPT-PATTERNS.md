@@ -117,10 +117,27 @@ except Exception:
 - Pin dependencies in the environment Dockerfile, not `requirements.txt`, for fast repeatable starts ([domino-environments](../domino-environments/SKILL.md)).
 - Read inputs from Datasets or data sources; write reproducible outputs to the results directory and large artifacts to a Dataset with a completion snapshot (`snapshotDatasetsOnCompletion`).
 
+## Quartz cron expressions
+
+A scheduled Job's **Schedule** is a repeat interval or a Quartz CronTrigger expression, not five-field crontab: six required fields plus an optional year, seconds first, and `?` in exactly one of day-of-month or day-of-week.
+
+```
+sec   min   hour  day-of-month  month         day-of-week                  [year]
+0-59  0-59  0-23  1-31 or ?     1-12/JAN-DEC  1-7 or SUN-SAT (1=SUN) or ?
+```
+
+| Schedule | Expression |
+|---|---|
+| Every hour on the hour | `0 0 * * * ?` |
+| Daily at 00:00 | `0 0 0 * * ?` |
+| Mondays at 09:00 | `0 0 9 ? * MON` |
+
+Special characters (`-`, `/`, `L`, `W`, `#`): https://www.quartz-scheduler.org/documentation/quartz-2.3.0/tutorials/crontrigger.html
+
 ## Troubleshooting failed Jobs
 
-- **Fails at once with `Failed`**: read `stdErr`; typical causes are a wrong relative path (the working directory is `/mnt` or `/mnt/code`), a missing package in the environment revision, or a missing argument.
+- **Fails at once with `Failed`** (non-zero exit): read `stdErr`; typical causes are a wrong relative path (the working directory is `/mnt` or `/mnt/code`), a missing package in the environment revision, or a missing argument.
 - **`Error` state**: platform-side; check `prepareOutput` logs, the environment build status and the hardware tier's capacity, then open the support bundle.
 - **Out of memory**: larger hardware tier, chunked loading, or a compute cluster; check **Usage** on the Job.
-- **Long queue times**: per-user execution limit, tier capacity, or a cluster waiting for workers.
+- **Long queue times**: per-user execution limit, tier capacity, or a cluster waiting for workers. **Building** or **Pulling**: the environment revision is still being built or pulled.
 - **Results missing**: files written outside the tracked directories (table above), or matched by `.dominoignore` (they are dropped from the revision, not just hidden).

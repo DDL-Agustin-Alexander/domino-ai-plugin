@@ -11,6 +11,7 @@ All Public API families below are served on the same base URL: `$DOMINO_API_PROX
 |---------|--------|---------------------------|
 | REST overview and python-domino | `/api/...` | [domino-python-sdk](../domino-python-sdk/SKILL.md), [API-REFERENCE](../domino-python-sdk/API-REFERENCE.md) |
 | Jobs | `/api/jobs/v1`, `/api/jobs/beta` | [domino-jobs](../domino-jobs/SKILL.md), [API-JOBS](../domino-python-sdk/API-JOBS.md) |
+| Jobs started from Apache Airflow or Kubeflow Pipelines | the Jobs routes, called from the orchestrator's workers with a PAT or service-account token | [domino-airflow-kubeflow](../domino-airflow-kubeflow/SKILL.md) |
 | Projects, collaborators, git repos, goals | `/api/projects/v1`, `/api/projects/beta`, `/api/projects/v2` | [domino-projects](../domino-projects/SKILL.md), [API-PROJECTS](../domino-python-sdk/API-PROJECTS.md) |
 | Datasets and snapshots | `/api/datasetrw/v1`, `/api/datasetrw/v2` | [domino-datasets](../domino-datasets/SKILL.md), [API-DATASETS](../domino-python-sdk/API-DATASETS.md) |
 | Data sources and their audit | `/api/datasource/v1` | [domino-data-connectivity](../domino-data-connectivity/SKILL.md), [API-ADMIN](../domino-python-sdk/API-ADMIN.md) |
@@ -19,11 +20,19 @@ All Public API families below are served on the same base URL: `$DOMINO_API_PROX
 | Tags and properties | `/api/taxonomy/v1` | [tags-and-properties](../tags-and-properties/SKILL.md) |
 | Apps | `/api/apps/v1`, `/api/apps/beta` | [domino-apps](../domino-apps/SKILL.md), [API-APPS](../domino-apps/API-APPS.md) |
 | Model APIs, deployments, registry | `/api/modelServing/v1`, `/api/registeredmodels/v1`, `/v2` | [domino-model-serving](../domino-model-serving/SKILL.md), [domino-model-endpoints](../domino-model-endpoints/SKILL.md), [API-MODELS](../domino-python-sdk/API-MODELS.md) |
+| Model export out of Domino (registry, NVIDIA Fleet Command, Snowflake), SageMaker deployment targets, batch scoring Jobs | `/v4/models/...` (internal API), `/api/admin/v1/deploymentTargets`, `/api/modelServing/v1/modelDeployments`, the Jobs routes | [domino-model-delivery](../domino-model-delivery/SKILL.md) |
 | Governance | `/api/governance/v1` | [domino-governance](../domino-governance/SKILL.md) |
 | Extensions | `/api/extensions/beta` | [domino-extensions](../domino-extensions/SKILL.md) |
 | Workspaces | `/api/projects/v1/.../workspaces/{id}/sessions`; `/api/workspace/v1` (Cloud only) | [domino-workspaces](../domino-workspaces/SKILL.md) |
 | Environments | `/api/environments/beta`, `/v1`, `/v2` (Cloud) | [domino-environments](../domino-environments/SKILL.md), [API-ENVIRONMENTS](../domino-python-sdk/API-ENVIRONMENTS.md) |
 | Users, orgs, service accounts, PATs, hardware tiers, cost, audit trail | `/api/users/v1`, `/api/organizations/v1`, `/api/serviceAccounts/v1`, `/api/pat/v1`, `/api/hardwaretiers/v1`, `/api/cost/v1`, `/api/audittrail/v1` | [API-ADMIN](../domino-python-sdk/API-ADMIN.md) |
+
+## Outside the REST API
+
+The Domino CLI (`domino login`, `get`, `sync`, `run`, `upload-dataset`, ...) and the R package
+that wraps it sync project files, start Jobs and upload to Datasets from a laptop without
+writing API calls or handling tokens; they sign in through the browser or a device code:
+[domino-cli](../domino-cli/SKILL.md).
 
 ## LLM access
 

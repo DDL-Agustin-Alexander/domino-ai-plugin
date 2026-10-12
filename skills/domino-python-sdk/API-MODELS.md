@@ -242,5 +242,7 @@ print(result["status"], result.get("result"), result.get("errors"))
 `model_versions_get(model_id)`, `model_version_publish(model_id, file, function, environment_id, description, files_to_exclude=None)`
 and the `model_version_export*` methods call `/v1/models` and `/v4/models`, which are
 Domino Internal API, may change between Domino versions. Signatures and a publish example:
-[SDK-EXAMPLES.md](./SDK-EXAMPLES.md#model-apis-and-apps). There is no `model_get` or
+[SDK-EXAMPLES.md](./SDK-EXAMPLES.md#model-apis-and-apps); the export routes, the build call the
+SDK lacks and the NVIDIA, Snowflake and SageMaker targets:
+[domino-model-delivery](../domino-model-delivery/EXPORT-API.md). There is no `model_get` or
 `runs_wait`.

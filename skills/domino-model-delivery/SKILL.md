@@ -69,9 +69,9 @@ GET  /v4/models/{exportId}/getExportLogs                          -> logs
 
 Public API complement (both specs): `GET /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/exportLogs`.
 
-python-domino wraps export, status and logs (`model_version_export`, `model_version_export_status`,
-`model_version_export_logs`) but not the build call. Request bodies, a pipeline script with a
-GitHub Actions job, the Kubernetes manifests, the test call and `.modelignore`:
+python-domino ([domino-python-sdk](../domino-python-sdk/SKILL.md)) wraps export, status and logs
+but not the build call. Request bodies, a pipeline script with a GitHub Actions job, the
+Kubernetes manifests, the test call, `.modelignore` and the python-domino method map:
 [EXPORT-API.md](./EXPORT-API.md).
 
 ## Export targets in one screen

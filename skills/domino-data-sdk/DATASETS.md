@@ -2,8 +2,8 @@
 
 `DatasetClient` reads files from a Domino Dataset through the Data Source proxy, with the
 caller's permissions. It is read-only: list, fetch, download and signed URLs. To write, use the
-Dataset's mount path inside an execution, the UI, `domino upload-dataset`, or the
-`/api/datasetrw` routes (domino-datasets skill).
+Dataset's mount path inside an execution, the UI, `domino upload-dataset`
+([domino-cli](../domino-cli/SKILL.md)), or the `/api/datasetrw` routes (domino-datasets skill).
 
 Docs: https://docs.domino.ai/cloud/reference/api/data_api/datasource_usecases/access-datasets-via-proxy.
 Source: `domino_data/datasets.py`.
