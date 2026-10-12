@@ -1,634 +1,227 @@
 # Domino Admin API
 
-## Overview
-The Admin API covers administrative endpoints for managing users, organizations, hardware tiers, data sources, and platform configuration.
+Users, organizations, service accounts, Personal Access Tokens, hardware tiers, data
+sources, cost and the platform audit trail. Routes and bodies are from both published
+specs unless marked **Cloud**. Admin-only routes return `403` for other callers.
 
 ## Authentication
 
-https://docs.domino.ai/cloud/reference/api/domino-api-authentication
+Use the shared setup block (`base_url`, `headers`) from
+[domino-api-intro](../domino-api-intro/SKILL.md#authentication). Service-account and PAT
+administration pages: https://docs.domino.ai/cloud/admin/identity-and-access/manage-users/service-accounts
+and https://docs.domino.ai/cloud/admin/identity-and-access/manage-users/personal-access-tokens.
 
-Same in-run patterns as [SKILL.md](SKILL.md#authentication): prefer `DOMINO_API_PROXY` with no header (5.4.0+ with JWT credential propagation); else access-token + `DOMINO_USER_HOST`. Examples below use this setup. Member-visible vs platform-admin routes still return **403** when the starting user lacks permission.
+## Users
 
-```python
-import os
-import requests
-
-if os.environ.get("DOMINO_API_PROXY"):
-    base_url = os.environ["DOMINO_API_PROXY"].rstrip("/")
-    headers = {}
-else:
-    base_url = (os.environ.get("DOMINO_USER_HOST") or os.environ.get("DOMINO_API_HOST") or "").rstrip("/")
-    token = requests.get("http://localhost:8899/access-token").text.strip()
-    headers = {"Authorization": f"Bearer {token}"}
-```
-
-**Outside a run:** code on your laptop or in CI is not in a Domino container. Use the browser-facing deployment HTTPS URL (not localhost sidecar hosts) and `Authorization: Bearer` with a PAT (you) or service account token (automation). Details: [SKILL.md](SKILL.md#outside-a-run-laptop-ci-cron-outside-domino).
-
----
-
-## Users API
-
-### Get Current User
 ```
 GET /api/users/v1/self
+GET /api/users/v1/users?offset=0&limit=50
+GET /api/users/v1/user/{userId}
 ```
 
-Get information about the authenticated user.
+`self` returns `{"user": {"id", "idpId", "userName", "fullName", "firstName", "lastName", "email", "avatarUrl", "roles"}, "metadata": {...}}`.
+`users` returns `{"users": [...], "metadata": {"offset", "limit", ...}}` and includes
+organization pseudo-users and service accounts; there is no server-side filter, so
+filter client-side.
 
-**Example:**
 ```python
-response = requests.get(
-    f"{base_url}/api/users/v1/self",
-    headers=headers
-)
-user = response.json()
-print(f"User: {user['userName']}")
-print(f"Email: {user['email']}")
+me = requests.get(f"{base_url}/api/users/v1/self", headers=headers).json()["user"]
+print(me["userName"], me["id"])
 ```
 
-**Response:**
-```json
-{
-  "id": "user-123",
-  "userName": "jsmith",
-  "email": "jsmith@company.com",
-  "firstName": "John",
-  "lastName": "Smith",
-  "isAdmin": false
-}
+### Roles
+
+```
+GET  /api/users/v1/user/{userId}/roles
+POST /api/users/v1/user/{userId}/roles      body: {"roles": ["..."]}
 ```
 
----
+Admin only. There is no `PUT`.
 
-### List Users
-```
-GET /api/users/v1/users
-```
+### Git credentials
 
-Get all users visible to the current user.
-
-**Query Parameters:**
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `offset` | int | Pagination offset |
-| `limit` | int | Results per page |
-
-**Org pseudo-users:** Each organization has an `organizationUserId` user row. `GET /api/users/v1/users` can return those rows mixed with human users and service accounts. There is **no** `listOnlyUsers` query param on that route today.
-
-`GET /v4/users` (`listUsers`) accepts `listOnlyUsers=true` to drop org pseudo-users when `/v4/users` is reachable from your run. Client-side filtering or org diff may still be needed.
-
----
-
-### User Git Credentials
 ```
 GET /api/users/beta/credentials/{userId}
-```
-
-Get Git credential accessor for a user.
-
-### Update Git Credentials
-```
 PUT /api/users/v1/user/{userId}/tokenCredentials/{credentialId}
 ```
 
----
+### Deactivation
 
-### User roles
+Service accounts: `POST /api/serviceAccounts/v1/serviceAccounts/{serviceAccountIdpId}/deactivate`.
+Human users have no Public API deactivate route; use the admin UI.
+
+## Personal Access Tokens
+
 ```
-GET /api/users/v1/user/{userId}/roles
-PUT /api/users/v1/user/{userId}/roles
-```
-
-Requires admin privileges to read or update another user's roles.
-
----
-
-### User lifecycle (deactivation)
-
-| Surface | Route | Notes |
-|---------|-------|-------|
-| Service accounts | `POST /api/serviceAccounts/v1/serviceAccounts/{id}/deactivate` | Deactivates SA identity |
-| Human users | Admin UI / nucleus flows | No single standard REST deactivate-user path documented for automation; confirm in [API-SPECS.md](../domino-api-intro/API-SPECS.md) |
-
----
-
-## Organizations API
-
-### List Organizations
-```
-GET /api/organizations/v1/organizations
+GET, POST, DELETE /api/pat/v1/tokens                      your own tokens; POST body {"name": "...", "expiresIn": <seconds>, "description": "...", "scopes": [...]}
+POST /api/pat/v1/tokens/{patId}/invalidate;  DELETE /api/pat/v1/tokens/{patId}
+POST /api/pat/v1/tokens/invalidate | /invalidate/bulk | /delete/bulk
+GET  /api/pat/v1/tokens/expiration-policy;  GET /api/pat/v1/tokens/grantable-scopes (Cloud)
+GET  /api/pat/v1/users/tokens                              admin: all users' tokens
+GET, DELETE /api/pat/v1/users/{userId}/tokens;  POST .../invalidate;  DELETE .../{patId};  POST .../{patId}/invalidate
 ```
 
-Get organizations for the current user.
+`name` and `expiresIn` are required on create; `description` is optional; `scopes`
+(**Cloud** only, values from `grantable-scopes`; omitted means none) restricts the token.
+The response includes `token` once.
 
-**Example:**
+## Organizations
+
+```
+GET  /api/organizations/v1/organizations            organizations the caller belongs to
+GET  /api/organizations/v1/organizations/all        admin only
+GET  /api/organizations/v1/organizations/{organizationId}
+POST /api/organizations/v1/organizations            body: {"name": "...", "members": [{"userId": "...", "organizationRole": "member" | "admin"}]}
+PUT  /api/organizations/v1/organizations/{organizationId}/user      body: {"userId": "...", "organizationRole": "member" | "admin"}
+DELETE /api/organizations/v1/organizations/{organizationId}/user?memberToRemoveId=<userId>
+```
+
+`name` and `members` are required on create; the response is `{"org": {"id", "name", "members", "defaultEnvironmentId"}, "metadata"}`.
+List responses use `{"orgs": [...], "metadata": {...}}`.
+
+## Service accounts
+
+```
+GET, POST /api/serviceAccounts/v1/serviceAccounts                       POST body: {"username": "...", "email": "..."}
+POST /api/serviceAccounts/v1/serviceAccounts/{serviceAccountIdpId}/activate | /deactivate | /resetpassword
+GET, POST /api/serviceAccounts/v1/serviceAccounts/{serviceAccountIdpId}/tokens      POST body: {"name": "..."}
+GET, DELETE /api/serviceAccounts/v1/serviceAccounts/{serviceAccountIdpId}/tokens/{tokenName};  POST .../invalidate
+GET /api/serviceAccounts/v1/serviceAccounts/{serviceAccountIdpId}/gitcredentials;  POST .../passwordgitcredentials | /sshgitcredentials | /tokengitcredentials
+```
+
+Create returns `{"serviceAccount": {"id", "idpId", "username", "email"}, "metadata": {...}}`.
+Token routes are keyed by **`idpId`**, not `id`; the token value is returned once.
+
 ```python
-response = requests.get(
-    f"{base_url}/api/organizations/v1/organizations",
-    headers=headers
-)
-orgs = response.json()
+sa = requests.post(f"{base_url}/api/serviceAccounts/v1/serviceAccounts", headers=headers,
+                   json={"username": "github-actions", "email": "mlops@example.com"}).json()["serviceAccount"]
+token = requests.post(f"{base_url}/api/serviceAccounts/v1/serviceAccounts/{sa['idpId']}/tokens",
+                      headers=headers, json={"name": "ci-token"}).json()
+secret = token["token"]   # store in your CI secret manager; it is not retrievable again
 ```
 
----
+## Hardware tiers
 
-### Create Organization
 ```
-POST /api/organizations/v1/organizations
-```
-
-**Request Body:**
-```json
-{
-  "name": "data-science-team",
-  "description": "Data Science Team Organization"
-}
+GET    /api/hardwaretiers/v1/hardwaretiers?offset=&limit=&includeArchived=
+GET    /api/hardwaretiers/v1/hardwaretiers/{hardwareTierId}
+POST   /api/hardwaretiers/v1/hardwaretiers        admin; required id, name, resources, nodePool
+PUT    /api/hardwaretiers/v1/hardwaretiers        admin; full object
+DELETE /api/hardwaretiers/v1/hardwaretiers/{hardwareTierId}   archive
 ```
 
----
+Response: `{"hardwareTiers": [{"id", "name", "resources": {"cores", "coresLimit", "memory": {"value", "units"}, ...}, "flags": {"isDefault", "isVisible", "isGlobal", "isArchived", ...}, "gpuConfiguration": {"numberOfGpus", "gpuKey"}, "centsPerMinute", "nodePool", "computeClusterRestrictions", "capacity", ...}], "metadata": {...}}`
+(`limit` defaults to 10; `architecture` `amd64`/`arm64` is **Cloud** only). The `id` (for
+example `small-k8s`) is what `POST /api/jobs/v1/jobs` takes as `hardwareTier`. Listing
+needs the ViewHardwareTiers permission; python-domino `hardware_tiers_list()` lists the
+tiers usable by a project without it.
 
-### Get Organization
-```
-GET /api/organizations/v1/organizations/{organizationId}
-```
-
----
-
-### Get All Organizations (Admin)
-```
-GET /api/organizations/v1/organizations/all
-```
-
-Only accessible to admin users.
-
-**Visitor JWT / apps:** Published apps often call org list because visitor JWTs lack org claims. That pattern requires the app owner to be a Domino admin and is fragile; prefer documented app identity and auth flows at https://docs.domino.ai/cloud/reference/api/domino-api-authentication .
-
----
-
-### Add User to Organization
-```
-PUT /api/organizations/v1/organizations/{organizationId}/user
-```
-
-**Request Body:**
-```json
-{
-  "userId": "user-456",
-  "role": "Member"
-}
-```
-
----
-
-### Remove User from Organization
-```
-DELETE /api/organizations/v1/organizations/{organizationId}/user
-```
-
-**Request Body:**
-```json
-{
-  "userId": "user-456"
-}
-```
-
----
-
-## Hardware Tiers API
-
-### List Hardware Tiers
-```
-GET /api/hardwaretiers/v1/hardwaretiers
-```
-
-Get all available hardware tiers.
-
-**Example:**
 ```python
-response = requests.get(
-    f"{base_url}/api/hardwaretiers/v1/hardwaretiers",
-    headers=headers
-)
-tiers = response.json()
-
-for tier in tiers['data']:
-    print(f"{tier['name']}: {tier['cores']} cores, {tier['memoryMb']}MB RAM")
+tiers = requests.get(f"{base_url}/api/hardwaretiers/v1/hardwaretiers", headers=headers).json()["hardwareTiers"]
+for t in tiers:
+    print(t["id"], t["name"], t["resources"]["cores"], t["resources"]["memory"])
 ```
 
-**Response:**
-```json
-{
-  "data": [
-    {
-      "id": "tier-123",
-      "name": "small",
-      "cores": 2,
-      "memoryMb": 8192,
-      "gpuCount": 0,
-      "isDefault": false
-    },
-    {
-      "id": "tier-456",
-      "name": "gpu-large",
-      "cores": 8,
-      "memoryMb": 32768,
-      "gpuCount": 1,
-      "gpuType": "nvidia-tesla-v100"
-    }
-  ]
-}
+## Data sources
+
+```
+GET    /api/datasource/v1/datasources?dataSourceNames=&offset=&limit=
+POST   /api/datasource/v1/datasources
+GET, PATCH, DELETE /api/datasource/v1/datasources/{dataSourceId}
+GET    /api/datasource/v1/audit?startTime=&endTime=&dataSourceIds=&dataSourceNames=&eventKinds=
 ```
 
----
+List returns `{"dataSources": [{"id", "name", "dataSourceType", "authType", "credentialType", "config", "permissions", "ownerId", ...}]}`.
+Create requires `name`, `dataSourceType`, `authType`, `credentialType`
+(`Individual` or `Shared`), `credentials` (`visibleCredentials`, `secretCredentials`
+maps), `config` (map) and `permissions` (`isEveryone`, `userAndOrganizationIds`);
+`description` is optional. The spec
+types `config`, `visibleCredentials` and `secretCredentials` as free-form string maps
+("a map of configuration name -> value"), so the keys depend on `dataSourceType`: copy them
+from an existing data source of the same type (`GET` one) or create the first one in the
+UI. Audit `eventKinds`: `AccessDataSource`, `CreateDataSource`,
+`DataSourceAssociatedToProject`, `DataSourceDissociatedFromProject`,
+`DataSourceChangeOfOwnership`, `DataSourceChangeOfPermissions`, `DeleteDataSource`
+(https://docs.domino.ai/cloud/admin/operations/audit-logs/monitor-data-source-logs).
 
-### Get Hardware Tier
-```
-GET /api/hardwaretiers/v1/hardwaretiers/{hardwareTierId}
-```
+## Deployment targets (model deployments)
 
----
-
-### Create Hardware Tier (Admin)
 ```
-POST /api/hardwaretiers/v1/hardwaretiers
-```
-
-**Request Body:**
-```json
-{
-  "name": "custom-large",
-  "cores": 16,
-  "memoryMb": 65536,
-  "gpuCount": 2
-}
-```
-
----
-
-### Update Hardware Tier (Admin)
-```
-PUT /api/hardwaretiers/v1/hardwaretiers
+GET /api/admin/v1/deploymentTargetTypes[/{deploymentTargetTypeId}]
+GET, POST /api/admin/v1/deploymentTargets;  GET /api/admin/v1/deploymentTargets/selectable
+GET, PATCH, DELETE /api/admin/v1/deploymentTargets/{deploymentTargetId}
+GET, POST /api/admin/v1/deploymentTargets/{deploymentTargetId}/resourceConfigurations
+GET, PATCH, DELETE .../resourceConfigurations/{resourceConfigurationId};  GET .../effectiveModelDeploymentSchema
 ```
 
----
+## Cost
 
-### Archive Hardware Tier (Admin)
 ```
-DELETE /api/hardwaretiers/v1/hardwaretiers/{hardwareTierId}
-```
-
----
-
-## Data Sources API
-
-### List Data Sources
-```
-GET /api/datasource/v1/datasources
+GET /api/cost/v1/allocation?window=<required>&aggregate=&start=&end=&accumulate=&filter=&shareIdle=...
+GET /api/cost/v1/allocation/summary;  GET /api/cost/v1/asset;  GET /api/cost/v1/cloudCost
+GET /api/cost/v2/allocation[/accumulated], /allocation/summary[/accumulated], /asset[/accumulated], /cloudCost[/accumulated]
+GET, POST /api/cost/v1/billingtags;  GET, DELETE /api/cost/v1/billingtags/{tag}
+GET, PUT /api/cost/v1/billingtagSettings;  /mode;  /notifications
+GET /api/cost/v1/costActivationStatus;  PUT /api/cost/v1/licenseKey;  PUT /api/cost/v1/athenaConfigs
 ```
 
-Get all active data sources the user has access to.
+`window` is the only required allocation parameter. Per the spec it accepts words
+(`today`, `week`, `month`, `yesterday`, `lastweek`, `lastmonth`), durations (`30m`,
+`12h`, `7d`) or a time range (`2021-03-10T00:00:00Z,2021-03-11T00:00:00Z`); `start` and
+`end` (RFC 3339) must fall inside it. `aggregate` takes the kubecost aggregates
+(`cluster`, `namespace`, `pod`, `deployment`, `service`, `daemonset`, `statefulset`, `job`,
+`cronjob`, `replicaset`, `node`, `container`, `pv`, `pvc`, `storageclass`); `filter` uses the
+same keys. The response is `{"data": [{"name", "totalCost", "cpuCost", "ramCost", "gpuCost", "cpuCoreHours", "gpuHours", "window", ...}]}`.
+Permissions vary by deployment; a `403` means the caller lacks the admin or billing role.
 
-**Example:**
 ```python
-response = requests.get(
-    f"{base_url}/api/datasource/v1/datasources",
-    headers=headers
-)
-sources = response.json()
+costs = requests.get(f"{base_url}/api/cost/v1/allocation", headers=headers,
+                     params={"window": "7d", "aggregate": "namespace"}).json()["data"]
 ```
 
----
+Budgets and alerts are covered by python-domino's `budget_*` and `billing_tag*` methods
+([SDK-EXAMPLES.md](./SDK-EXAMPLES.md)), which call `/v4/cost` routes (internal API, may
+change between Domino versions).
 
-### Create Data Source
-```
-POST /api/datasource/v1/datasources
-```
+## Audit trail
 
-**Request Body:**
-```json
-{
-  "name": "postgres-prod",
-  "type": "PostgreSQL",
-  "config": {
-    "host": "db.company.com",
-    "port": 5432,
-    "database": "analytics"
-  }
-}
+Feature docs: https://docs.domino.ai/cloud/platform-capabilities/features/governance/audit-trail.
+
+```
+GET  /api/audittrail/v1/auditevents
+POST /api/audittrail/v1/search
+GET  /api/audittrail/v1/fieldValues?field=<required>&search=
 ```
 
----
+`auditevents` query parameters (all optional): `startTimestamp`, `endTimestamp`
+(integers, epoch milliseconds), `actorId`, `actorName`, `event`, `targetType`, `targetId`,
+`targetName`, `withinProjectId`, `withinProjectName`, `sort` (comma-separated fields with
+`+`/`-` prefix: `timestamp`, `actorId`, `actorName`, `withinProjectId`,
+`withinProjectName`, `event`, `targetType`, `targetName`), `limit` (default 10),
+`offset`, `column` (CSV download only). There is no `startTime`, `endTime` or `eventType`
+parameter.
 
-### Get Data Source
-```
-GET /api/datasource/v1/datasources/{dataSourceId}
-```
-
----
-
-### Update Data Source
-```
-PATCH /api/datasource/v1/datasources/{dataSourceId}
-```
-
----
-
-### Delete Data Source
-```
-DELETE /api/datasource/v1/datasources/{dataSourceId}
-```
-
----
-
-### Data Source Audit
-```
-GET /api/datasource/v1/audit
-```
-
-Get audit logs for data source access.
-
----
-
-## Service Accounts API
-
-### List Service Accounts
-```
-GET /api/serviceAccounts/v1/serviceAccounts
-```
-
----
-
-### Create Service Account
-```
-POST /api/serviceAccounts/v1/serviceAccounts
-```
-
-**Request Body:**
-```json
-{
-  "name": "ci-cd-service",
-  "description": "Service account for CI/CD pipelines"
-}
-```
-
----
-
-### Create Token
-```
-POST /api/serviceAccounts/v1/serviceAccounts/{serviceAccountId}/tokens
-```
-
-Create API token for service account.
-
----
-
-### List Tokens
-```
-GET /api/serviceAccounts/v1/serviceAccounts/{serviceAccountId}/tokens
-```
-
----
-
-## Deployment Targets API (Admin)
-
-### List Deployment Target Types
-```
-GET /api/admin/v1/deploymentTargetTypes
-```
-
-### Get Deployment Target Type
-```
-GET /api/admin/v1/deploymentTargetTypes/{typeId}
-```
-
-### List Deployment Targets
-```
-GET /api/admin/v1/deploymentTargets
-```
-
-### Create Deployment Target
-```
-POST /api/admin/v1/deploymentTargets
-```
-
-### Get Deployment Target
-```
-GET /api/admin/v1/deploymentTargets/{targetId}
-```
-
-### Update Deployment Target
-```
-PATCH /api/admin/v1/deploymentTargets/{targetId}
-```
-
-### Delete Deployment Target
-```
-DELETE /api/admin/v1/deploymentTargets/{targetId}
-```
-
----
-
-## Resource Configurations
-
-### List Resource Configurations
-```
-GET /api/admin/v1/deploymentTargets/{targetId}/resourceConfigurations
-```
-
-### Create Resource Configuration
-```
-POST /api/admin/v1/deploymentTargets/{targetId}/resourceConfigurations
-```
-
-### Get Resource Configuration
-```
-GET /api/admin/v1/deploymentTargets/{targetId}/resourceConfigurations/{configId}
-```
-
-### Update Resource Configuration
-```
-PATCH /api/admin/v1/deploymentTargets/{targetId}/resourceConfigurations/{configId}
-```
-
-### Delete Resource Configuration
-```
-DELETE /api/admin/v1/deploymentTargets/{targetId}/resourceConfigurations/{configId}
-```
-
----
-
-## Central config (platform settings, not feature flags)
-
-Admin key/value settings for deployment configuration. **Not** the same system as user-facing feature flags.
-
-| Method | Path |
-|--------|------|
-| GET | `/v4/admin/centralConfigSettings` |
-| POST | `/v4/admin/centralConfigSettings` |
-| PUT | `/v4/admin/centralConfigSettings/{id}` |
-| DELETE | `/v4/admin/centralConfigSettings/{id}` |
-
-Secrets are obfuscated on read. Only three keys overlap feature flags via `SettingsToFeatureFlagConverter`; do not use central config as a bulk feature-flag export.
-
----
-
-## Feature flags (effective per caller only)
-
-| Route | What you get |
-|-------|----------------|
-| `GET /v4/auth/principal` | Enabled feature flags **for the authenticated principal only** |
-
-There is no bulk list-all-flags-and-overrides REST surface today. Admin UI owns create/update for overrides.
-
----
-
-## Cost API
-
-Permissions vary by deployment; cost admin operations may require platform admin or billing roles not spelled out in every operation description. Dataset storage cost and domino-cost budgets live on additional `/v4/...` routes (`/v4/datasetrw/dataset-cost`, `/v4/domino-cost/budgets`); there is no single unified cost summary API. Verify 403 responses against your caller's admin/billing role before retrying.
-
-### Get Cost Allocation
-```
-GET /api/cost/v1/allocation
-```
-
-Get detailed cost breakdown.
-
-**Query Parameters:**
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `startTime` | string | ISO 8601 start time |
-| `endTime` | string | ISO 8601 end time |
-| `aggregateBy` | string | user, project, organization |
-
-**Example:**
 ```python
-response = requests.get(
-    f"{base_url}/api/cost/v1/allocation",
-    headers=headers,
-    params={
-        "startTime": "2024-01-01T00:00:00Z",
-        "endTime": "2024-01-31T23:59:59Z",
-        "aggregateBy": "project"
-    }
-)
-costs = response.json()
+events = requests.get(f"{base_url}/api/audittrail/v1/auditevents", headers=headers, params={
+    "startTimestamp": 1735689600000,     # 2025-01-01T00:00:00Z
+    "endTimestamp":   1735776000000,
+    "event": "Create Dataset",
+    "limit": 100, "offset": 0,
+}).json()
+for e in events["events"]:
+    print(e["timestamp"], e["actor"]["name"], e["action"]["eventName"],
+          [t["entity"]["name"] for t in e["targets"]])
 ```
 
----
+Response: `{"events": [{"timestamp", "actor": {"id", "name"}, "action": {"eventName", "using", "traceId", "electronicallySigned"}, "targets": [{"entity": {"entityType", "id", "name"}, "fieldChanges"}], "affecting", "in", "metadata"}], "estimatedMatches", "total"}`.
 
-### Get Cost Summary
-```
-GET /api/cost/v1/allocation/summary
-```
+`search` takes a JSON filter: `{"filter": {"type": "group", "operator": "AND" | "OR", "rules": [...]}, "limit": 50, "offset": 0}` with `limit` 1 to 1000.
+`fieldValues` lists distinct values for one field (`field` required) for building filters.
 
-Faster summary-level cost data.
+## Internal routes you may still meet
 
----
-
-### Get Asset Costs
-```
-GET /api/cost/v1/asset
-```
-
----
-
-## Billing Tags
-
-### List Billing Tags
-```
-GET /api/cost/v1/billingtags
-```
-
-### Create/Update Billing Tags
-```
-POST /api/cost/v1/billingtags
-```
-
-### Billing Tag Settings
-```
-GET /api/cost/v1/billingtagSettings
-PUT /api/cost/v1/billingtagSettings
-```
-
-### Billing Tag Mode
-```
-GET /api/cost/v1/billingtagSettings/mode
-PUT /api/cost/v1/billingtagSettings/mode
-```
-
----
-
-## Audit Events API
-
-### Get Audit Events
-```
-GET /auditevents
-```
-
-Get platform audit events.
-
-**Query Parameters:**
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `startTime` | string | Filter start |
-| `endTime` | string | Filter end |
-| `eventType` | string | Filter by event type |
-
-**Example:**
-```python
-response = requests.get(
-    f"{base_url}/auditevents",
-    headers=headers,
-    params={
-        "startTime": "2024-01-01T00:00:00Z",
-        "endTime": "2024-01-02T00:00:00Z"
-    }
-)
-events = response.json()
-```
-
----
-
-## Common Admin Tasks
-
-### Create Service Account for CI/CD
-```python
-# Create service account
-response = requests.post(
-    f"{base_url}/api/serviceAccounts/v1/serviceAccounts",
-    headers=headers,
-    json={
-        "name": "github-actions",
-        "description": "Service account for GitHub Actions"
-    }
-)
-sa = response.json()
-sa_id = sa['id']
-
-# Create API token
-response = requests.post(
-    f"{base_url}/api/serviceAccounts/v1/serviceAccounts/{sa_id}/tokens",
-    headers=headers,
-    json={"description": "CI/CD token"}
-)
-token = response.json()
-print(f"API Token: {token['token']}")  # Save this securely!
-```
-
-### Get Platform Usage Report
-```python
-# Get cost allocation by user
-response = requests.get(
-    f"{base_url}/api/cost/v1/allocation",
-    headers=headers,
-    params={
-        "startTime": "2024-01-01T00:00:00Z",
-        "endTime": "2024-01-31T23:59:59Z",
-        "aggregateBy": "user"
-    }
-)
-usage = response.json()
-
-for user in usage['data']:
-    print(f"{user['name']}: ${user['totalCost']:.2f}")
-```
+These are Domino Internal API, may change between Domino versions, and are not in either
+published spec: `/v4/users?listOnlyUsers=true`, `/v4/admin/centralConfigSettings`,
+`/v4/auth/principal`, `/v4/datasetrw/dataset-cost`, `/v4/domino-cost/budgets`. Confirm
+each in your deployment's `/docs/openapi/openapi-internal.json` before using it, and
+prefer the public routes above.

@@ -1,180 +1,145 @@
 # Mount paths and data access
 
-Where NetApp volumes and their snapshots appear inside a workspace, job, or app (Git-based vs DFS projects), snapshot path behavior, read/write examples, and file-handling best practices, preceded by the NetApp Volumes vs. Domino Datasets comparison. The REST API is in [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md).
+Where NetApp Volumes and their snapshots appear inside a Workspace, Job or App, how
+tagged and pinned snapshots mount, read/write examples, and file-handling practices. The
+REST API is in [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md). Sources:
+https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/netapp-volumes/add-remove-netapp-volumes
+and https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/datasets/version-data-with-snapshots.
 
-## What is a Domino NetApp Volume?
-
-A Domino NetApp Volume is:
-- **Enterprise-grade storage**: Backed by NetApp ONTAP via Kubernetes PVCs with the `netapp-storage` storage class
-- **Multi-terabyte scale**: No practical upper limit — suitable for very large datasets
-- **Near-instant snapshots**: ~3 seconds even for 100+ GB volumes using redirect-on-write (no extra storage consumed at snapshot time)
-- **Versioned with commit messages**: Snapshots support human-readable tags and commit messages, unlike Datasets
-- **Shareable**: Attach a single volume to multiple projects and teams
-- **Persistent**: Data persists across executions
-
-### NetApp Volumes vs. Domino Datasets
+## NetApp Volumes vs Domino Datasets
 
 | Feature | NetApp Volumes | Domino Datasets |
 |---------|---------------|-----------------|
-| Storage backend | External NetApp ONTAP | Domino-managed NFS/EFS |
-| Data scale | Multi-terabyte and beyond | Up to ~1 TB |
-| Snapshot speed | ~3 seconds (any size) | Scales with data size |
-| Snapshot storage cost | No extra space (redirect-on-write) | Duplicates physical data |
-| Commit messages on snapshots | Supported | Not supported |
-| Create new volume from snapshot | Read-only clones | Can create editable dataset |
-| Cross-project sharing | Yes | Yes |
-| Admin prerequisite | Admin must register filesystems | None |
-| REST API | Full dedicated API | Via Domino Python SDK |
+| Storage backend | NetApp ONTAP filesystem registered by an administrator (FSx for ONTAP, Google Cloud NetApp Volumes, Cloud ONTAP) | Domino-managed storage |
+| Scope | Global; attach to any number of projects | Created in a project; shareable with other projects |
+| Size limit | None from Domino; set by the ONTAP volume type (up to 300 TiB for a FlexVol) | Domino-managed |
+| Snapshot time | About 3 seconds regardless of size | Seconds to hours as data grows |
+| Snapshot storage | None at creation (redirect-on-write) | Duplicates the captured data |
+| Commit message on snapshots | Yes | No (tags only) |
+| New asset from a snapshot | No (volumes can be copied for Project Templates) | Yes, a new Dataset |
+| Admin prerequisite | Registered ONTAP filesystem | None |
+| REST API | `/remotefs/v1` | `/api/datasetrw/v1` and `/v2` |
 
-**Advantages over Domino Dataset snapshots:**
+## Mount paths
 
-- Near-instant for any volume size (~3 seconds)
-- Support commit messages for documentation and audit trails
-- No storage overhead at creation time
+Paths mirror the Dataset scheme. Volumes are global, so there is no local/imported split.
 
-## Mount Paths
+| Project type | Read-write volume | Snapshots by number | Tagged snapshot |
+|--------------|-------------------|---------------------|-----------------|
+| DFS | `/domino/netapp-volumes/<name>` | `/domino/netapp-volumes/snapshots/<name>/<number>` | `/domino/netapp-volumes/snapshot-tags/<name>/<tag>` |
+| Git-based | `/mnt/netapp-volumes/<name>` | `/mnt/netapp-volumes/snapshots/<name>/<number>` | `/mnt/netapp-volumes/snapshot-tags/<name>/<tag>` |
 
-Mount paths depend on your **project type**. Check which exists in your execution to determine your project type.
+The docs give `snapshots/<name>` for the snapshots directory and state that the paths
+mirror the Dataset scheme, in which each snapshot sits under its number; `<number>` is the
+snapshot's `version` from the API. Renaming a volume changes `<name>` and therefore every
+path; update scripts after a rename.
 
-### Git-Based Projects
+### Permissions at mount time
 
-| Volume Type | Mount Path |
-|-------------|-----------|
-| Live volume | `/mnt/netapp-volumes/<volume-name>/` |
-| Snapshot by number | `/mnt/netapp-volumes/snapshots/<volume-name>/<snapshot-number>/` |
-| Snapshot by tag | `/mnt/netapp-volumes/snapshot-tags/<volume-name>/<tag-name>/` |
+- Volume Owners and Editors attach volumes read-write; Readers attach read-only.
+- Apps mount read-write or read-only according to the App owner's role.
+- You choose which attached volumes to mount when you launch the execution.
 
-### DFS (Domino File System) Projects
+### Snapshot mounting
 
-| Volume Type | Mount Path |
-|-------------|-----------|
-| Live volume | `/domino/netapp-volumes/<volume-name>/` |
-| Snapshot by number | `/domino/netapp-volumes/snapshots/<volume-name>/<snapshot-number>/` |
-| Snapshot by tag | `/domino/netapp-volumes/snapshot-tags/<volume-name>/<tag-name>/` |
+- By default an attached volume mounts its live data and all of its snapshots
+  (`snapshots/<name>/<number>`).
+- If a snapshot has a tag, Domino also mounts it under `snapshot-tags/<name>/<tag>`. If a
+  snapshot carries several tags, only the most recently added tag is mounted. Tags can be
+  moved to newer snapshots by Owners and Editors.
+- **Pinning**: on the **Data Plane & Hardware** tab at launch you can pin a volume to one
+  snapshot (`Snapshot #<version> - <date>`). The pinned snapshot then mounts read-only at
+  the read-write path (`/domino/netapp-volumes/<name>` or `/mnt/netapp-volumes/<name>`),
+  the read-write mount and the `snapshots/<name>` directory are disabled, and tag mounts
+  stay. The pin applies to every restart of a Workspace, to a single one-off Job run, or
+  to every run of a scheduled Job.
 
-### Snapshot Access Behavior
-
-There are two ways to access snapshots, with an important behavioral difference:
-
-- **`/snapshots/<volume-name>/<number>/`** — Accessed by snapshot number. When a new snapshot is taken while a workspace is running, the new numbered directory appears **immediately** in that workspace without a restart.
-- **`/snapshot-tags/<volume-name>/<tag-name>/`** — Accessed by tag name. Each snapshot has at most one active tag path — a symlink to its numbered snapshot directory. If you apply multiple tags to the same snapshot, only the most recently applied tag creates a path; earlier tags for that snapshot are not accessible by path. Tag paths for new snapshots are also **not** visible in a running workspace — you must **restart the workspace** for them to appear.
-
-Use the numbered path when you need to access a fresh snapshot from within a live workspace. Use the tagged path for stable, named references in reproducible runs.
-
-> **Important:** Each snapshot exposes only one tag path at a time — the most recently applied tag. Older tags on the same snapshot do not have accessible paths.
-
-> **Important:** Renaming a volume changes its mount path. Update any hardcoded paths in your code after renaming.
-
-### Identify Your Project Type
+### Identify the project type
 
 ```python
 import os
 
-if os.path.exists("/domino/netapp-volumes"):
-    print("DFS Project")
-    netapp_root = "/domino/netapp-volumes"
-elif os.path.exists("/mnt/netapp-volumes"):
-    print("Git-Based Project")
-    netapp_root = "/mnt/netapp-volumes"
+if os.path.isdir("/domino/netapp-volumes"):
+    netapp_root = "/domino/netapp-volumes"      # DFS project
+elif os.path.isdir("/mnt/netapp-volumes"):
+    netapp_root = "/mnt/netapp-volumes"         # Git-based project
+else:
+    raise RuntimeError("No NetApp Volumes are mounted in this execution")
 ```
 
-### Permissions
+`DOMINO_IS_GIT_BASED` (injected into every execution) tells you the project type directly.
 
-- **Owners/Editors**: Read-write access to the live volume
-- **Readers**: Read-only access
-
-### Example: Reading Data
+### Reading
 
 ```python
 import pandas as pd
 
-# Git-Based Project
-df = pd.read_parquet("/mnt/netapp-volumes/large-training-data/features.parquet")
-
-# DFS Project
-df = pd.read_parquet("/domino/netapp-volumes/large-training-data/features.parquet")
-
-# Read from a specific snapshot tag
-df = pd.read_parquet("/mnt/netapp-volumes/snapshot-tags/large-training-data/v2.0/features.parquet")
+df = pd.read_parquet(f"{netapp_root}/large-training-data/features.parquet")                      # live data
+df_v2 = pd.read_parquet(f"{netapp_root}/snapshot-tags/large-training-data/v2.0/features.parquet")  # tagged snapshot
+df_n3 = pd.read_parquet(f"{netapp_root}/snapshots/large-training-data/3/features.parquet")        # snapshot number 3
 ```
 
-### Example: Writing Data
+### Writing
 
 ```python
-# Write directly to the live volume
-df.to_parquet("/mnt/netapp-volumes/large-training-data/processed/output.parquet", index=False)
-
-# List files
 import os
-files = os.listdir("/mnt/netapp-volumes/large-training-data/")
+out_dir = f"{netapp_root}/large-training-data/processed"
+os.makedirs(out_dir, exist_ok=True)
+df.to_parquet(f"{out_dir}/output.parquet", index=False)
+print(os.listdir(f"{netapp_root}/large-training-data"))
 ```
 
-## Best Practices
+Writes need the Editor or Owner role; a pinned snapshot is read-only.
 
-### 1. Use Appropriate Storage
-| Data Type | Storage |
-|-----------|---------|
-| Large data of any file type where the entire filesystem should be versioned as a unit, with intentional snapshots | NetApp Volume |
-| Small output files — charts, reports, model binaries | Artifacts / DFS (auto-versioned per file, not suitable for large files) |
-| Code | Git / Project files |
+## Best practices
 
-### 2. Snapshot Before Changes
+### Put the right data in the right place
+
+| Data | Storage |
+|------|---------|
+| Large files or whole directory trees versioned as a unit, shared across projects | NetApp Volume |
+| Project-scoped data that you want to clone into new editable versions | Domino Dataset |
+| Small outputs (charts, reports, model files) | Project files / artifacts |
+| Code | Git repository / project files |
+
+### Snapshot before destructive changes
+
 ```python
-# Always snapshot before modifying large volumes
-requests.post(
-    f"{remotefs_url}/remotefs/v1/snapshots",
-    headers=headers,
-    json={
-        "volumeId": "<volume-id>",
-        "description": "Pre-processing baseline snapshot",
-        "tagNames": ["pre-processing-2024-01"]
-    }
-)
-
-# Then run your data transformation
+requests.post(f"{remotefs_url}/remotefs/v1/snapshots", headers=remotefs_headers,
+              json={"volumeId": volume_id, "description": "Pre-processing baseline",
+                    "tagNames": ["pre-processing-2026-01"]})
 process_data()
 ```
 
-### 3. Use Efficient File Formats
+Setup for `remotefs_url` and `remotefs_headers`: [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#authentication-and-base-urls).
+For Jobs, `snapshotNetAppVolumesOnCompletion: true` on `POST /api/jobs/v1/jobs` does
+this automatically at the end of the run.
+
+### Reference tags, not numbers, in reproducible runs
+
 ```python
-# Parquet for tabular data (faster reads, smaller storage)
-df.to_parquet("/mnt/netapp-volumes/dataset/data.parquet")
-
-# Feather for fast pandas I/O
-df.to_feather("/mnt/netapp-volumes/dataset/data.feather")
-
-# HDF5 for large numerical arrays
-import h5py
-with h5py.File("/mnt/netapp-volumes/dataset/arrays.h5", "w") as f:
-    f.create_dataset("features", data=features_array)
-```
-
-### 4. Organize Data
-```
-/mnt/netapp-volumes/my-volume/
-├── raw/
-│   ├── 2024-Q1/
-│   └── 2024-Q2/
-├── processed/
-│   ├── features.parquet
-│   └── labels.parquet
-└── metadata/
-    └── schema.json
-```
-
-### 5. Use Snapshot Tags for Reproducibility
-Reference snapshot tags (not snapshot IDs) in your training scripts so that tagged paths remain stable across runs:
-```python
-# Reproducible reference using a tag
-TRAINING_DATA = "/mnt/netapp-volumes/snapshot-tags/dataset/v2.0/"
+TRAINING_DATA = f"{netapp_root}/snapshot-tags/dataset/v2.0"
 df = pd.read_parquet(f"{TRAINING_DATA}/features.parquet")
 ```
 
-### 6. Reading Large Volumes Efficiently
-```python
-import dask.dataframe as dd
+Tag paths stay stable when you re-tag a newer snapshot; numbered paths identify one
+specific snapshot forever. Or pin the snapshot at launch and keep reading the live path.
 
-# Lazy read — no data loaded until .compute()
-df = dd.read_parquet("/mnt/netapp-volumes/dataset/large_data.parquet")
-result = df.groupby("category").mean().compute()
+### Use columnar formats and lazy readers for large data
+
+```python
+df = pd.read_parquet(path, columns=["col1", "col2"])      # read only what you need
+
+import dask.dataframe as dd
+ddf = dd.read_parquet(f"{netapp_root}/dataset/large_data.parquet")
+result = ddf.groupby("category").mean().compute()
+```
+
+### Organize the volume
+
+```
+/mnt/netapp-volumes/my-volume/
+  raw/2026-Q1/  raw/2026-Q2/
+  processed/features.parquet  processed/labels.parquet
+  metadata/schema.json
 ```
