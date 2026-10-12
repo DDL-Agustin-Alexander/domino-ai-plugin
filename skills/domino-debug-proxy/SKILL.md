@@ -24,8 +24,8 @@ Find the configuration mistakes that break apps behind Domino's reverse proxy, r
 |---|---|---|
 | 1 | Port and host | The process Domino starts listens on `0.0.0.0:8888` (`serve -l 8888`, `app.listen(8888, '0.0.0.0')`, `--server.port 8888 --server.address 0.0.0.0`, `app.run(host="0.0.0.0", port=8888)`, `uvicorn --host 0.0.0.0 --port 8888`). Domino rejects any other address or port |
 | 2 | Base path | Vite sets `base: './'`; HTML templates reference `static/...`, never `/static/...` |
-| 3 | Router | React Router uses `HashRouter`; a `BrowserRouter` needs an SPA fallback (`serve -s` or the Express fallback) and still breaks relative assets on nested routes |
-| 4 | `app.sh` | Executable (`git update-index --chmod=+x app.sh`), changes to the project directory (`cd "$DOMINO_WORKING_DIR"`), runs `npm ci` and `npm run build` before serving, and does not `pip install` or `npm install` packages the Compute Environment should contain |
+| 3 | Router | React Router uses `HashRouter` (pass). `BrowserRouter` is a warning, not a failure: it works only with an SPA fallback on the server (`serve -s` or the Express fallback) and an absolute `base` (`DOMINO_RUN_HOST_PATH` at build time, since `app.sh` builds inside the App container) instead of `./`; with the relative `base` it breaks assets on nested routes |
+| 4 | `app.sh` | Executable (`git update-index --chmod=+x app.sh`), changes to its own directory (`cd "$(dirname "$0")"`) or the project directory, runs `npm ci` and `npm run build` before serving, and does not `pip install` or `npm install` packages the Compute Environment should contain |
 | 5 | Prefix | Python frameworks that need a base path read `DOMINO_RUN_HOST_PATH` (Dash `requests_pathname_prefix`, Gradio `root_path`); nothing concatenates `DOMINO_PROJECT_OWNER`, `DOMINO_PROJECT_NAME` and `DOMINO_RUN_ID` into a path |
 | 6 | Asset and API references | No root-absolute `fetch('/api/...')` or `/assets/...`; frontend API calls resolve with `new URL('api/', document.baseURI)` |
 | 7 | Secrets | No `VITE_*_TOKEN` or `VITE_*_KEY` in `.env*`, workflow files or source; model endpoint calls happen in `server.js`, Flask, FastAPI or another backend. Synchronous endpoints use HTTP Basic (token as user and password), asynchronous ones Bearer |
@@ -37,7 +37,7 @@ Find the configuration mistakes that break apps behind Domino's reverse proxy, r
 |---|---|---|
 | Never reaches Running | Bound to `localhost` or a port other than 8888 | Listen on `0.0.0.0:8888` |
 | 404 on CSS and JS | `base` is `/` or missing | `base: './'` in `defineConfig`; rebuild and republish |
-| Deep links or refresh return 404 | `BrowserRouter` routes reach the server | Switch to `HashRouter`, or serve with `-s` |
+| Deep links or refresh return 404 | `BrowserRouter` routes reach the server | Switch to `HashRouter`, or keep `BrowserRouter` with `serve -s` and an absolute `base` from `DOMINO_RUN_HOST_PATH` |
 | Blank page or stale content | `app.sh` has no build step, or the App was not republished after the change | Add `npm run build` before serving; publish a new version and deploy it |
 | Worked, then failed after a restart | Hand-built prefix instead of `DOMINO_RUN_HOST_PATH` | Read the prefix from `DOMINO_RUN_HOST_PATH` |
 | Model call 401 | Bearer sent to a synchronous endpoint, or token missing | Basic auth with the Model Access Token as user and password; set `MODEL_API_TOKEN` in project settings and restart |
@@ -49,7 +49,7 @@ A corrected `app.sh` for a Vite app with a backend:
 ```bash
 #!/bin/bash
 set -e
-cd "$DOMINO_WORKING_DIR"
+cd "$(dirname "$0")"
 npm ci
 npm run build
 node server.js      # or: npx serve -s dist -l 8888 --no-clipboard
@@ -66,17 +66,17 @@ PASS Port: 8888, host 0.0.0.0
 PASS Base path: './'
 
 Checking: src/main.jsx
-FAIL Router: BrowserRouter (deep links 404 behind the proxy)
+WARN Router: BrowserRouter with base './' (deep links 404; nested routes break assets)
 
 Checking: app.sh
-PASS Working directory: $DOMINO_WORKING_DIR
+PASS Working directory: cd "$(dirname "$0")"
 PASS Build command: npm run build
 FAIL Serve command missing -s flag
 
-Summary: 2 issues found
+Summary: 1 issue, 1 warning
 
 Recommended fixes:
-1. Replace BrowserRouter with HashRouter in src/main.jsx
+1. Replace BrowserRouter with HashRouter in src/main.jsx (or keep it with serve -s and an absolute base)
 2. Update the app.sh serve command:
    - Current: npx serve dist -l 8888
    + Fixed:   npx serve -s dist -l 8888

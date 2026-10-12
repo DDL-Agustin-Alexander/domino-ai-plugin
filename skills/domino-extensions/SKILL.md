@@ -37,9 +37,9 @@ Docs: https://docs.domino.ai/cloud/platform-capabilities/features/extensions (ov
 | `datasetFileContext` | Three-dot menu of a file in a Dataset | `datasetId`, `datasetSnapshotId`, `filePath` |
 | `modelDetails` | Model details page | `modelId`, `modelVersionId` |
 | `adminPanel` | New page in the Admin panel | none |
-| `netAppVolume`, `netAppVolumeFileContext` | NetApp Volume pages (API only) | `netAppVolumeId`, `netAppVolumeSnapshotId`, `filePath` |
+| `netAppVolume`, `netAppVolumeFileContext` | NetApp Volume pages (in the API schema; the docs list only the five above) | `netAppVolumeId`, `netAppVolumeSnapshotId`, `filePath` |
 
-`urlConfig.contextualQueryParams` accepts only the spec enum (the eight names above). Read them on the App's root route, validate the ones you need and return a clear 400 when they are missing, and call Domino with the forwarded `Authorization` header. A worked Flask example and the exact config shapes are in [API-EXTENSIONS.md](./API-EXTENSIONS.md).
+`urlConfig.contextualQueryParams` accepts only the spec enum (the eight names above), and the App receives exactly what the config lists. The docs call the file parameter `datasetFilePath`; the spec and Domino's own extensions use `filePath`. Read the parameters on the App's root route, validate the ones you need and return a clear 400 when they are missing, and call Domino with the forwarded `Authorization` header. A worked Flask example and the exact config shapes are in [API-EXTENSIONS.md](./API-EXTENSIONS.md).
 
 ## Create an Extension (custom App)
 
@@ -61,7 +61,7 @@ Domino-built Extensions are installed, upgraded and uninstalled from **Admin pan
 | Model inference | The `url` from the endpoint record, not a hand-built host |
 | Automation outside any run | Public deployment URL plus PAT or service account token |
 
-Without consent the viewer JWT has limited scope, so privileged reads such as `GET /v4/users/self` (Domino Internal API, may change between Domino versions) can fail; prefer `/api/...` routes and request consent. Domino does not inject a public-URL variable such as `DOMINO_EXTERNAL_URL`; read `X-Forwarded-Host` and `X-Forwarded-Proto`, or configure the URL yourself.
+Without consent the viewer JWT has limited scope, so privileged reads such as `GET /v4/users/self` (Domino Internal API, may change between Domino versions) can fail; prefer `/api/...` routes and request consent. Domino does not inject a public-URL variable such as `DOMINO_EXTERNAL_URL`; when the backend needs the deployment's public URL, configure it as a project environment variable.
 
 ## Reference files
 

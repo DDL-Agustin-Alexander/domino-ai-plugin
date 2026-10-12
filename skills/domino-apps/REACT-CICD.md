@@ -12,10 +12,11 @@ main branch -> GitHub Action -> Prod project: new App version, started
 
 ## One-time setup in Domino (done by a person in the UI)
 
-1. **Identity.** Ask a Domino admin for a service account and its token (https://docs.domino.ai/cloud/admin/identity-and-access/manage-users/service-accounts). A Personal Access Token works for a pipeline that should act as you; a service account is the right identity for CI. Legacy user API keys are deprecated; do not use `DOMINO_USER_API_KEY`.
-2. **Projects.** Create the UAT and production projects as Git-based projects whose main repository is this GitHub repository, using a Git credential that can read it (https://docs.domino.ai/cloud/platform-capabilities/core-concepts/workspaces/link-github-account-to-domino). Give the deploying identity edit rights on both projects. (`POST /api/projects/v2/projects` with `mainRepository.uri`, `serviceProvider` and `gitCredentialId` automates this; not covered here.)
-3. **Environment variables.** In each project's settings add `MODEL_API_URL` and `MODEL_API_TOKEN` (a Model Access Token from the endpoint's **Settings > Invocation**). The App reads them at start; they never pass through GitHub.
-4. **IDs.** Note the Compute Environment ID (the environment must contain Node) and the Hardware Tier ID. `GET /api/environments/beta/environments` and `GET /api/hardwaretiers/v1/hardwaretiers` list them.
+1. **Identity.** Ask a Domino admin for a service account and a token (https://docs.domino.ai/cloud/admin/identity-and-access/manage-users/service-accounts). A Personal Access Token works for a pipeline that should act as you; a service account is the right identity for CI. Two things from that page matter here: a service account inherits the roles of the admin who created it, so have the admin trim its roles before generating the token (the token captures the roles at creation); and tokens expire after four months by default, so plan to rotate `DOMINO_TOKEN`. Legacy user API keys are deprecated; do not use `DOMINO_USER_API_KEY`.
+2. **Git credential for the service account.** Git credentials are per account. Because the service account starts every App instance, the admin adds a token Git credential that can read this repository to the service account itself (same page, "Add Git credentials to a service account"; API `POST /api/serviceAccounts/v1/serviceAccounts/{serviceAccountIdpId}/tokengitcredentials`, present in both specs). Use a read-only GitHub token.
+3. **Projects.** Create the UAT and production projects as Git-based projects whose main repository is this GitHub repository (https://docs.domino.ai/cloud/platform-capabilities/core-concepts/workspaces/link-github-account-to-domino for the human's own credential). Add the service account as a collaborator with edit rights on both projects. (`POST /api/projects/v2/projects` with `mainRepository.uri`, `serviceProvider` and `gitCredentialId` automates this; not covered here.)
+4. **Environment variables.** In each project's settings add `MODEL_API_URL` and `MODEL_API_TOKEN` (a Model Access Token from the endpoint's **Settings > Invocation**). The App reads them at start; they never pass through GitHub.
+5. **IDs.** Note the Compute Environment ID (the environment must contain Node) and the Hardware Tier ID. `GET /api/environments/beta/environments` and `GET /api/hardwaretiers/v1/hardwaretiers` list them.
 
 ## Repository layout
 
@@ -29,10 +30,10 @@ main branch -> GitHub Action -> Prod project: new App version, started
 
 ```bash
 #!/bin/bash
-# app.sh
+# app.sh (repo root); the Vite app lives in app-code/
 set -e
-cd "$DOMINO_WORKING_DIR/app-code"
-npm ci
+cd "$(dirname "$0")/app-code"
+npm ci                  # needs npm registry egress or a private mirror in .npmrc
 npm run build
 node server.js          # or: npx serve -s dist -l 8888 --no-clipboard
 ```
@@ -61,14 +62,22 @@ on:
   push:
     branches: [uat, main]
 
+permissions:
+  contents: read
+
+# One deploy per branch at a time, so two pushes cannot race createAndStart.
+concurrency:
+  group: domino-deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'uat' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -80,7 +89,7 @@ jobs:
           npm ci
           npm run build
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -101,7 +110,7 @@ jobs:
 
 ## Deploy script
 
-`cicd/deploy_app.py` uses only routes in the 6.3 and Cloud public specs: `GET /api/projects/beta/projects`, `GET /api/apps/v1/apps`, `POST /api/apps/v1/apps`, `POST /api/apps/v1/apps/{appId}/versions/{versionId}/start`, `POST /api/apps/v1/apps/{appId}/versions/createAndStart`, `GET /api/apps/v1/apps/{appId}`. Bodies are documented in [API-APPS.md](./API-APPS.md).
+`cicd/deploy_app.py` uses only routes in the 6.3 and Cloud public specs: `GET /api/projects/beta/projects`, `GET /api/apps/v1/apps`, `POST /api/apps/v1/apps`, `POST /api/apps/v1/apps/{appId}/versions/{versionId}/start`, `POST /api/apps/v1/apps/{appId}/versions/createAndStart`, `GET /api/apps/v1/apps/{appId}/versions/{versionId}`, `GET /api/apps/v1/apps/{appId}`. Bodies are documented in [API-APPS.md](./API-APPS.md). The project lookup pages through every project the token can see (a service account with broad roles sees many), so keep the roles narrow.
 
 ```python
 #!/usr/bin/env python3
@@ -137,9 +146,9 @@ def find_project():
         for project in page["projects"]:
             if project["name"] == PROJECT_NAME and project["ownerUsername"] == PROJECT_OWNER:
                 return project["id"]
-        offset += 100
-        if offset >= page["metadata"]["totalCount"]:
+        if len(page["projects"]) < 100:  # last page; metadata.totalCount is not guaranteed by the spec
             sys.exit(f"project {PROJECT_OWNER}/{PROJECT_NAME} not found")
+        offset += 100
 
 
 def find_app(project_id):
@@ -154,15 +163,17 @@ def version_spec():
     }
 
 
-def wait_until_running(app_id):
+def wait_until_running(app_id, version_id):
+    """Poll the version we started, not the App, so a concurrent start cannot confuse the result."""
     for _ in range(90):
-        app = call("GET", f"/api/apps/v1/apps/{app_id}")
-        status = ((app.get("currentVersion") or {}).get("currentInstance") or {}).get("status")
+        version = call("GET", f"/api/apps/v1/apps/{app_id}/versions/{version_id}")
+        status = (version.get("currentInstance") or {}).get("status")
         print(f"status: {status}")
         if status == "Running":
-            print(f"deployed: {app['url']}")
+            print(f"deployed: {call('GET', f'/api/apps/v1/apps/{app_id}')['url']}")
             return
-        if status in ("Failed", "Error", "Stopped"):
+        if status in ("Succeeded", "Failed", "Error", "Stopped"):
+            # Succeeded means app.sh exited instead of serving; read the instance logs in Domino
             sys.exit(f"deployment ended with status {status}; read the instance logs in Domino")
         time.sleep(10)
     sys.exit("timed out waiting for the App to start")
@@ -181,14 +192,16 @@ def main():
             "discoverable": True,
             "initialVersion": version_spec(),
         })
+        # currentVersion is the newly created version here (6.3 and Cloud); latestVersion is Cloud-only
         version_id = (app.get("latestVersion") or app["currentVersion"])["id"]
         call("POST", f"/api/apps/v1/apps/{app['id']}/versions/{version_id}/start", json={})
     else:
         print(f"creating and starting a new version of {APP_NAME} ({app['id']})")
         result = call("POST", f"/api/apps/v1/apps/{app['id']}/versions/createAndStart", json=version_spec())
+        version_id = result["version"]["id"]
         if result.get("warnings"):
-            sys.exit(f"version {result['version']['id']} saved but not started: {result['warnings']}")
-    wait_until_running(app["id"])
+            sys.exit(f"version {version_id} saved but not started: {result['warnings']}")
+    wait_until_running(app["id"], version_id)
 
 
 if __name__ == "__main__":

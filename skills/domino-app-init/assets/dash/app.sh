@@ -9,8 +9,9 @@ echo "Project: $DOMINO_PROJECT_NAME"
 echo "Owner: $DOMINO_PROJECT_OWNER"
 echo "Started by: $DOMINO_STARTING_USERNAME"
 
-# Project files live in DOMINO_WORKING_DIR (/mnt/code for Git-based projects).
-cd "$DOMINO_WORKING_DIR"
+# Run from the directory that holds this script and app.py (the repo root, or the app
+# subfolder when app.sh lives there).
+cd "$(dirname "$0")"
 
 # Install dash in the Compute Environment rather than here; pip at start slows every launch.
 

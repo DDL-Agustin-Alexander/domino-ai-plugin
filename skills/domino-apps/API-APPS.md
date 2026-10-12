@@ -26,7 +26,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "$DOMINO_API_HOST/api/apps/v1/apps?lim
 | Writes and lifecycle | `/api/apps/v1` | `GET/POST /apps`, `POST /apps/drafts`, `GET/PATCH/DELETE /apps/{appId}`, `POST /apps/{appId}/publish`, `GET/POST /apps/{appId}/versions`, `POST .../versions/createAndStart`, `GET/PATCH .../versions/{versionId}`, `POST .../versions/{versionId}/start`, `.../stop`, `.../liveSync` |
 | Instance reads only | `/api/apps/beta` | `GET /apps/{appId}/versions/{versionId}/instances`, `GET .../instances/{instanceId}/logs`, `GET .../realTimeLogs`, `POST .../instances/{instanceId}/views`, `DELETE .../instances/{instanceId}` |
 
-The beta write routes still work but add nothing over v1; do not build new automation on them. Instance reads exist only on beta. The `python-domino` SDK's `app_publish`, `app_unpublish` and `app_get_status` wrap the Domino Internal API (`/v4/modelProducts/{appId}/start`, `.../stop`, `GET /v4/modelProducts/{appId}`, which may change between Domino versions); prefer the v1 routes below.
+Beta remains the only surface for instance reads, thumbnails (`/apps/{appId}/thumbnail`), access requests (`/apps/{appId}/access/requests`), vanity URL lookup (`/apps/vanityUrls/{vanityUrl}`), the project and publisher filter options, and (Cloud only) `/apps/{appId}/roles`. For create, versions, start and stop use v1; the beta write routes still work but gain nothing. The `python-domino` SDK's `app_publish`, `app_unpublish` and `app_get_status` wrap the Domino Internal API (`/v4/modelProducts/{appId}/start`, `.../stop`, `GET /v4/modelProducts/{appId}`, which may change between Domino versions); prefer the v1 routes below.
 
 ## Publish chain (App created directly, no workspace)
 
@@ -50,22 +50,22 @@ The beta write routes still work but add nothing over v1; do not build new autom
 }
 ```
 
-   - `visibility`: `AUTHENTICATED` ("Anyone in Domino"), `GRANT_BASED` ("Restricted": listed users plus project collaborators), `GRANT_BASED_STRICT`, `PUBLIC`. `discoverable` is the "Make globally discoverable" switch.
+   - `visibility` enum: `AUTHENTICATED`, `GRANT_BASED`, `GRANT_BASED_STRICT`, `PUBLIC`. The spec carries no descriptions; the docs name two sharing modes, "Anyone in Domino" (any Domino account) and "Restricted" (listed users plus project collaborators), which the live records show as `AUTHENTICATED` and `GRANT_BASED`. `GRANT_BASED_STRICT` is undocumented; `PUBLIC` (anonymous viewers) also needs the admin setting described on the app-configuration-settings page. `discoverable` is the "Make globally discoverable" switch.
    - `gitRef.type`: `head`, `commitId`, `branches`, `tags`, `custom`. DFS projects use `content.dfsCommitId` instead.
    - `content` also accepts `environmentRevisionId`, `dataPlaneId` (must match the hardware tier's data plane or the call returns 422), `externalVolumeMountIds`, `netAppVolumeIds`, `mountDatasets`, `extendedIdentityPropagationToAppsEnabled`. `deployment` also accepts `autoscalingSpecification`, `vanityUrl`, `renderIFrame`.
    - IDs: `GET /api/environments/beta/environments` and `GET /api/hardwaretiers/v1/hardwaretiers` (both paginated with `limit`/`offset`).
-   - The response (`AppResponseV1`) carries `id`, `url`, `currentVersion` and `latestVersion`; the version `id` is what the next step needs.
+   - The response (`AppResponseV1`) carries `id`, `url` and `currentVersion` (the most recently started version, or the most recently created one when none has run), so `currentVersion.id` is the version to start. The Cloud spec also returns `latestVersion` (newest version, run or not); the 6.3 spec does not, so code that must find the newest version on both targets lists `GET /api/apps/v1/apps/{appId}/versions` (`items[]` with `id`, `versionNumber`, `createdAt`) and takes the highest `versionNumber`.
 
 2. **Start it**: `POST /api/apps/v1/apps/{appId}/versions/{versionId}/start` with body `{}`, or `{"deployment": {"hardwareTierId": "..."}}` to override the tier or autoscaling for this launch. An App has one running instance at a time.
 3. **Ship a new build later**: `POST /api/apps/v1/apps/{appId}/versions/createAndStart` with the same `content` and `deployment` shape creates a version and starts it, stopping the running version first. The response has `version`, `instance` and `warnings`; a non-empty `warnings` means the version was saved but the start failed, so retry with the `start` route.
 4. **Stop**: `POST /api/apps/v1/apps/{appId}/versions/{versionId}/stop` (no body).
 5. **Find the App again**: `GET /api/apps/v1/apps?projectId=<id>&name=<name>`. `name` is a substring match, so compare `items[].name` exactly. Other filters: `ownerId`, `status`, `publisherId`, `tagIds`, `entryPoint`, `draftsOnly`, `includeTemplateApps`; sort with `sortField` (`name`, `lastUpdated`, `status`, `views`, `lastViewed`) and `sortOrder`.
 
-Deploy status: `GET /api/apps/v1/apps/{appId}` and read `currentVersion.currentInstance.status` (values include `Queued`, `Pending`, `Preparing`, `Building`, `Pulling`, `Running`, `Stopping`, `Stopped`, `Failed`, `Error`). `url` is the viewer URL.
+Deploy status: `GET /api/apps/v1/apps/{appId}/versions/{versionId}` and read `currentInstance.status` (values include `Queued`, `Pending`, `Preparing`, `Building`, `Pulling`, `Running`, `Stopping`, `Stopped`, `Succeeded`, `Failed`, `Error`; `Running` is the serving state, `Succeeded` means the entry point exited). `GET /api/apps/v1/apps/{appId}` gives the viewer `url`.
 
 ## Draft Apps (workspace flow)
 
-`POST /api/apps/v1/apps/drafts` (`workspaceId` required) creates or returns the Draft App bound to a workspace; App Preview instances run from it. `POST /api/apps/v1/apps/{draftAppId}/publish` promotes the draft's last-run version: omit `targetAppId` to publish as a new App (`appOverrides` sets name, visibility, vanity URL and so on), or set `targetAppId` to add a version to an existing App (entry point and configuration type must match or the call returns 422). `start: true` deploys in the same call; `startOverrides.deployment` carries hardware tier, autoscaling, vanity URL and iframe overrides. `publish` applies to drafts only; Apps created with step 1 get new versions through `versions` or `createAndStart`.
+Drafts, App Preview and versioning depend on the `EnableAppsSDLC` feature flag (on by default; an admin who disables it gets the legacy one-step Publish flow). `POST /api/apps/v1/apps/drafts` (`workspaceId` required) creates or returns the Draft App bound to a workspace; App Preview instances run from it. `POST /api/apps/v1/apps/{draftAppId}/publish` promotes the draft's last-run version: omit `targetAppId` to publish as a new App (`appOverrides` sets name, visibility, vanity URL and so on), or set `targetAppId` to add a version to an existing App (entry point and configuration type must match or the call returns 422). `start: true` deploys in the same call; `startOverrides.deployment` carries hardware tier, autoscaling, vanity URL and iframe overrides. `publish` applies to drafts only; Apps created with step 1 get new versions through `versions` or `createAndStart`.
 
 ## Logs
 

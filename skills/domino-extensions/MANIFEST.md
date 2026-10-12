@@ -18,7 +18,7 @@ Domino-built Extensions (AutoML Studio, Clinical Data Explorer, Auto Model Docum
 | `app` | `computeEnvironment` (`type` `standard`, or `custom` with `customEnvironment.name`, `dockerfilePath`, `baseImage`, `autoCompatibleWithDomino`, `visibility`, `buildArgs`), `appName`, `appDescription`, `appVersionDescription`, `vanityUrl`, `entryPoint`, `visibility`, `enableDeepLinking`, `discoverable`, `mountDatasets`, `mountNetAppVolumes`, `externalVolumeMounts`, `hardwareTierIdSuggestion`, `autoscalingSpec` |
 | `extension` | `name`, `description`, `enabled`, `uiMountPointTypeConfigs` (same shape as the Extensions API; `urlConfig.route` may be `null`) |
 
-Copy from a real manifest rather than inventing one (`extension_manifest.json` at each repository root):
+Copy from a real manifest rather than inventing one (`extension_manifest.json` at the repository root of each release tag; some repositories keep only `extension_versions.json` on the default branch):
 
 - https://github.com/dominodatalab/AutoML_Extension
 - https://github.com/dominodatalab/clinical-data-explorer

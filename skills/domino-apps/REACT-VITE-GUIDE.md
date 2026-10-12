@@ -5,7 +5,7 @@ How a Vite-built React app is served behind Domino's reverse proxy, and how it c
 ## What the proxy does
 
 ```
-Viewer opens:  the App's `url` (for example https://<domino>/apps/<vanity>/ ; the path depends on the deployment)
+Viewer opens:  the App's `url` field (an apps hostname or an /apps/<vanity>/ path; both end in a prefix)
 Proxy:         authenticates the viewer, strips the prefix, forwards to the container on port 8888,
                adds the `domino-username` header (and `Authorization` when identity propagation is on)
 Container:     GET /              -> index.html
@@ -25,14 +25,13 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base: './',                       // relative asset URLs; required behind the proxy
-  server:  { host: '0.0.0.0', port: 8888, strictPort: true },
-  preview: { host: '0.0.0.0', port: 8888, strictPort: true },
-  build:   { outDir: 'dist', assetsDir: 'assets' },
+  base: './',                       // relative asset URLs in the build; required behind the proxy
+  server: { host: '0.0.0.0', port: 8888, strictPort: true },   // laptop development only
+  build:  { outDir: 'dist', assetsDir: 'assets' },
 })
 ```
 
-`server` and `preview` matter only when Vite itself serves the app; a published App serves `dist/` as described below.
+`server` matters only for `npm run dev` on a laptop. Neither the dev server nor `vite preview` is a way to serve the App on Domino: Vite ignores a relative `base` in dev mode and its host check rejects proxied hostnames, so a published App serves `dist/` as described below and in-Domino testing goes through App Preview.
 
 ## Router
 
@@ -60,13 +59,13 @@ Routes appear as `.../apps/<vanity>/#/dashboard`.
 #!/bin/bash
 # app.sh
 set -e
-cd "$DOMINO_WORKING_DIR"
+cd "$(dirname "$0")"       # run next to package.json, wherever app.sh lives in the repo
 npm ci
 npm run build
 npx serve -s dist -l 8888 --no-clipboard
 ```
 
-Add `serve` to `devDependencies` so `npm ci` installs it and `npx` needs no network access at start. `-s` rewrites unknown paths to `index.html`: harmless with `HashRouter`, required with `BrowserRouter`.
+Add `serve` to `devDependencies` so `npm ci` installs it and `npx` needs no network access at start. `-s` rewrites unknown paths to `index.html`: harmless with `HashRouter`, required with `BrowserRouter`. `npm ci` itself needs egress to the npm registry or a private mirror (`.npmrc`); on an air-gapped site commit `dist/` on a deploy branch and reduce `app.sh` to the serve step.
 
 ### Static build plus a backend (the app calls a model endpoint or the Domino API)
 
@@ -89,16 +88,24 @@ app.post('/api/predict', async (req, res) => {
   const token = process.env.MODEL_API_TOKEN
   if (!url || !token) return res.status(500).json({ error: 'MODEL_API_URL or MODEL_API_TOKEN is not set' })
   const basic = Buffer.from(token + ':' + token).toString('base64')
-  const upstream = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Basic ' + basic },
-    body: JSON.stringify({ data: req.body }),
-  })
-  res.status(upstream.status).type('application/json').send(await upstream.text())
+  try {
+    const upstream = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Basic ' + basic },
+      body: JSON.stringify({ data: req.body }),
+    })
+    res.status(upstream.status).type('application/json').send(await upstream.text())
+  } catch (err) {
+    console.error('model endpoint call failed:', err)
+    res.status(502).json({ error: 'model endpoint call failed' })
+  }
 })
 
 app.use(express.static(dist))
-app.use((req, res) => res.sendFile(path.join(dist, 'index.html')))   // SPA fallback
+app.use((req, res) => {                       // SPA fallback for extension-less paths only
+  if (path.extname(req.path)) return res.status(404).end()   // a missing asset stays a 404
+  res.sendFile(path.join(dist, 'index.html'))
+})
 
 app.listen(8888, '0.0.0.0', () => console.log('listening on 0.0.0.0:8888'))
 ```
@@ -137,7 +144,7 @@ A changed variable takes effect on the next start of the App. `.env.example` doc
 
 Use **App Preview**: open the App Preview tab in the workspace, set the App file (`app.sh`), Compute Environment and Hardware Tier, and start it. Preview runs the committed code in a real App pod on port 8888 with the production proxy, `DOMINO_RUN_HOST_PATH` and identity headers, at `/preview/<draftAppId>` (author only). Commit, and live sync restarts the container with the new commit. Publish from the same workspace with **Publish App**.
 
-A Vite dev server inside the workspace cannot bind port 8888 (the workspace IDE, Jupyter for example, owns the single workspace port). Start it on another port (`npm run dev -- --port 8890`) and open it through Jupyter Server Proxy at `https://<domino>/<owner>/<project>/notebookSession/<run-id>/proxy/8890/`. That path does not reproduce the App proxy prefix or headers; only App Preview does.
+Do not try to run the Vite dev server inside the workspace instead: the workspace IDE owns port 8888, Vite serves `/@vite/client` and `/src/main.jsx` from the domain root in dev mode (it ignores a relative `base`), and its host check rejects proxied hostnames, so the page comes up blank behind Jupyter Server Proxy. Keep `npm run dev` for a laptop and App Preview for Domino.
 
 ## Project layout
 
@@ -152,7 +159,7 @@ my-react-app/
   vite.config.js
   package.json       # "type": "module"; express in dependencies; serve in devDependencies if used
   server.js
-  app.sh
+  app.sh             # starts with cd "$(dirname "$0")", so the folder can sit anywhere in the repo
   .env.example
   .gitignore
 ```

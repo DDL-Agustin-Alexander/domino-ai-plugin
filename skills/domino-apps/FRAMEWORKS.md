@@ -24,12 +24,13 @@ def predict(features: dict) -> dict:
 
 ## Streamlit
 
-Streamlit defaults to port 8501; override it in `app.sh`. Domino's published example also disables CORS and XSRF protection so the websocket works behind the proxy.
+Streamlit defaults to port 8501; pass the port and address explicitly in `app.sh`. Domino's published example also writes a `config.toml` that sets `enableCORS = false` and `enableXsrfProtection = false`; keep those unless the deployment is known to work with the defaults (XSRF protection off weakens file-upload protection).
 
 ```bash
 #!/bin/bash
 # app.sh
 set -e
+cd "$(dirname "$0")"
 mkdir -p ~/.streamlit
 cat > ~/.streamlit/config.toml << 'EOF'
 [server]
@@ -42,10 +43,10 @@ enableXsrfProtection = false
 [browser]
 gatherUsageStats = false
 EOF
-streamlit run app.py
+streamlit run app.py --server.port 8888 --server.address 0.0.0.0
 ```
 
-The equivalent one-liner: `streamlit run app.py --server.port 8888 --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false`.
+The equivalent one-liner without a config file: `streamlit run app.py --server.port 8888 --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false`.
 
 ```python
 # app.py
@@ -75,7 +76,7 @@ Dash needs both prefixes: routes are served at `/` inside the container (the pro
 ```python
 # app.py
 import os
-from dash import Dash, Input, Output, callback, dcc, html
+from dash import Dash, Input, Output, State, callback, dcc, html
 from predict import predict
 
 app = Dash(
@@ -96,9 +97,9 @@ app.layout = html.Div([
 
 @callback(
     Output("prediction-output", "children"),
-    Input("predict-btn", "n_clicks"),
-    Input("feature1", "value"),
-    Input("feature2", "value"),
+    Input("predict-btn", "n_clicks"),      # only the button triggers the endpoint call
+    State("feature1", "value"),            # State: read on click, no call on every keystroke
+    State("feature2", "value"),
     prevent_initial_call=True,
 )
 def run_prediction(n_clicks, feature1, feature2):
@@ -112,7 +113,7 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8888, debug=False)
 ```
 
-`app.sh` is `python app.py`. Files in `assets/` are served automatically under the same prefix. Dash receives the `domino-username` header through Flask's `request.headers`.
+`app.sh` is `cd "$(dirname "$0")" && python app.py`. Files in `assets/` are served automatically under the same prefix. Dash receives the `domino-username` header through Flask's `request.headers`.
 
 ## Flask
 

@@ -17,7 +17,7 @@ streamlit run app.py --server.port 8888 --server.address 0.0.0.0
 python -m flask run --host=0.0.0.0 --port=8888
 ```
 
-Other causes, visible in the logs: `app.sh` not executable (`git update-index --chmod=+x app.sh`), wrong working directory (`cd "$DOMINO_WORKING_DIR"`), a dependency missing from the Compute Environment, `npm ci` without a `package-lock.json`.
+Other causes, visible in the logs: `app.sh` not executable (`git update-index --chmod=+x app.sh`), wrong working directory (start `app.sh` with `cd "$(dirname "$0")"` so it runs next to `package.json` or `app.py`), a dependency missing from the Compute Environment, `npm ci` without a `package-lock.json`.
 
 ## 2. 404 on CSS and JS files
 
@@ -68,9 +68,9 @@ Vite exposes only variables prefixed `VITE_`, and only those present at **build*
 ## 8. Slow start
 
 - `npm ci` with a committed `package-lock.json`, not `npm install`.
-- Add `serve` (or `express`) to `package.json` so nothing is fetched at start.
-- Put Node and Python packages in the Compute Environment, not in `app.sh`.
-- Build in CI and deploy a prebuilt `dist/` if the build itself is the bottleneck.
+- Add `serve` (or `express`) to `package.json` so `npx` fetches nothing at start.
+- Put Python packages in the Compute Environment, not in `app.sh`.
+- `npm ci` itself needs egress to the npm registry (or a private mirror configured in `.npmrc`). On an air-gapped site, or if the build is the bottleneck, build in CI, commit `dist/` on a deploy branch, point the App's version at that branch, and reduce `app.sh` to the serve step.
 
 ## 9. Streamlit websocket or "connection error"
 
@@ -99,7 +99,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   "$DOMINO_API_HOST/api/apps/beta/apps/$APP_ID/versions/$VERSION_ID/instances/$INSTANCE_ID/logs?logType=stderr"
 ```
 
-`APP_ID` and `VERSION_ID` come from `GET /api/apps/v1/apps/{appId}` (`currentVersion.id`). The App details page offers the same logs and a support bundle (`execution.log`, `executor.log`, Kubernetes events, nginx logs).
+`APP_ID` comes from `GET /api/apps/v1/apps?projectId=$DOMINO_PROJECT_ID&name=<app name>` (`items[].id`) and `VERSION_ID` from that record's `currentVersion.id`. The App details page offers the same logs and a support bundle (`execution.log`, `executor.log`, Kubernetes events, nginx logs).
 
 Local reproduction of the container:
 

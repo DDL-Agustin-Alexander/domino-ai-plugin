@@ -9,10 +9,13 @@ echo "Project: $DOMINO_PROJECT_NAME"
 echo "Owner: $DOMINO_PROJECT_OWNER"
 echo "Started by: $DOMINO_STARTING_USERNAME"
 
-# Project files live in DOMINO_WORKING_DIR (/mnt/code for Git-based projects).
-cd "$DOMINO_WORKING_DIR"
+# Run from the directory that holds this script and package.json (the repo root, or the app
+# subfolder when app.sh lives there).
+cd "$(dirname "$0")"
 
-# Deterministic install from package-lock.json (requires Node in the Compute Environment).
+# Deterministic install from package-lock.json (requires Node in the Compute Environment and
+# egress to the npm registry or a private mirror configured in .npmrc; on an air-gapped site
+# commit the built dist/ on a deploy branch and skip the install and build steps).
 echo "Installing dependencies..."
 npm ci
 

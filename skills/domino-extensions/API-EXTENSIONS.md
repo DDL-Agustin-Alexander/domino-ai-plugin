@@ -21,7 +21,7 @@ Routes under `/api/extensions/beta/` exist, with identical bodies, in both publi
 
 ## Create an Extension
 
-`ExtensionCreationRequest` requires `name`, `enabled`, `appId`, `appVersionId` and `uiMountPointTypeConfigs`; there is no `description` on create (set it with `PATCH`). Get `appId` and the version id from `GET /api/apps/v1/apps?projectId=...&name=...` (`currentVersion.id` for the deployed version, `latestVersion.id` for the newest).
+`ExtensionCreationRequest` requires `name`, `enabled`, `appId`, `appVersionId` and `uiMountPointTypeConfigs`; `description` is optional. Get `appId` from `GET /api/apps/v1/apps?projectId=...&name=...` and the version id from `currentVersion.id` (the most recently started version, or the most recently created one when none has run). The Cloud spec also returns `latestVersion.id` (newest version, run or not); the 6.3 spec does not, so on 6.3 list `GET /api/apps/v1/apps/{appId}/versions` (`items[]` with `id`, `versionNumber`, `createdAt`) and take the highest `versionNumber`.
 
 ```python
 import os
@@ -37,6 +37,7 @@ else:
 
 body = {
     "name": "My Extension",
+    "description": "What the Extension does",   # optional
     "enabled": True,
     "appId": "<appId>",
     "appVersionId": "<appVersionId>",
@@ -61,7 +62,7 @@ Mount config shapes (both specs): every config has `enabled` (required) and `url
 
 ## Handle the context in the App
 
-Each mount point passes a fixed set of query parameters to the App's root route: `projectSidebar` passes `projectId`; `dataset` passes `datasetId`; `datasetFileContext` passes `datasetId`, `datasetSnapshotId` and `filePath`; `modelDetails` passes `modelId` and `modelVersionId`; `adminPanel` passes none; the NetApp mounts pass `netAppVolumeId`, `netAppVolumeSnapshotId` and `filePath`. Validate what you need and fail clearly, because a user can open the App URL without them.
+The parameters an App receives are the ones its `urlConfig.contextualQueryParams` lists, drawn from the spec enum. Typical configurations: `projectSidebar` passes `projectId`; `dataset` passes `datasetId`; `datasetFileContext` passes `datasetId`, `datasetSnapshotId` and `filePath`; `modelDetails` passes `modelId` and `modelVersionId`; `adminPanel` passes none; the NetApp mounts pass `netAppVolumeId`, `netAppVolumeSnapshotId` and `filePath`. Note that the create-manage-extensions docs page calls the file parameter `datasetFilePath`, but the spec enum and Domino's own clinical-data-explorer read `filePath`; that extension also reads a `mountPointType` parameter to learn where it was opened from. Validate what you need and fail clearly, because a user can open the App URL without any parameters.
 
 ```python
 # Flask App mounted on Datasets: read the context, call Domino as the viewer

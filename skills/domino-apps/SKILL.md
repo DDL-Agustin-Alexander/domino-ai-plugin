@@ -37,9 +37,8 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base: './',
-  server: { host: '0.0.0.0', port: 8888, strictPort: true },
-  preview: { host: '0.0.0.0', port: 8888, strictPort: true },
+  base: './',                                                  // relative asset URLs in the build
+  server: { host: '0.0.0.0', port: 8888, strictPort: true },   // laptop dev only
 })
 ```
 

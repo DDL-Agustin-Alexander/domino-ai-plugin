@@ -31,7 +31,7 @@ If the target directory already contains an app, stop and ask before overwriting
    | `dash` | `assets/dash/app.sh`, and `assets/dash/app.py.template` saved as `app.py` |
    | `flask`, `gradio`, `fastapi` | No template; write the files from the snippets below |
 
-2. Make `app.sh` executable (`chmod +x app.sh`) and commit the mode (`git update-index --chmod=+x app.sh`).
+2. Make `app.sh` executable (`chmod +x app.sh`) and commit the mode (`git update-index --chmod=+x app.sh`). The templates start with `cd "$(dirname "$0")"`, so `app.sh` works from the repo root or from the app subfolder; the user selects it as the App file either way.
 3. Keep these invariants in every generated file:
    - Bind `0.0.0.0` on port `8888`. Domino requires both; an App on any other address or port fails to start.
    - Where the framework needs its base path, read `DOMINO_RUN_HOST_PATH` (Dash `requests_pathname_prefix`, Gradio `root_path`). Never build the prefix from project owner, name and run ID.
@@ -74,6 +74,7 @@ if __name__ == "__main__":
 ```bash
 #!/bin/bash
 set -e
+cd "$(dirname "$0")"
 python app.py
 ```
 
@@ -105,6 +106,7 @@ def index():
 ```bash
 #!/bin/bash
 set -e
+cd "$(dirname "$0")"
 uvicorn app:app --host 0.0.0.0 --port 8888
 ```
 

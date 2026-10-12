@@ -26,7 +26,7 @@ Include in the HTML `<head>`. React 19 ships no UMD build, so the no-build appro
 <script src="https://code.highcharts.com/highcharts.js"></script>
 ```
 
-If the deployment blocks external CDNs or fonts, vendor the files under `static/` or ask an admin to allowlist them (https://docs.domino.ai/cloud/platform-capabilities/features/apps/authentication-and-identity/whitelist-resources).
+If the deployment blocks external CDNs or fonts, vendor the files under `static/` or ask an admin to allowlist them (https://docs.domino.ai/cloud/platform-capabilities/features/apps/authentication-and-identity/whitelist-resources). Highcharts is loaded unpinned from its own CDN and needs a commercial licence for business use; pin a version and confirm the licence before shipping.
 
 ```javascript
 const { ConfigProvider, Button, Table, Modal, Select, Input, Form, Space, Card, Tag, Alert } = antd;
@@ -97,7 +97,7 @@ Domino requires `0.0.0.0:8888`. Reference static files and API routes relatively
 
 ## Other frameworks
 
-- **Streamlit**: add the tokens to the `config.toml` that `app.sh` writes: `[theme] primaryColor = "#543FDE"`, `backgroundColor = "#FFFFFF"`, `secondaryBackgroundColor = "#FAFAFA"`, `textColor = "#2E2E38"`, `font = "sans serif"`.
+- **Streamlit**: add the tokens to the `config.toml` that `app.sh` writes: `[theme] primaryColor = "#543FDE"`, `backgroundColor = "#FFFFFF"`, `secondaryBackgroundColor = "#FAFAFA"`, `textColor = "#2E2E38"`, `font = "sans-serif"`.
 - **Dash**: Dash serves `assets/*.css` automatically; define the tokens as CSS custom properties there (`--domino-primary: #543FDE;`) and set `font-family: Inter, Lato, "Helvetica Neue", Helvetica, Arial, sans-serif` on `body`.
 - The UX rules below apply to every framework.
 

@@ -32,9 +32,13 @@ app.post('/api/predict', async (req, res) => {
   }
 })
 
-// Static files from the Vite build, then an SPA fallback (harmless with HashRouter).
+// Static files from the Vite build, then an SPA fallback for extension-less paths only, so a
+// missing asset still returns 404 (harmless with HashRouter; required with BrowserRouter).
 app.use(express.static(dist))
-app.use((req, res) => res.sendFile(path.join(dist, 'index.html')))
+app.use((req, res) => {
+  if (path.extname(req.path)) return res.status(404).end()
+  res.sendFile(path.join(dist, 'index.html'))
+})
 
 // Domino Apps must listen on 0.0.0.0:8888.
 app.listen(8888, '0.0.0.0', () => console.log('listening on 0.0.0.0:8888'))

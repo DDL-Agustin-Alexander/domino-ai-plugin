@@ -7,19 +7,14 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
 
-  // Required: relative asset URLs. The default '/' emits /assets/... which 404s behind the proxy.
+  // Required: relative asset URLs in the production build. The default '/' emits /assets/...
+  // which 404s behind the proxy. (Vite ignores a relative base in the dev server.)
   base: './',
 
-  // Used by `vite` (dev server) and `vite preview` only; the published App is served by server.js.
-  // Domino Apps must listen on 0.0.0.0:8888. Inside a workspace that port belongs to the IDE,
-  // so run the dev server with `npm run dev -- --port 8890` and open it through /proxy/8890/.
+  // Local development on a laptop only (`npm run dev`). Inside Domino, test with App Preview,
+  // which runs app.sh (build + server.js) in a real App runtime; the published App never uses
+  // the Vite dev server or `vite preview`.
   server: {
-    host: '0.0.0.0',
-    port: 8888,
-    strictPort: true,
-  },
-
-  preview: {
     host: '0.0.0.0',
     port: 8888,
     strictPort: true,

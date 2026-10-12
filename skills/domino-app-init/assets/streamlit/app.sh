@@ -10,18 +10,21 @@ echo "Project: $DOMINO_PROJECT_NAME"
 echo "Owner: $DOMINO_PROJECT_OWNER"
 echo "Started by: $DOMINO_STARTING_USERNAME"
 
-# Project files live in DOMINO_WORKING_DIR (/mnt/code for Git-based projects).
-cd "$DOMINO_WORKING_DIR"
+# Run from the directory that holds this script and app.py (the repo root, or the app
+# subfolder when app.sh lives there).
+cd "$(dirname "$0")"
 
 # Install streamlit in the Compute Environment rather than here; pip at start slows every launch.
 
+# Domino's published Streamlit example writes this config. enableCORS and
+# enableXsrfProtection are set to false there; keep them unless your deployment is known to
+# work with the defaults (XSRF protection off weakens file-upload protection).
 mkdir -p ~/.streamlit
 cat > ~/.streamlit/config.toml << 'EOF'
 [server]
 port = 8888
 address = "0.0.0.0"
 headless = true
-# Required behind Domino's proxy so the websocket and uploads work.
 enableCORS = false
 enableXsrfProtection = false
 
@@ -29,4 +32,5 @@ enableXsrfProtection = false
 gatherUsageStats = false
 EOF
 
-streamlit run app.py
+# Port and address are also passed explicitly so the binding does not depend on the config file.
+streamlit run app.py --server.port 8888 --server.address 0.0.0.0
