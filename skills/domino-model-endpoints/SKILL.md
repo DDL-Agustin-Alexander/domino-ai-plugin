@@ -14,8 +14,8 @@ A Domino endpoint (**Model API** in the API) wraps a function from your project 
 
 | Need | Skill |
 |------|-------|
-| UI publish, the predict function, calling the endpoint, instances, health, logs | this skill |
-| Automate the lifecycle over REST: create, new version, list, archive, logs, registered models | `domino-model-serving` |
+| UI publish, predict function, calling, instances, health, logs | this skill |
+| REST lifecycle: create, version, list, delete, logs, registered models | `domino-model-serving` |
 | Drift, model quality, prediction capture, scheduled checks | `domino-model-monitoring` |
 | Score a file, table or Dataset with a Job instead of an endpoint; export the model out of Domino (the endpoint image to your own registry or Kubernetes, NVIDIA Fleet Command, a Snowflake UDF, SageMaker) | [domino-model-delivery](../domino-model-delivery/SKILL.md) |
 
@@ -32,7 +32,7 @@ A Domino endpoint (**Model API** in the API) wraps a function from your project 
 - The environment is chosen per endpoint in the publish form (`environmentId` is required by the API). Python endpoints need `uwsgi`, `flask`, `six` and `prometheus-client` in that environment; async endpoints also need `seldon-core`. Domino Standard Environments ship them (the minimal image lacks `seldon-core` and `mlflow`).
 - Endpoint hosts do **not** read `requirements.txt` or run environment setup scripts; put packages in the environment's Dockerfile instructions. Exception: a registry model's MLflow-inferred `requirements.txt` is installed at build.
 - Project environment variables are not inherited; set endpoint variables under its **Settings** and restart running versions after changes.
-- The image is built from the Project's **committed** files, never the Workspace disk: DFS Project, **File Changes** > **Sync to Domino** first; Git-based, commit and push the code and sync the artifacts. Include every file the function loads (`.py`, model artifacts, lookups); an unsynced file crash-loops the container at start with `FileNotFoundError` ("Sync or commit first" in DEPLOY-ENDPOINT.md). Files mount at `/mnt/<username>/<project_name>` (use `DOMINO_WORKING_DIR`); `.modelignore` excludes files; images over 500 MB fail, so exclude large artifacts. New files need a new version.
+- The image is built from the Project's **committed** files, never the Workspace disk: DFS Project, **File Changes** > **Sync to Domino** first; Git-based, commit and push the code and sync the artifacts. Include every file the function loads (`.py`, model artifacts, lookups) and pin that commit (`version.commitId`): the head lags an upload by seconds, and a missing file crash-loops the container at start with `FileNotFoundError` ("Sync or commit first" in DEPLOY-ENDPOINT.md). Files mount at `/mnt/<username>/<project_name>` (use `DOMINO_WORKING_DIR`); `.modelignore` excludes files; images over 500 MB fail, so exclude large artifacts. New files need a new version.
 - The endpoint runs as uid/gid 12574; the image build runs as the Dockerfile's last `USER`.
 
 ## Quick start
@@ -49,9 +49,9 @@ def predict(sepal_length, sepal_width, petal_length, petal_width):
 
 1. Sync or commit `model.py` and `model.pkl` (packaging rules above), then in the project go to **Deployments** > **Endpoints** > **Create Domino Endpoint**.
 2. Enter a name and description, the file (`model.py`) and the function (`predict`).
-3. Pick the compute environment, the instance count and the endpoint hardware tier (see SCALING.md).
+3. Pick the compute environment, instance count and endpoint hardware tier (SCALING.md).
 4. Under **Request Type** choose **Sync** (real-time) or **Async** (long-running; payloads passed by reference).
-5. Publish, wait for **Running**, then confirm health: a successful **Tester** request, or instance logs free of `Traceback` and `no app loaded` (a crash-looping container also reports `Running`). The **Overview** tab shows the URL, model ID and code samples.
+5. Publish, wait for **Running**, then confirm health: a successful **Tester** request, or the model container's log line `WSGI app 0 (mountpoint='') ready` (a crash-looping container also reports `Running`). The **Overview** tab shows the URL, model ID and code samples.
 
 ## Calling an endpoint
 
@@ -67,7 +67,7 @@ curl -s -u "$MODEL_ACCESS_TOKEN:$MODEL_ACCESS_TOKEN" -H "Content-Type: applicati
 
 Async endpoints take `Authorization: Bearer $MODEL_ACCESS_TOKEN` at `$DOMINO_URL/api/modelApis/async/v1/$MODEL_ID` and return an `asyncPredictionId` to poll (DEPLOY-ENDPOINT.md).
 
-These values come from the user, not from an API. `DOMINO_URL` is the deployment's external URL and `MODEL_ID` its id (Overview tab, "Calling your endpoint"); the token is created and shown only in the UI (**Settings** > **Invocation**). `DOMINO_API_HOST` and `DOMINO_API_PROXY` do not route `/models/...`, no run variable holds the external URL, the API lists token ids but never values, and your own Domino token gets 401 even on a Public endpoint (visibility and prediction authorization are separate). Ask the user for the three values (stored as project or user environment variables of those names), or for the **Tester** tab, or to set **Unrestricted**, after which only the URL is needed. Never put the token in browser code.
+These values come from the user, not from an API. `DOMINO_URL` is the deployment's external URL and `MODEL_ID` its id (Overview tab, "Calling your endpoint"); the token is created and shown only in the UI (**Settings** > **Invocation**). `DOMINO_API_HOST` and `DOMINO_API_PROXY` do not route `/models/...`, no run variable holds the external URL, the API lists token ids but never values, and your own Domino token gets 401 even on a Public endpoint (visibility and authorization are separate). Ask the user for the three values (as project or user environment variables), or for the **Tester** tab, or to set **Unrestricted**, after which only the URL is needed. Never put the token in browser code.
 
 ## Versions and routing
 
@@ -80,9 +80,9 @@ Each publish creates a version. **Basic** routing (default) sends `/models/<mode
 | Build fails on an import | The package must be in the environment Dockerfile, not `requirements.txt` |
 | `IOException ... HTTP response code: 500` in the build log | Image over 500 MB; add large files to `.modelignore` |
 | 401 on predictions | Sync needs Basic auth with the endpoint token; async needs Bearer; a user token or PAT never works |
-| `Running` but 503, or `Running` / `Starting` alternating | Crash loop; instance logs show `FileNotFoundError` ... `no app loaded`: a needed file was not in the commit. Sync, publish a new version |
+| `Running` but 503, or `Running` / `Starting` alternating | Crash loop; model-container logs (no `tail`, `maxResults=3000`) show `FileNotFoundError` ... `no app loaded`. Sync, pin the commit, republish |
 | 504 on slow requests | Request timeout (default 60 s) under **Settings** > **Advanced**; restart after changing |
-| Version not Running | Build, export and instance logs in the version's **Logs** column; health-check settings |
+| Version not Running | Build, export and instance logs (**Logs** column); health-check settings |
 
 ## Documentation
 
