@@ -88,7 +88,7 @@ Ints and floats arrive as text (`int(Path(...).read_text())`); `bool` as `True` 
 | `ImportedGitRepoOverrides` | list of `ImportedGitRepoOverride(Name=, Ref=GitRef(...))` | Pin imported repositories per task (Git-based projects) |
 | `HardwareTierId` | str | Tier **id**, not name (for example `small-k8s`); ignored for the cache version |
 | `EnvironmentId` | str | Environment **id**, not name or revision |
-| `EnvironmentRevisionSpec` | `EnvironmentRevisionSpecification(EnvironmentRevisionType.SomeRevision, "<revisionId>")` | Pin a revision |
+| `EnvironmentRevisionSpec` | `EnvironmentRevisionSpecification(EnvironmentRevisionType.SomeRevision, "<revisionId>")` | Pin a revision; the second argument is the revision **id** (a 24-character id), not the revision number shown in the UI |
 | `ComputeClusterProperties` | `ClusterProperties(ClusterType=ComputeClusterType.Dask, ComputeEnvironmentId=, WorkerHardwareTierId=, WorkerCount=, MaxWorkerCount=, WorkerStorageGiB=, MasterHardwareTierId=, ComputeEnvironmentRevisionSpec=, ExtraConfigs=)` | On-demand cluster for the task |
 | `VolumeSizeGiB` | float | Disk; ignored for the cache version |
 | `DatasetSnapshots` | list of `DatasetSnapshot(Id=, Version=)` | Snapshot version 1 or later only |
@@ -96,17 +96,21 @@ Ints and floats arrive as text (`int(Path(...).read_text())`); `bool` as `True` 
 | `ExternalVolumeMountIds` | list of str | External data volumes |
 | `cache_ignore_vars` | tuple of str | Config arguments to leave out of the cache version |
 
-`GitRef`, `ImportedGitRepoOverride`, `EnvironmentRevisionSpecification`, `EnvironmentRevisionType`, `DatasetSnapshot`, `NetAppVolumeSnapshot` and `ClusterProperties` ship with `flytekitplugins.domino`; list the module in your environment to confirm the import path (`python -c "import flytekitplugins.domino.task as t; print([n for n in dir(t) if n[0].isupper()])"`).
+`GitRef(Type=, Value=)`, `ImportedGitRepoOverride`, `EnvironmentRevisionSpecification`, `EnvironmentRevisionType`, `DatasetSnapshot(Id=, Version=)`, `NetAppVolumeSnapshot(Id=, Version=)` and `ClusterProperties` are all importable from `flytekitplugins.domino.task`.
+
+### Complete config or `use_latest`
+
+`use_latest` on `DominoJobTask` and `use_project_defaults_for_omitted` on the helper both default to **False**. With False, the constructor raises `DominoFlyteException: The following fields are not defined: [...]` unless every one of these is set: `CommitId`, `HardwareTierId`, `EnvironmentId`, `EnvironmentRevisionSpec`, `VolumeSizeGiB`, `DatasetSnapshots`, `NetAppVolumeSnapshots`, `ExternalVolumeMountIds` (empty lists count as set) and, in a Git-based project, a `MainRepoGitRef` that is commit-pinned (or has `ResolvedMainRepoGitRef`, or `UseLatestGitRef=True`); a floating branch ref with `use_latest=False` raises. A `ComputeClusterProperties`, if given, needs `ComputeEnvironmentRevisionSpec` and `MasterHardwareTierId` (MPI excepted). With True, the omitted fields are read from the project defaults at launch. To see what the defaults resolve to, build the config in a Workspace and call `DominoJobConfig(Command="python train.py").resolve_job_properties()`; it prints the resolved values, which you can then paste in as pinned settings.
 
 ## DominoJobTask
 
-`name` (required), `domino_job_config` (required), `inputs` (dict of name to type), `outputs` (dict of name to type), `use_latest` (fill omitted config from project defaults), `cache` (bool or Flyte `Cache`), `cache_version`, `cache_ignore_input_vars`, `retries`, `timeout` (`timedelta` or seconds).
+`name` (required), `domino_job_config` (required), `use_latest` (default False; see above), `inputs` (dict of name to type), `outputs` (dict of name to type), `cache` (bool or Flyte `Cache`), `cache_version`, `cache_ignore_input_vars`, `retries` (default 0), `timeout` (`timedelta` or seconds; default 3 hours).
 
 ## run_domino_job_task
 
-`flyte_task_name`, `job_title`, `command`, `inputs=[Input(...)]`, `output_specs=[Output(...)]`, `use_project_defaults_for_omitted`, `environment_name` or `environment_id` (+ `environment_revision_id`), `hardware_tier_name` or `hardware_tier_id`, `dfs_repo_commit_id`, `main_git_repo_ref`, `imported_git_repo_overrides`, `volume_size_gib`, `dataset_snapshots`, `netapp_volume_snapshots`, `external_data_volume_ids`, `cache`, `cache_version`, `cache_ignore_input_vars`, `retries`, `timeout`. Prefer ids over names: renaming an environment or tier would otherwise change what the flow resolves to.
+`flyte_task_name`, `command` (positional), then keyword-only: `job_title`, `use_project_defaults_for_omitted` (default False; see above), `dfs_repo_commit_id`, `main_git_repo_ref`, `resolved_main_git_repo_ref`, `use_latest_git_ref`, `imported_git_repo_overrides`, `environment_name` or `environment_id` (+ `environment_revision_id`), `hardware_tier_name` or `hardware_tier_id`, `inputs=[Input(...)]`, `output_specs=[Output(...)]`, `volume_size_gib`, `dataset_snapshots`, `netapp_volume_snapshots`, `external_data_volume_ids`, `compute_cluster_properties`, `cache`, `cache_version`, `cache_ignore_input_vars`, `retries`, `timeout`. Prefer ids over names: renaming an environment or tier would otherwise change what the flow resolves to.
 
-`Input(name, type, value=None, path=None)` and `Output(name, type, path=None)`; a `path` under `/mnt/data/...` or `/mnt/netapp-volumes/...` maps the file to the data location instead of `/workflow`.
+`Input(name, type, value, path=None)` (`value` is required: a literal, a workflow parameter or another task's output promise) and `Output(name, type, path=None)`; a `path` under `/mnt/data/...` or `/mnt/netapp-volumes/...` maps the file to the data location instead of `/workflow`.
 
 ## Finding ids
 
@@ -118,7 +122,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "$DOMINO_API_HOST/api/hardwaretiers/v1
 curl -s -H "Authorization: Bearer $TOKEN" "$DOMINO_API_HOST/api/environments/beta/environments?limit=100"   # id, name
 ```
 
-Dataset ids and snapshot versions come from the Dataset page in the project or the datasets API (`domino-datasets`). With `DOMINO_API_PROXY` set, call `$DOMINO_API_PROXY/api/...` without the header.
+Dataset ids and snapshot versions come from the Dataset page in the project or the datasets API (`domino-datasets`). With `DOMINO_API_PROXY` set, call `$DOMINO_API_PROXY/api/...` without the header. Inside a Workspace the plugin can also print the valid values for the current project in one call: `from flytekitplugins.domino.helpers import retrieve_valid_properties; retrieve_valid_properties()` (it reads an internal `/v4/jobs/.../retrieveValidProperties` route through the API proxy and prints environments with their revisions and the other job properties; `page_size` raises the number of environments listed).
 
 ## Launch
 
@@ -144,7 +148,7 @@ Re-run from the UI (**Flows** > flow > version > run > **Re-run**): new name, ca
 
 Every launch serializes the flow structure, each task's job config (commit, environment revision, tier, snapshots) and the inputs; identical definitions reuse the version. For deterministic reruns:
 
-1. Replace `use_latest=True` with explicit `CommitId` or `MainRepoGitRef`, `EnvironmentId` + `EnvironmentRevisionSpec`, `HardwareTierId`, `DatasetSnapshots`.
+1. Replace `use_latest=True` with a complete config: `CommitId`, `MainRepoGitRef` pinned to a commit (Git-based projects), `EnvironmentId`, `EnvironmentRevisionSpec`, `HardwareTierId`, `VolumeSizeGiB`, `DatasetSnapshots`, `NetAppVolumeSnapshots` and `ExternalVolumeMountIds` (empty lists where unused); the constructor raises if any is missing. Example 3 in [EXAMPLES.md](./EXAMPLES.md) shows the full set.
 2. Snapshot external data in a first task that copies it to an output.
 3. Write results only as outputs, never to a shared mutable location.
 

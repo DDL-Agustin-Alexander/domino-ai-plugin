@@ -218,6 +218,26 @@ Path("/workflow/outputs").mkdir(parents=True, exist_ok=True)
 Path("/workflow/outputs/metrics").write_text(json.dumps(metrics))
 ```
 
+`flows/stages/plot.py`:
+
+```python
+import pickle
+from pathlib import Path
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import pandas as pd
+from sklearn.metrics import RocCurveDisplay
+
+model = pickle.load(open("/workflow/inputs/model", "rb"))
+df = pd.read_csv("/workflow/inputs/test")
+X, y = df.drop(columns=["churned"]), df["churned"]
+RocCurveDisplay.from_estimator(model, X, y)
+Path("/workflow/outputs").mkdir(parents=True, exist_ok=True)
+with open("/workflow/outputs/roc", "wb") as f:      # output name has no extension; the Artifact file name carries it
+    plt.savefig(f, format="png")
+```
+
 Launch:
 
 ```bash
@@ -228,54 +248,83 @@ Flow Artifacts show up under the run with lineage; DATA artifacts can also be as
 
 ## Example 3: production pinning and an approval gate
 
-Replace `use_latest`/`use_project_defaults_for_omitted` with explicit settings before putting a flow on a schedule, and gate deployment on a human check.
+Replace `use_latest` / `use_project_defaults_for_omitted` with a complete config before putting a flow on a schedule, and gate deployment on a human check. With `use_latest=False` (the default) `DominoJobTask` raises unless every field below is set, so the config is written once and shared. The ids are placeholders; look yours up as in [FLOW-BASICS.md](./FLOW-BASICS.md) "Finding ids", or print the project defaults with `DominoJobConfig(Command="...").resolve_job_properties()` in a Workspace. This example reuses `split.py` and `train.py` from Example 2.
+
+`flows/release_pipeline.py`:
 
 ```python
 from datetime import timedelta
 from typing import TypeVar
 from flytekit import approve, workflow
 from flytekit.types.file import FlyteFile
-from flytekitplugins.domino.task import DominoJobConfig, DominoJobTask
-# GitRef, DatasetSnapshot, EnvironmentRevisionSpecification and EnvironmentRevisionType are provided by
-# flytekitplugins.domino; confirm their import path in your environment (see FLOW-BASICS.md).
+from flytekitplugins.domino.task import (
+    DatasetSnapshot,
+    DominoJobConfig,
+    DominoJobTask,
+    EnvironmentRevisionSpecification,
+    EnvironmentRevisionType,
+    GitRef,
+)
 
 CSV = FlyteFile[TypeVar("csv")]
 PKL = FlyteFile[TypeVar("pkl")]
 
-pinned = dict(
-    MainRepoGitRef=GitRef(Type="commitId", Value="4e6f2ee71e3bd64eaa90ce826c7d523b29f179cd"),
+PINNED = dict(
+    CommitId="4e6f2ee71e3bd64eaa90ce826c7d523b29f179cd",        # Git-based: artifacts commit; DFS: code commit
+    MainRepoGitRef=GitRef(Type="commitId", Value="2f1cb9bf696921f0858e4a1c0b3d7f2a9c5e8d41"),  # Git-based only; must be commit-pinned
     EnvironmentId="66b5324c495c6c124cfb0a28",
-    EnvironmentRevisionSpec=EnvironmentRevisionSpecification(EnvironmentRevisionType.SomeRevision, "4"),
+    EnvironmentRevisionSpec=EnvironmentRevisionSpecification(
+        EnvironmentRevisionType.SomeRevision, "6659daf5fc8de1a2b3c4d5e6"   # revision id, not the revision number
+    ),
     HardwareTierId="large-k8s",
-    DatasetSnapshots=[DatasetSnapshot(Id="6615af2820a4", Version=3)],
     VolumeSizeGiB=20,
+    DatasetSnapshots=[DatasetSnapshot(Id="6615af2820a4b1c2d3e4f5a6", Version=3)],
+    NetAppVolumeSnapshots=[],                                     # required even when unused
+    ExternalVolumeMountIds=[],                                    # required even when unused
 )
 
-@workflow
-def release_pipeline(features_path: str) -> PKL:
-    train = DominoJobTask(
-        name="Train (pinned)",
-        domino_job_config=DominoJobConfig(Command="python flows/stages/train.py", **pinned),
-        inputs={"train": str},
-        outputs={"model": PKL},
-        retries=1,
-        timeout=timedelta(hours=2),
-    )
-    trained = train(train=features_path)
 
-    # The run pauses here until someone approves in the Flows UI (Resume); rejecting stops it
+def pinned_task(name, script, inputs, outputs, **task_kwargs):
+    return DominoJobTask(
+        name=name,
+        domino_job_config=DominoJobConfig(Command=f"python {script}", **PINNED),
+        inputs=inputs,
+        outputs=outputs,
+        **task_kwargs,
+    )
+
+
+@workflow
+def release_pipeline(features_path: str, test_size: float = 0.2) -> PKL:
+    split = pinned_task("Split (pinned)", "flows/stages/split.py",
+                        {"features_path": str, "test_size": float}, {"train": CSV, "test": CSV})
+    splits = split(features_path=features_path, test_size=test_size)
+
+    train = pinned_task("Train (pinned)", "flows/stages/train.py",
+                        {"train": CSV}, {"model": PKL}, retries=1, timeout=timedelta(hours=2))
+    trained = train(train=splits["train"])
+
+    # The run pauses here until someone clicks Resume and approves in the Flows UI; rejecting stops it
     approved_model = approve(trained["model"], "Release approval", timeout=timedelta(hours=24))
 
-    package = DominoJobTask(
-        name="Package for deployment",
-        domino_job_config=DominoJobConfig(Command="python flows/stages/package.py", **pinned),
-        inputs={"model": PKL},
-        outputs={"bundle": PKL},
-    )
+    package = pinned_task("Package for deployment", "flows/stages/package.py", {"model": PKL}, {"bundle": PKL})
     return package(model=approved_model)["bundle"]
 ```
 
-To run it nightly, create a scheduled Job in the project with the command:
+`flows/stages/package.py`:
+
+```python
+import pickle
+import shutil
+from pathlib import Path
+
+model = pickle.load(open("/workflow/inputs/model", "rb"))
+assert hasattr(model, "predict"), "not a fitted estimator"
+Path("/workflow/outputs").mkdir(parents=True, exist_ok=True)
+shutil.copyfile("/workflow/inputs/model", "/workflow/outputs/bundle")
+```
+
+In a DFS project drop `MainRepoGitRef` (it is only checked for Git-based projects). To run the flow nightly, create a scheduled Job in the project with this command (the Flows docs document `pyflyte run` "as the start command for a Job"; a scheduled Job is the pattern that follows, not a separate documented scheduler):
 
 ```bash
 pyflyte run --remote flows/release_pipeline.py release_pipeline --features_path /mnt/data/features/latest.csv

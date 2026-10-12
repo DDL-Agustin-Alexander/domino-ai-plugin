@@ -119,7 +119,7 @@ Restricted endpoints: HTTP Basic with the endpoint access token as **both** user
 import os
 import requests
 
-DOMINO_URL = os.environ["DOMINO_URL"]        # deployment URL from "Calling your endpoint" on the Overview tab
+DOMINO_URL = os.environ["DOMINO_URL"]        # not injected by Domino: set it yourself from "Calling your endpoint" on the Overview tab
 MODEL_ID = os.environ["MODEL_ID"]
 TOKEN = os.environ["MODEL_ACCESS_TOKEN"]      # Settings > Invocation; keep it out of source and browser bundles
 
@@ -154,8 +154,9 @@ created = requests.post(base, headers=headers, json={"parameters": {"input_file"
 created.raise_for_status()
 prediction_id = created.json()["asyncPredictionId"]
 
+deadline = time.time() + 45 * 60             # Domino keeps a picked-up request alive for 30 minutes
 delay = 1
-while True:
+while time.time() < deadline:
     status = requests.get(f"{base}/{prediction_id}", headers=headers)
     if status.status_code >= 500:            # transient; retry with backoff
         time.sleep(delay)
@@ -163,17 +164,22 @@ while True:
         continue
     status.raise_for_status()
     body = status.json()
-    if body["status"] == "succeeded":
+    state = body["status"].lower()           # sources differ on casing; compare case-insensitively
+    if state == "succeeded":
         print(body["result"])
         break
-    if body["status"] == "failed":
-        print(body["errors"])
+    if state == "failed":
+        print(body.get("errors"))
         break
-    time.sleep(delay)                        # "queued"
+    if state not in ("queued", "pending", "processing"):
+        raise RuntimeError(f"unexpected prediction status: {body['status']}")
+    time.sleep(delay)
     delay = min(delay * 2, 60)
+else:
+    raise TimeoutError(prediction_id)
 ```
 
-Statuses are `queued`, `succeeded` and `failed`. Async endpoints are not available on remote data planes. Full client with retries: https://docs.domino.ai/cloud/platform-capabilities/features/model-deployment/async-example-client.
+Status values: the spec documents `Pending`, `Processing`, `Succeeded` and `Failed`; the docs' example client compares lowercase `queued`, `succeeded` and `failed`. Compare case-insensitively and treat anything else as an error. Async endpoints are not available on remote data planes. Full client with retries: https://docs.domino.ai/cloud/platform-capabilities/features/model-deployment/async-example-client.
 
 ## Versions
 
@@ -181,11 +187,11 @@ Statuses are `queued`, `succeeded` and `failed`. Async endpoints are not availab
 - Routing (**Settings** > **Deployment**): Basic routing points `/models/<modelId>/latest/model` at the newest successful version and stops the previous one; Advanced routing keeps a promoted version at `/models/<modelId>/labels/prod/model` and lets you promote `latest` without downtime.
 - Stop or start a version from the **Actions** menu on the Versions tab. Domino recommends stopping the previous version before deploying a retrained one.
 - Scheduled retraining: in a scheduled Job, select the endpoint under **Update Domino Endpoint**; the project files after the Job become a new version.
-- Via the API: `POST /api/modelServing/v1/modelApis/{modelApiId}/versions` with `projectId`, `source`, `logHttpRequestResponse`, `monitoringEnabled` (optional `environmentId`, `commitId`, `shouldDeploy`). Details in `domino-model-serving`.
+- Via the API: `POST /api/modelServing/v1/modelApis/{modelApiId}/versions` with `projectId`, `source`, `logHttpRequestResponse`, `monitoringEnabled` and `shouldDeploy: true` (optional `environmentId`, `commitId`), then poll that version's `deployment.status`. Details in `domino-model-serving`.
 
 ## Access control
 
-- **Settings** > **Access and Sharing**: Public (anyone on the deployment can discover and view) or Private (collaborators only). Endpoint collaborators are Viewers, Editors or Owners; project Contributors can create endpoints and become their owner.
+- **Settings** > **Access and Sharing**: Public (anyone on the deployment can discover and view) or Private (collaborators only). Endpoint collaborators are Viewers, Editors or Owners; project Contributors can create endpoints and become their owner. On Domino Cloud the API additionally exposes a `Discoverable` visibility (discover but not invoke) and an `Operator` role through `/api/modelServing/beta/modelApis/{modelApiId}/visibility` and `.../collaborators`; the docs pages lag the spec there.
 - **Settings** > **Invocation**: Unrestricted (no token) or Restricted (token required). Generate, name, revoke and regenerate access tokens here.
 
 ## Remote data planes, volumes, spot instances

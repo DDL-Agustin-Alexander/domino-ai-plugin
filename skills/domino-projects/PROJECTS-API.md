@@ -71,7 +71,7 @@ r = requests.post(f"{base}/api/projects/v2/projects", headers=headers, json={
     }})
 ```
 
-Optional: `repoToCreate{credentialId, owner, repositoryToCreateName, visibility, serviceProvider, repositoryTemplateName}` to have Domino create the repository; `templateDetails{templateId, name, templateRevisionId, templateType, importToMainRepo, forceImport}` to start from a project template; `billingTag{tag}`; `isRestricted` (needs `ProjectClassifier`). `POST /api/projects/beta/projects` accepts the same body on the older beta route.
+Optional: `repoToCreate{credentialId, owner, repositoryToCreateName, visibility, serviceProvider}` to have Domino create the repository; `templateDetails{templateId, name, templateRevisionId, templateType, importToMainRepo, forceImport}` to start from a project template; `billingTag{tag}`; `isRestricted` (needs `ProjectClassifier`). The older `POST /api/projects/beta/projects` takes `NewProjectV1`: the same fields, plus `repoToCreate.repositoryTemplateName`.
 
 ## Collaborators and visibility
 
@@ -128,9 +128,9 @@ Every method needs a client bound to one project: `Domino("owner/project")`; the
 
 | Method | Does | Note |
 |--------|------|------|
-| `project_create(project_name, owner_username=None)` | Creates a DFS project through a legacy route (`POST /project`) | Prefer the REST v2 route above for Git-based projects and templates |
-| `projects_list(relationship="Owned", show_completed=False)` | Lists projects | |
-| `project_archive(project_name)` | Archives by name | |
+| `project_create(project_name, owner_username=None)` | Creates a DFS project through the legacy `POST /project` route (Domino Internal API, may change between Domino versions) | Prefer the REST v2 route above for Git-based projects and templates |
+| `projects_list(relationship="Owned", show_completed=False)` | Lists projects through `GET /v4/gateway/projects` (Domino Internal API, may change between Domino versions) | |
+| `project_archive(project_name)` | Archives by name through `DELETE /v4/projects/{id}` (Domino Internal API, may change between Domino versions) | The public equivalent is `DELETE /api/projects/beta/projects/{projectId}` |
 | `fork_project(target_name)` | Forks the bound project through the internal `/v4/projects/{id}/fork` route (may change between Domino versions) | Forks are unavailable on Domino Cloud |
 | `collaborators_get()`, `collaborators_add(username_or_email, message="")`, `collaborators_remove(username_or_email)` | Collaborators | All three use Domino Internal API routes (may change between Domino versions) |
 | `get_user_id(username_or_email)` | Resolves a username or email to a user id (internal `/v4/users` route) | Useful before the public collaborator route above |

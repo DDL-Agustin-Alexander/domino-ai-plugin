@@ -14,7 +14,7 @@ Operational serving metrics (CPU, latency, status codes) are in `domino-model-en
 
 | Model runs as | Workflow | Data handling |
 |---------------|----------|---------------|
-| Domino endpoint (sync) | Integrated endpoint monitoring | Domino captures predictions into a project Dataset; you register a TrainingSet and, optionally, ground truth |
+| Domino endpoint | Integrated endpoint monitoring | Domino captures predictions into a project Dataset; you register a TrainingSet and, optionally, ground truth |
 | App, Launcher, Job, or outside Domino | Model Monitor | You connect a data source (S3, generic S3, Azure Blob or Data Lake, GCS, HDFS, NFS, Snowflake) and register training, prediction and ground-truth files with a Monitoring Config JSON |
 
 Both show up in **Model Monitor** as one list. Endpoint monitoring is not supported for endpoints deployed to a remote data plane.

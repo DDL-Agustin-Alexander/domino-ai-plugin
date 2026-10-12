@@ -40,9 +40,9 @@ Management calls go to the base above under `/api/...`. Predictions go to the de
 
 1. Train and, optionally, register (`POST /api/registeredmodels/v2`, or the MLflow client).
 2. `POST /api/modelServing/v1/modelApis` with `name`, `description`, `environmentId`, `isAsync`, `strictNodeAntiAffinity`, `environmentVariables`, `version{projectId, source, logHttpRequestResponse, monitoringEnabled}`; `source.type` is `File` (`file`, `function`) or `Registry` (`registeredModelName`, `registeredModelVersion`). Optional `hardwareTierId`, `replicas`.
-3. Poll `GET /api/modelServing/v1/modelApis/{modelApiId}` until `activeVersion.deployment.status` is `Running` (`deployment` is absent before the first deployment; treat absence as pending).
-4. New code: `POST .../modelApis/{modelApiId}/versions` (same `version` fields; optional `environmentId`, `commitId`, `shouldDeploy`). Basic routing moves `latest` to it once it runs.
-5. Change replicas, hardware tier, name or environment: `PUT .../modelApis/{modelApiId}` (`name`, `description`, `replicas`, `environmentId` required; send the current values back).
+3. Poll the version: `GET .../modelApis/{modelApiId}/versions/{modelApiVersionId}` until `deployment.status` is `Running` and `isPending` is false (`deployment` is absent before the first deployment; treat absence as pending), then confirm `activeVersion.id` on the Model API.
+4. New code: `POST .../modelApis/{modelApiId}/versions` (same `version` fields plus `shouldDeploy: true`; optional `environmentId`, `commitId`). Poll that version, not the Model API: the old version stays active until the new one runs.
+5. Change replicas, hardware tier, name or environment: `PUT .../modelApis/{modelApiId}` (`name`, `description`, `replicas`, `environmentId` required; send the current values back, including `resourceQuotaId`). Scale changes take effect after a restart of the endpoint, which has no public route (UI).
 6. Retire: `DELETE .../modelApis/{modelApiId}` **archives** the endpoint (`isArchived: true`); it is not a hard delete. The public API has no stop route for Model APIs; stop a version in the UI (Versions > Actions).
 7. Verify every mutation with a `GET`; a 2xx means the request was accepted, not that the pods have changed.
 
@@ -66,7 +66,7 @@ Restricted **sync** endpoints require HTTP Basic with the endpoint access token 
 curl -s "$DOMINO_API_HOST/version"   # "version": "6.3.x" self-managed; "6.4.x" or later on Domino Cloud
 ```
 
-Domino Cloud adds `/api/modelServing/beta/modelApis/{modelApiId}/visibility`, `.../access` and `.../collaborators`; on 6.3 these return 404 and visibility and collaborators are set in the UI (**Settings** > **Access and Sharing**). Everything else above is in both specs.
+Domino Cloud adds `/api/modelServing/beta/modelApis/{modelApiId}/visibility` (`Public`, `Discoverable`, `Private`), `.../access` and `.../collaborators` (roles `Owner`, `Editor`, `Operator`, `Viewer`); these are absent from the 6.3 spec, so on 6.3 set visibility and collaborators in the UI (**Settings** > **Access and Sharing**). Everything else above is in both specs.
 
 ## Related
 

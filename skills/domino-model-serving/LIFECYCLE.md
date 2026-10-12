@@ -33,7 +33,7 @@ total = r.json()["metadata"]["totalCount"]
 
 Filters: `projectId`, `environmentId`, `name` (regular expression), `registeredModelName` (+ `registeredModelVersion`), `limit` (default 25), `offset`, `orderBy`. Archived endpoints carry `isArchived: true`.
 
-`GET /api/modelServing/v1/modelApis/{modelApiId}` returns the same object: `id`, `name`, `description`, `environmentId`, `hardwareTierId`, `replicas`, `routingMode` (`Basic` or advanced), `isAsync`, `strictNodeAntiAffinity`, `access{isPublic, accessTokens[]}`, `healthCheck{...}`, `overrideRequestTimeoutSecs`, `collaborators[]`, `volumes[]`, `activeVersion{id, number, dataPlaneId, deployment{status, isPending}}`, `metadata{created, createdBy, lastModified}`.
+`GET /api/modelServing/v1/modelApis/{modelApiId}` returns the same object: `id`, `name`, `description`, `environmentId`, `hardwareTierId`, `replicas`, `routingMode` (`Basic` or advanced), `isAsync`, `strictNodeAntiAffinity`, `access{isPublic, accessTokens[]}`, `healthCheck{...}`, `overrideRequestTimeoutSecs`, `collaborators[]`, `volumes[]`, `activeVersion{id, number, dataPlaneId, deployment{status, isPending}}`, `metadata{created, createdBy, lastModified}`. On Domino Cloud `access.isPublic` is a legacy flag independent of the endpoint's visibility (`Public`, `Discoverable`, `Private`), which is read and set through `GET|PUT /api/modelServing/beta/modelApis/{modelApiId}/visibility`; collaborators there carry the roles `Owner`, `Editor`, `Operator`, `Viewer`.
 
 Versions: `GET .../modelApis/{modelApiId}/versions` lists `ModelApiVersion` objects (`id`, `number`, `projectId`, `source`, `commitId`, `environmentRevisionId`, `predictionDatasetResourceId`, `logHttpRequestResponse`, `monitoringEnabled`, `recordInvocation`, `labels`, `metadata`).
 
@@ -60,35 +60,47 @@ body = {
 r = requests.post(f"{base}/api/modelServing/v1/modelApis", headers=headers, json=body)
 r.raise_for_status()                              # 201
 model_api_id = r.json()["id"]
+versions = requests.get(f"{base}/api/modelServing/v1/modelApis/{model_api_id}/versions", headers=headers).json()
+version_id = max(versions, key=lambda v: v["number"])["id"]
+wait_version_running(model_api_id, version_id)
 ```
 
 ## Create from a registered model
 
 Same body with `"source": {"type": "Registry", "registeredModelName": "churn-gbm", "registeredModelVersion": 3}`. The `requirements.txt` MLflow inferred when the model was logged is installed into the image.
 
-## Wait until Running
+## Wait until a version is Running
+
+Poll the **version**, not only the Model API: under Basic routing the previous version keeps serving (and stays `activeVersion`) until the new one is up, so `activeVersion.deployment.status` can read `Running` for the old version right after you create a new one.
 
 ```python
-def wait_running(model_api_id, timeout_s=1800):
+def wait_version_running(model_api_id, version_id, timeout_s=1800):
+    """Poll one version until it is deployed and serving, then confirm it became the active version."""
     deadline = time.time() + timeout_s
+    last = None
     while time.time() < deadline:
-        api = requests.get(f"{base}/api/modelServing/v1/modelApis/{model_api_id}", headers=headers).json()
-        deployment = api.get("activeVersion", {}).get("deployment")      # absent until a deployment exists
-        status = deployment["status"] if deployment else "Pending"
-        if status == "Running" and not deployment["isPending"]:
-            return api
-        if status in ("Failed", "Stopped"):
-            raise RuntimeError(f"endpoint {model_api_id} is {status}")
+        v = requests.get(f"{base}/api/modelServing/v1/modelApis/{model_api_id}/versions/{version_id}",
+                         headers=headers).json()
+        deployment = v.get("deployment") or {}                 # absent until a deployment exists
+        status, pending = deployment.get("status", "Pending"), deployment.get("isPending", True)
+        if status != last:
+            print(f"version {v.get('number')}: {status} (pending={pending})")
+            last = status
+        if status == "Running" and not pending:
+            api = requests.get(f"{base}/api/modelServing/v1/modelApis/{model_api_id}", headers=headers).json()
+            if api.get("activeVersion", {}).get("id") == version_id:
+                return v
         time.sleep(15)
-    raise TimeoutError(model_api_id)
+    raise TimeoutError(f"version {version_id} not Running after {timeout_s}s (last status: {last}); "
+                       "read its build and instance logs")
 ```
 
-`Running` is the documented ready state. Other values are strings the service reports; treat anything that is not `Running` and not pending as a reason to read the build and instance logs (below).
+`Running` is the documented ready state. The spec types `deployment.status` as a free string and does not enumerate the other values, so the helper prints them and keeps polling until the deadline; a status that stops changing is the cue to read the build and instance logs (below).
 
 ## Prediction URL
 
 ```python
-deployment_url = os.environ["DOMINO_URL"]          # the deployment URL, as shown on the endpoint Overview tab
+deployment_url = os.environ["DOMINO_URL"]          # not injected by Domino: set it yourself to the deployment URL shown on the endpoint Overview tab
 sync_url = f"{deployment_url}/models/{model_api_id}/latest/model"
 async_url = f"{deployment_url}/api/modelApis/async/v1/{model_api_id}"
 ```
@@ -103,11 +115,12 @@ r = requests.post(f"{base}/api/modelServing/v1/modelApis/{model_api_id}/versions
     "source": {"type": "File", "file": "model.py", "function": "predict"},
     "logHttpRequestResponse": False,
     "monitoringEnabled": False,
+    "shouldDeploy": True,                        # optional in the spec with no stated default; set it explicitly
     "description": "retrained 2026-10",
 })
 r.raise_for_status()
 version_id = r.json()["id"]
-wait_running(model_api_id)
+wait_version_running(model_api_id, version_id)
 ```
 
 With Basic routing, `latest` switches to the new version once it runs and the previous version shuts down. With Advanced routing, `labels/prod` stays on the promoted version until you promote in the UI.
@@ -121,11 +134,12 @@ r = requests.put(f"{base}/api/modelServing/v1/modelApis/{model_api_id}", headers
     "environmentId": api["environmentId"],
     "replicas": 4,
     "hardwareTierId": api.get("hardwareTierId"),
+    "resourceQuotaId": api.get("resourceQuotaId"),               # keep the deployment target of remote-data-plane endpoints
 })
 r.raise_for_status()
 ```
 
-A scale change restarts the endpoint.
+The PUT is accepted immediately, but the docs say a scale change takes effect only after you restart the endpoint, and the public API has no restart route: restart it from the endpoint page in the UI, then confirm with `GET` (`replicas`, `hardwareTierId`) and the version's deployment status.
 
 ## Archive
 
@@ -174,7 +188,7 @@ requests.get(f"{base}/api/registeredmodels/v1/churn-gbm/versions/{version}", hea
 requests.get(f"{base}/api/registeredmodels/v1/churn-gbm/versions/{version}/modelapis", headers=headers).json()
 ```
 
-`mlflowSource` takes `experimentRunId` (required) plus `artifactPath` or `loggedModelId`; `huggingFaceSource` takes `modelId` (required), `modelRevision`, `huggingFaceToken`. `sourceType` is `mlflow` or `huggingface` and names which of the two you filled in. List with `GET /api/registeredmodels/v2?projectId=...&maxResults=25` and follow `metadata.pageToken`. `POST /api/registeredmodels/v1/{modelName}/versions` (`description`, `experimentRunId`, `artifact`) still exists but is deprecated since 6.2.1.
+`mlflowSource` takes `experimentRunId` (required) plus `artifactPath` or `loggedModelId`; `huggingFaceSource` takes `modelId` (required), `modelRevision`, `huggingFaceToken`. `sourceType` is `mlflow` or `huggingface` and names which of the two you filled in. List with `GET /api/registeredmodels/v2?projectId=...&maxResults=25`; the response's `metadata.nextPageToken` goes into the next request's `pageToken` query parameter until it is absent. `POST /api/registeredmodels/v1/{modelName}/versions` (`description`, `experimentRunId`, `artifact`) still exists but is deprecated since 6.2.1.
 
 ## python-domino equivalents
 

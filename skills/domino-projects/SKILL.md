@@ -15,7 +15,7 @@ A project holds the code, data links, artifacts and people for one piece of work
 | | Git-based (recommended) | DFS |
 |---|---|---|
 | Code lives | Your Git provider (GitHub, GitLab, Bitbucket, others over HTTPS or SSH) | Domino's internal repository, auto-versioned on sync |
-| Code path in a run | `/mnt/code` | `/mnt` (`$DOMINO_WORKING_DIR`; becomes `/mnt/<owner>/<project>` when another project imports it) |
+| Code path in a run | `/mnt/code` | `/mnt` (`$DOMINO_WORKING_DIR`; becomes `/mnt/<owner>/<project>` once this project imports another project) |
 | Artifacts | `/mnt/artifacts` (stored in DFS, separate from Git) | Alongside the code in the working directory |
 | Project Datasets | `/mnt/data/<dataset>` | `/domino/datasets/local/<dataset>` |
 | Imported Git repositories | `/mnt/imported/code/<repo>` | `/repos/<repo>` |

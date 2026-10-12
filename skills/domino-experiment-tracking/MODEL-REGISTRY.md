@@ -22,7 +22,7 @@ with mlflow.start_run(run_name="rf-candidate") as run:
     )
 ```
 
-Or register an existing run's model: `mlflow.register_model("runs:/<run_id>/model", "churn-rf")`. Log a signature and input example; MLflow uses them to infer the `requirements.txt` and input schema that an endpoint built from the registry relies on.
+Or register an existing run's model: `mlflow.register_model("runs:/<run_id>/model", "churn-rf")`. Log a signature and input example; MLflow uses them to infer the `requirements.txt` and input schema that an endpoint built from the registry relies on. MLflow 3 renames the positional `artifact_path` to `name=` (`log_model(model, name="model", ...)`); the positional form still works in 2.x and 3.x, with a deprecation warning in 3.x.
 
 ### From the UI
 
@@ -34,7 +34,7 @@ Or register an existing run's model: `mlflow.register_model("runs:/<run_id>/mode
 
 ## Versions, aliases and tags
 
-MLflow stages (`Staging`, `Production`, `transition_model_version_stage`) are deprecated upstream since MLflow 2.9. Domino's registry still shows `current_stage` for compatibility, but promotion should use **aliases** (one version per alias name) and **tags**. Verified on Domino Cloud 6.4: the alias routes respond (`GET /api/2.0/mlflow/registered-models/alias?name=...&alias=...` on the deployment URL answers with an MLflow error for an unknown alias). On Domino 6.3, run the same call before relying on aliases; a 404 means the server predates aliases, so use tags instead.
+MLflow stages (`Staging`, `Production`, `transition_model_version_stage`) are deprecated upstream since MLflow 2.9. Domino's registry still shows `current_stage` for compatibility, but promotion should use **aliases** (one version per alias name) and **tags**. Aliases are standard MLflow registry features that Domino's own registry pages do not mention; tags are the documented fallback. Verified on Domino Cloud 6.4: the alias route exists (`GET /api/2.0/mlflow/registered-models/alias?name=...&alias=...` on the deployment URL answers with an MLflow error for an unknown alias). On Domino 6.3, run the same call before relying on aliases; a 404 means the server predates aliases, so use tags instead.
 
 ```python
 import mlflow

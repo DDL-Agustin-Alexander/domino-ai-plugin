@@ -67,7 +67,7 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/j
 }'
 ```
 
-Keep the returned `id` for every later call. `variableType` values: `feature`, `prediction`, `row_identifier`, `timestamp`, `ground_truth`, `sample_weight`, `prediction_probability`; `valueType`: `categorical`, `numerical`, `string`, `datetime`; `fileFormat`: `csv` or `parquet`. Features must be numerical or categorical and present in every dataset; one `prediction`, one `timestamp` (ISO 8601) and one `row_identifier` at most. Binning options (`binsNum`, `binsEdges`, `binsCategories`) are documented at https://docs.domino.ai/cloud/platform-capabilities/features/monitoring/8-json/1-supported-binning.
+Keep the returned `id` for every later call. `variableType` values: `feature`, `prediction`, `row_identifier`, `timestamp`, `ground_truth`, `sample_weight`, `prediction_probability`; `valueType`: `categorical`, `numerical`, `string`, `datetime`; `fileFormat`: `csv`, `parquet` or `snowflake` (for a Snowflake data source `path` is the table name). Features must be numerical or categorical and present in every dataset; one `prediction`, one `timestamp` (ISO 8601) and one `row_identifier` at most. Binning options (`binsNum`, `binsEdges`, `binsCategories`) are documented at https://docs.domino.ai/cloud/platform-capabilities/features/monitoring/8-json/1-supported-binning.
 
 Register a new batch of predictions or labels:
 
@@ -120,16 +120,20 @@ else:
     base = os.environ["DOMINO_API_HOST"]
     headers = {"Authorization": "Bearer " + requests.get("http://localhost:8899/access-token").text.strip()}
 
-history = requests.get(f"{base}/model-monitor/v2/api/model/{DMM_MODEL_ID}/drift-schedule-checks-history",
+dmm_model_id = os.environ["DMM_MODEL_ID"]       # the Model Monitor model id (set it as a project or job variable)
+
+# Each entry is {"id", "time" (epoch), "columnsDrifted", "columnsNotDrifted"} (spec: dmm-plier_driftHistoryTimeline)
+history = requests.get(f"{base}/model-monitor/v2/api/model/{dmm_model_id}/drift-schedule-checks-history",
                        headers=headers).json()
-# Inspect the response in your deployment (fields are listed in the spec under the
-# drift-schedule-checks-history operation); decide from the latest check's breached features.
-if latest_check_breached(history):
+latest = max(history, key=lambda check: check["time"]) if history else None
+
+if latest and latest["columnsDrifted"] > 0:
     job = requests.post(f"{base}/api/jobs/v1/jobs", headers=headers, json={
         "projectId": os.environ["DOMINO_PROJECT_ID"],
         "runCommand": "python retrain.py --since-days 30",
     })
     job.raise_for_status()
+    print("retraining job", job.json()["job"]["id"], "started; drifted columns:", latest["columnsDrifted"])
 ```
 
-`POST /api/jobs/v1/jobs` requires only `projectId` and `runCommand`; optional `hardwareTier`, `environmentId`, `title` and others are documented in `domino-jobs`. Run this script as a scheduled Job after the daily check. Where the Model Monitor and the retraining project differ, give the service account access to both.
+`POST /api/jobs/v1/jobs` requires only `projectId` and `runCommand` (spec, and verified live on Domino Cloud 6.4 on 2026-10-12: a job started with just those two fields and succeeded); optional `hardwareTier`, `environmentId`, `title` and others are documented in `domino-jobs`. Run this script as a scheduled Job after the daily check. Where the Model Monitor and the retraining project differ, give the service account access to both.

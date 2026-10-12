@@ -23,7 +23,7 @@ A flow is a Python function decorated with `@workflow` whose nodes are **tasks**
 - Task code reads each input from `/workflow/inputs/<name>` and must write each declared output to `/workflow/outputs/<name>`; a missing output fails the task. Non-file inputs (`str`, `int`, `float`, `bool`, `list`, `dict`) arrive as the value's text; file inputs are the file itself.
 - Flow jobs make no code commits or dataset snapshots at the end; results must be task outputs (or Flow Artifacts exported to a Dataset or NetApp Volume).
 - Only Dataset and NetApp Volume **snapshots** can be mounted (never version 0, the read-write view), one snapshot per dataset, read-only, at the usual `latest` path (`/mnt/data/<name>` Git-based, `/domino/datasets/local/<name>` DFS).
-- `use_latest=True` (or `use_project_defaults_for_omitted=True`) fills in the project's default environment, hardware tier and latest commit at launch. Fine while iterating; for production pin `EnvironmentId` + `EnvironmentRevisionSpec`, `HardwareTierId`, `CommitId` or `MainRepoGitRef`, and `DatasetSnapshots` explicitly.
+- `use_latest=True` (or `use_project_defaults_for_omitted=True`) fills in the project's default environment, hardware tier and latest commit at launch. Both default to **False**, and then the task constructor raises unless the config is complete: `CommitId`, `HardwareTierId`, `EnvironmentId`, `EnvironmentRevisionSpec`, `VolumeSizeGiB`, `DatasetSnapshots`, `NetAppVolumeSnapshots`, `ExternalVolumeMountIds` (empty lists allowed) and, in a Git-based project, a commit-pinned `MainRepoGitRef`. Iterate with `use_latest=True`; pin everything for production.
 - Launch from a Workspace terminal or as a Job command with `pyflyte run --remote`; commit the flow file first so the registered version is traceable. Re-runs, single-node reruns and recovery from transient failures are in the Flows UI; a changed definition must be launched from the CLI again.
 - Stopping one of a flow's Jobs in the Jobs UI stops the whole flow. `DOMINO_IS_WORKFLOW_JOB` is set inside flow jobs.
 
@@ -63,6 +63,13 @@ b = int(Path("/workflow/inputs/second_value").read_text())
 Path("/workflow/outputs/sum").write_text(str(a + b))
 ```
 
+```python
+# sqrt.py
+from pathlib import Path
+value = int(Path("/workflow/inputs/value").read_text())
+Path("/workflow/outputs/sqrt").write_text(str(value ** 0.5))
+```
+
 ```bash
 git add workflow.py add.py sqrt.py && git commit -m "math flow" && git push   # Git-based project
 pyflyte run --remote --name math-run-1 workflow.py simple_math_workflow --a 10 --b 6
@@ -76,7 +83,7 @@ Good fit: data processing then training in different environments (Dask then XGB
 
 ## Scheduling and automation
 
-There is no separate flow scheduler: create a scheduled Job whose command is the `pyflyte run --remote ...` line, on an environment built from the Domino Standard Environment. Each scheduled execution registers and runs the flow. For programmatic access to executions, Domino publishes the Flyte native API spec at https://docs.domino.ai/api-specs/cloud/flyte-native-api.json (6.3: `/api-specs/6.3/flyte-native-api.json`) and the Flyte console at `<deployment URL>/flows/console/select-project`.
+The Flows pages document no scheduler of their own; the documented launch options are the CLI in a Workspace terminal or "as the start command for a Job". The pattern that follows from that: create a scheduled Job whose command is the `pyflyte run --remote ...` line, on an environment built from the Domino Standard Environment. Each scheduled execution registers and runs the flow. For programmatic access to executions, Domino publishes the Flyte native API spec at https://docs.domino.ai/api-specs/cloud/flyte-native-api.json (6.3: `/api-specs/6.3/flyte-native-api.json`) and the Flyte console at `<deployment URL>/flows/console/select-project`.
 
 ## Documentation
 

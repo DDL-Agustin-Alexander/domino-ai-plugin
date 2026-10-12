@@ -14,7 +14,7 @@ Domino's Experiment Manager is MLflow Tracking with Domino's storage, access con
 
 - **Experiments are created in code, not in the UI.** `mlflow.set_experiment(name)` creates it; it appears under **Experiments** only after the first run is logged.
 - **Experiment names are unique across the whole deployment**, not per project. Always suffix with something unique, for example the project and the user: `f"churn-{os.environ['DOMINO_PROJECT_NAME']}-{os.environ['DOMINO_STARTING_USERNAME']}"`.
-- **Access follows the project**: visibility (Searchable or Private) and collaborator roles decide who sees runs. Results Consumers can view; Contributors and the owner can log and update; archiving another user's run needs the owner.
+- **Access follows the project**: visibility (Private or Searchable; Domino 6.3 also has Public) and collaborator roles decide who sees runs. Results Consumers can view; Contributors and the owner can log and update; archiving another user's run needs the owner.
 - Runs started from a Job are the reproducible ones (code commit, environment, hardware tier recorded). Workspace runs show the file name but are not re-versioned as you edit; finish in a Job.
 - Give runs a `run_name`; otherwise MLflow generates one like `gifted-slug-123`.
 - You cannot stop a run from the UI; call `mlflow.end_run()` in the Workspace or Job. Deleting a parent run does not delete its children.
