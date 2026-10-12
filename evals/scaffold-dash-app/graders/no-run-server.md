@@ -2,5 +2,6 @@
 type: regex
 target: { source: file, path: app.py }
 match: not_contains
-pattern: 'run_server'
+flags: m
+pattern: '^(?!\s*#).*\.run_server\('
 ---

@@ -37,6 +37,7 @@ Domino and which project this is, and `search_domino` (`domino_docs`) searches t
 | Make the app look like Domino | `domino-ui-bootstrap` (standalone Vite + React SPA) or `domino-ui-design` (Dash, Streamlit, Flask, FastAPI) | Design system and theming |
 | Publish a model as an endpoint; pick its hardware tier; monitor it | `domino-model-endpoints` | Prediction function, environment requirements, dashboards, GPU inference (`DEPLOY-ENDPOINT.md`, `MONITORING.md`, `SCALING.md`) |
 | Drive model APIs or registered models over REST (create, start, stop, retire, invoke) | `domino-model-serving` | Lifecycle routes, management vs inference URL, invocation auth |
+| Export a model image to your own registry from CI/CD, deploy a registered model to SageMaker, push to NVIDIA Fleet Command or Snowflake, or batch-score with a Job | `domino-model-delivery` | Model Export API, export targets (`EXPORT-API.md`, `EXPORT-TARGETS.md`), scoring Jobs (`BATCH-SCORING.md`) |
 | Packages the app or endpoint needs are missing from the Compute Environment | `domino-environments` | Dockerfile instructions, environment revisions |
 | Automate a deployment over the Domino API | `domino-api-intro`, then `domino-python-sdk` | Authentication, hosts, pagination, errors |
 

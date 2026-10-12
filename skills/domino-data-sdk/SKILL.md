@@ -135,4 +135,4 @@ raises them; catch the `data_sources` ones and `httpx.HTTPStatusError`.
    instead of creating duplicate Data Sources.
 5. Data Sources do not query nested objects; `UNNEST` in SQL first.
 6. `DatasetClient` is read-only. Write to a Dataset through its mount path (domino-datasets
-   skill), the UI, the CLI or `POST /api/datasetrw` routes.
+   skill), the UI, the CLI (domino-cli skill) or `POST /api/datasetrw` routes.

@@ -2,5 +2,5 @@
 type: regex
 target: last_message
 match: not_contains
-pattern: 'feature_store|FeatureStore|Feature Store'
+pattern: 'domino(_data)?\.feature_store|FeatureStore(Client)?\(|feature_store\.\w+\('
 ---

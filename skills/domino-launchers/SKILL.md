@@ -79,3 +79,4 @@ Authentication for these calls: [domino-api-intro](../domino-api-intro/SKILL.md)
 ## Reference files
 
 - [EXAMPLES.md](./EXAMPLES.md): argument parsing in Python and R, result and `email.html` patterns, a complete scoring launcher.
+- [domino-model-delivery](../domino-model-delivery/BATCH-SCORING.md): the scoring script behind a batch scoring form, and the scheduled Job alternative when nobody needs to submit a form.

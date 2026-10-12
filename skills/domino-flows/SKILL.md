@@ -1,6 +1,6 @@
 ---
 name: domino-flows
-description: Orchestrate multi-step ML and data pipelines with Domino Flows (Flyte-based). Covers defining tasks with DominoJobTask/DominoJobConfig or run_domino_job_task, typed inputs and outputs under /workflow, Flow Artifacts (DATA, MODEL, REPORT) and export to Datasets or NetApp Volumes, pinning environment, hardware tier, commit and dataset snapshots for reproducibility, caching, subflows, approvals, launching with pyflyte, scheduling through a Job, and monitoring runs, lineage and logs. Use when building a DAG of Domino Jobs, a multi-stage training workflow, or any pipeline that needs lineage and reproducible reruns.
+description: Orchestrate multi-step ML and data pipelines with Domino Flows (Flyte-based). Covers defining tasks with DominoJobTask/DominoJobConfig or run_domino_job_task, typed inputs and outputs under /workflow, Flow Artifacts (DATA, MODEL, REPORT) and export to Datasets or NetApp Volumes, pinning environment, hardware tier, commit and dataset snapshots for reproducibility, caching, subflows, approvals, launching with pyflyte, scheduling through a Job, and monitoring runs, lineage and logs. Use when building a DAG of Domino Jobs, a multi-stage training workflow, or any pipeline that needs lineage and reproducible reruns. For a DAG that runs outside Domino in Airflow or Kubeflow and starts Domino Jobs, use domino-airflow-kubeflow.
 compatibility: Domino 6.3 and Domino Cloud. Needs a Workspace or Job on a Domino Standard Environment 6.0 or later (or an environment built on it) for the flytekit and flytekitplugins.domino libraries.
 ---
 
@@ -80,6 +80,8 @@ Then **Flows** > flow > run: node status, versioned inputs and outputs, the Domi
 ## Choosing Flows
 
 Good fit: data processing then training in different environments (Dask then XGBoost, Spark then PyTorch), clinical pipelines (SDTM to ADaM to TFL), anything that needs lineage, parallel branches, caching or human approval. Poor fit: many small computations over one dataset in one environment, or tasks that write to mutable shared state. Real-time inference belongs in a Domino endpoint.
+
+Flows versus an external orchestrator: a Flow runs inside Domino with typed artifacts and lineage. When Apache Airflow or Kubeflow Pipelines already owns the schedule and the DAG, keep it there and have each step start and wait for a Domino Job over the Jobs API: [domino-airflow-kubeflow](../domino-airflow-kubeflow/SKILL.md). One script on a cron needs neither; use a scheduled Job ([domino-jobs](../domino-jobs/SKILL.md)).
 
 ## Scheduling and automation
 

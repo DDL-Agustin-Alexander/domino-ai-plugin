@@ -151,7 +151,7 @@ Same `project`, `host`, `api_key`, `domino_token_file`, `poll_freq`, `max_poll_t
 | `commit_id` | `str`, `None` | as above |
 | `hardware_tier_name` | `str`, `None` | hardware tier name (python-domino resolves it to an id) |
 | `environment_id` | `str`, `None` | environment id; default is the project's |
-| `compute_cluster_properties` | `dict`, `None` | `{"clusterType": "Spark" \| "Ray" \| "Dask" \| "MPI", "computeEnvironmentId", "computeEnvironmentRevisionSpec"?, "masterHardwareTierId" (not for MPI), "workerCount", "workerHardwareTierId", "workerStorage"?: {"value", "unit": "GiB" \| "MB"}, "maxWorkerCount"?}` |
+| `compute_cluster_properties` | `dict`, `None` | `{"clusterType": "Spark" \| "Ray" \| "Dask" \| "MPI", "computeEnvironmentId", "computeEnvironmentRevisionSpec"?, "masterHardwareTierId" (not for MPI), "workerCount", "workerHardwareTierId", "workerStorage"?: {"value", "unit": "GiB" \| "MB"}, "maxWorkerCount"?}`; cluster environments and sizing: [domino-distributed-computing](../domino-distributed-computing/SKILL.md) |
 | `on_demand_spark_cluster_properties` | `dict`, `None` | deprecated; ignored when `compute_cluster_properties` is set |
 
 Behaviour: returns the final Job object (`id`, `statuses.executionStatus`, `statuses.isCompleted`,
@@ -222,4 +222,6 @@ the second) or through a Dataset.
 Airflow can also run **after** a Domino scheduled Job finished elsewhere: a sensor-style task
 lists Jobs (`GET /api/jobs/beta/jobs?projectId=...&statusFilter=completed`), downloads the newest
 result file with the files route above, then delivers it (email, S3, a warehouse load). The
-batch-scoring page on docs.domino.ai names this as the way to automate result delivery.
+batch-scoring page on docs.domino.ai names this as the way to automate result delivery; the
+scoring Job itself, its schedule and its result files:
+[domino-model-delivery](../domino-model-delivery/BATCH-SCORING.md).
