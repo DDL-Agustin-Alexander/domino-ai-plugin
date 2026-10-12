@@ -58,12 +58,14 @@ body = {
     },
 }
 r = requests.post(f"{base}/api/modelServing/v1/modelApis", headers=headers, json=body)
-r.raise_for_status()                              # 201
+r.raise_for_status()                              # spec says 201; Domino Cloud 6.4 returned 200. Check for 2xx
 model_api_id = r.json()["id"]
 versions = requests.get(f"{base}/api/modelServing/v1/modelApis/{model_api_id}/versions", headers=headers).json()
 version_id = max(versions, key=lambda v: v["number"])["id"]
 wait_version_running(model_api_id, version_id)
 ```
+
+Verified live on Domino Cloud 6.4 (2026-10-12): this body (with `replicas: 1` and no `hardwareTierId`) created the endpoint, which reached `Running` in about 2.5 minutes. Two things to know from that run: the response carried `hardwareTierId: "small-k8s"` rather than the tier flagged `isDefaultForModelApi`, so pass `hardwareTierId` explicitly; and an access token is created automatically but its value is not in the response (read it under **Settings** > **Invocation**).
 
 ## Create from a registered model
 
@@ -141,15 +143,22 @@ r.raise_for_status()
 
 The PUT is accepted immediately, but the docs say a scale change takes effect only after you restart the endpoint, and the public API has no restart route: restart it from the endpoint page in the UI, then confirm with `GET` (`replicas`, `hardwareTierId`) and the version's deployment status.
 
-## Archive
+## Stop and delete
+
+The spec describes `DELETE /api/modelServing/v1/modelApis/{modelApiId}` as "archives a Model API". Live behaviour on Domino Cloud 6.4 (2026-10-12):
+
+- `DELETE` while a version is running returns `500 "Model API with id <id> is running"`. Stop the running version first.
+- The public API has no stop route. Stop from the UI (**Versions** > **Actions**), or with the Domino Internal API route `POST /v4/models/{modelApiId}/{modelApiVersionId}/stopModelDeployment` with body `{}` (internal API, may change between Domino versions); it returned `{"status": "not_running"}` and `activeVersion.deployment` disappeared from the public view.
+- After a successful `DELETE` (200, empty body) the endpoint is gone from the caller's view: `GET` returns `404 No model API found` and it no longer appears in list results, with or without filters. Do not expect to read it back with `isArchived: true`; export the logs and settings you need before deleting.
 
 ```python
-requests.delete(f"{base}/api/modelServing/v1/modelApis/{model_api_id}", headers=headers).raise_for_status()
 api = requests.get(f"{base}/api/modelServing/v1/modelApis/{model_api_id}", headers=headers).json()
-assert api["isArchived"]
+version_id = api["activeVersion"]["id"]
+requests.post(f"{base}/v4/models/{model_api_id}/{version_id}/stopModelDeployment",   # internal API, may change between Domino versions
+              headers=headers, json={}).raise_for_status()
+requests.delete(f"{base}/api/modelServing/v1/modelApis/{model_api_id}", headers=headers).raise_for_status()
+assert requests.get(f"{base}/api/modelServing/v1/modelApis/{model_api_id}", headers=headers).status_code == 404
 ```
-
-`DELETE` archives; the object stays readable with `isArchived: true`. Stopping a single version has no public route; use **Versions** > **Actions** in the UI.
 
 ## Logs
 
@@ -187,6 +196,8 @@ requests.patch(f"{base}/api/registeredmodels/v1/churn-gbm", headers=headers, jso
 requests.get(f"{base}/api/registeredmodels/v1/churn-gbm/versions/{version}", headers=headers).json()
 requests.get(f"{base}/api/registeredmodels/v1/churn-gbm/versions/{version}/modelapis", headers=headers).json()
 ```
+
+Verified on Domino Cloud 6.4 (2026-10-12): `PATCH` with `description` and `discoverable` returns 200 and the description persists, but `GET /api/registeredmodels/v1/{modelName}` returns neither `discoverable` nor aliases; its keys are `name`, `description`, `latestVersion`, `project`, `tags`, `ownerUsername`, `createdAt`, `updatedAt`, `requestingUserAccess`. Aliases live in MLflow: read them with `GET /api/2.0/mlflow/registered-models/get?name=...` (`aliases`) on the deployment URL with the same bearer token, or with the MLflow client (see `domino-experiment-tracking`).
 
 `mlflowSource` takes `experimentRunId` (required) plus `artifactPath` or `loggedModelId`; `huggingFaceSource` takes `modelId` (required), `modelRevision`, `huggingFaceToken`. `sourceType` is `mlflow` or `huggingface` and names which of the two you filled in. List with `GET /api/registeredmodels/v2?projectId=...&maxResults=25`; the response's `metadata.nextPageToken` goes into the next request's `pageToken` query parameter until it is absent. `POST /api/registeredmodels/v1/{modelName}/versions` (`description`, `experimentRunId`, `artifact`) still exists but is deprecated since 6.2.1.
 

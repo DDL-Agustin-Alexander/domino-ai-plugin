@@ -17,6 +17,7 @@ Via the API, `PUT /api/modelServing/v1/modelApis/{modelApiId}` takes `name`, `de
 
 - Endpoints use a separate class of hardware tier. A tier is usable by endpoints only when an admin marked it **Is Domino endpoint Tier** (Admin > **Advanced** > **Hardware Tiers**); Workspace and Job tiers do not appear in the endpoint form.
 - List what exists: `GET $DOMINO_API_HOST/api/hardwaretiers/v1/hardwaretiers?limit=100` (needs `ViewHardwareTiers`). Endpoint tiers have `flags.isModelApiTier: true`; `flags.isDefaultForModelApi` marks the default. Names and IDs are deployment-specific; never copy a tier name from another deployment.
+- When creating by API, pass `hardwareTierId` explicitly: on Domino Cloud 6.4 a create without it came back with `hardwareTierId: "small-k8s"`, not the tier flagged `isDefaultForModelApi`.
 - GPU tiers exist only if the administrator configured GPUs in the node pool. Check in code (`torch.cuda.is_available()`) rather than assuming.
 - Move up a tier for resource-bound endpoints (long per-request compute, large models in memory).
 

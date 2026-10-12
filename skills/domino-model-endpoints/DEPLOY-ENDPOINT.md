@@ -77,7 +77,7 @@ Endpoint environment variables: on the endpoint, **Settings** > **Environment va
 
 ## Publish with the API
 
-`POST /api/modelServing/v1/modelApis` creates the endpoint and its first version in one call. Required: `name`, `description`, `environmentId`, `isAsync`, `strictNodeAntiAffinity`, `environmentVariables` (may be `[]`) and `version` with `projectId`, `source`, `logHttpRequestResponse`, `monitoringEnabled`. Optional: `hardwareTierId`, `replicas`, `resourceQuotaId`, `bundleId`.
+`POST /api/modelServing/v1/modelApis` creates the endpoint and its first version in one call. Required: `name`, `description`, `environmentId`, `isAsync`, `strictNodeAntiAffinity`, `environmentVariables` (may be `[]`) and `version` with `projectId`, `source`, `logHttpRequestResponse`, `monitoringEnabled`. Optional: `hardwareTierId`, `replicas`, `resourceQuotaId`, `bundleId`. Pass `hardwareTierId` anyway: a live create on Domino Cloud 6.4 (2026-10-12) without it landed on `small-k8s` rather than the deployment's default endpoint tier. The body below was verified live on that deployment; the endpoint reached **Running** in about 2.5 minutes.
 
 ```bash
 TOKEN=$(curl -s http://localhost:8899/access-token)   # in a run; outside Domino use a PAT or service-account token

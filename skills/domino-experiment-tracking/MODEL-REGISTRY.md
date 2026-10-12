@@ -34,7 +34,7 @@ Or register an existing run's model: `mlflow.register_model("runs:/<run_id>/mode
 
 ## Versions, aliases and tags
 
-MLflow stages (`Staging`, `Production`, `transition_model_version_stage`) are deprecated upstream since MLflow 2.9. Domino's registry still shows `current_stage` for compatibility, but promotion should use **aliases** (one version per alias name) and **tags**. Aliases are standard MLflow registry features that Domino's own registry pages do not mention; tags are the documented fallback. Verified on Domino Cloud 6.4: the alias route exists (`GET /api/2.0/mlflow/registered-models/alias?name=...&alias=...` on the deployment URL answers with an MLflow error for an unknown alias). On Domino 6.3, run the same call before relying on aliases; a 404 means the server predates aliases, so use tags instead.
+MLflow stages (`Staging`, `Production`, `transition_model_version_stage`) are deprecated upstream since MLflow 2.9. Domino's registry still shows `current_stage` for compatibility, but promotion should use **aliases** (one version per alias name) and **tags**. Aliases are standard MLflow registry features that Domino's own registry pages do not mention. Verified live on Domino Cloud 6.4 (2026-10-12, MLflow client 3.3.2 in a Job): `set_registered_model_alias`, `get_model_version_by_alias`, `get_registered_model(name).aliases` and `mlflow.pyfunc.load_model("models:/<name>@champion")` all work, and from outside Domino the same registry answers on the deployment URL with a bearer token (`GET /api/2.0/mlflow/registered-models/alias?name=...&alias=...` returns the version; `POST /api/2.0/mlflow/registered-models/alias` with `{"name": ..., "alias": ..., "version": ...}` sets one). On Domino 6.3, run that GET before relying on aliases; a 404 means the server predates aliases, so use tags instead.
 
 ```python
 import mlflow
@@ -57,7 +57,7 @@ model = mlflow.sklearn.load_model(f"models:/{name}@champion")      # load by ali
 client.delete_registered_model_alias(name, "challenger")           # demote
 ```
 
-Load a specific version with `models:/churn-rf/3`. Search: `client.search_registered_models(filter_string="name LIKE 'churn%'")`, `client.search_model_versions("name='churn-rf' and tags.validated='true'")`. Descriptions: `client.update_model_version(name, version, description=...)`. Deleting (`client.delete_model_version`, `client.delete_registered_model`) removes lineage; prefer removing the alias and tagging `status=retired`.
+Load a specific version with `models:/churn-rf/3`. Search: `client.search_registered_models(filter_string="name LIKE 'churn%'")`, `client.search_model_versions("name='churn-rf' and tags.validated='true'")`. Raw REST instead of the client: `DELETE /api/2.0/mlflow/registered-models/alias` needs a JSON body `{"name": ..., "alias": ...}`; with query parameters only it returns `403 cannot parse POST body as JSON` (the Python client sends the body itself). Descriptions: `client.update_model_version(name, version, description=...)`. Deleting (`client.delete_model_version`, `client.delete_registered_model`) removes lineage; prefer removing the alias and tagging `status=retired`.
 
 ## Model cards and lineage
 
@@ -79,8 +79,8 @@ Or edit it under **Models** > model > **Overview**. From a version you can walk 
 |------|--------------------|
 | List registered models | `GET /api/registeredmodels/v2?projectId=&searchPattern=&maxResults=25` (token-paginated with `pageToken`) |
 | Names only | `GET /api/registeredmodels/v1/names` |
-| Get a model | `GET /api/registeredmodels/v1/{modelName}` (`latestVersion`, `discoverable`, `tags`, `project`, `requestingUserAccess`) |
-| Update description or discoverability | `PATCH /api/registeredmodels/v1/{modelName}` with `{"description": "...", "discoverable": true}` |
+| Get a model | `GET /api/registeredmodels/v1/{modelName}` (`name`, `description`, `latestVersion`, `project`, `tags`, `ownerUsername`, `requestingUserAccess`; verified on Cloud 6.4 it returns neither `discoverable` nor aliases, which only MLflow's API shows) |
+| Update description or discoverability | `PATCH /api/registeredmodels/v1/{modelName}` with `{"description": "...", "discoverable": true}` (200; the description persists, `discoverable` is not echoed back by `GET`) |
 | Versions | `GET /api/registeredmodels/v1/{modelName}/versions`, `GET .../versions/{version}` |
 | Endpoints serving a model or version | `GET /api/registeredmodels/v1/{modelName}/modelapis`, `GET .../versions/{version}/modelapis` |
 | Unregistered models in an experiment | `GET /api/registeredmodels/v1/experiments/{experimentId}/unregistered-models` |

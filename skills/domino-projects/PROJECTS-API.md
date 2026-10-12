@@ -47,7 +47,7 @@ mine = [p for p in projects if p["name"] == "churn-model"]
 
 ## Create
 
-`POST /api/projects/v2/projects` (permissions `CreateProject`, `UseFileStorage`). Required: `name` (unique, no whitespace), `description`, `visibility` (`private`, `searchable`; `public` on 6.3 only). The caller owns the project unless `ownerId` names another user (organizations cannot own a project through this route).
+`POST /api/projects/v2/projects` (permissions `CreateProject`, `UseFileStorage`). Required: `name` (unique, no whitespace), `description`, `visibility` (`private`, `searchable`; `public` on 6.3 only). The caller owns the project unless `ownerId` names another user (organizations cannot own a project through this route). Verified live on Domino Cloud 6.4 (2026-10-12): the create returns 200 with `{project{...}}`, `visibility` is accepted in either case and comes back capitalized (`Private`), a Git-based create with `mainRepository{uri, serviceProvider, defaultRef{refType: "head"}}` works, and `DELETE /api/projects/beta/projects/{id}` returns `{"success": true}` after which `GET` is 404.
 
 DFS project:
 
@@ -82,7 +82,7 @@ requests.post(f"{base}/api/projects/v1/projects/{project_id}/collaborators", hea
 requests.delete(f"{base}/api/projects/v1/projects/{project_id}/collaborators/<collaboratorId>", headers=headers)
 ```
 
-Needs `ManageCollaborators`. User ids are the `ownerId` and `collaborators[].id` values returned by the project routes; the users API is in [API-ADMIN.md](../domino-python-sdk/API-ADMIN.md). There is no public route to change visibility after creation; use **Settings** > **Access & Sharing**.
+Needs `ManageCollaborators`. The body shape was validated live on Cloud 6.4 (adding a user who is already a member returns `400 User <id> is already part of project <id>`). User ids are the `ownerId` and `collaborators[].id` values returned by the project routes; the users API is in [API-ADMIN.md](../domino-python-sdk/API-ADMIN.md). There is no public route to change visibility after creation; use **Settings** > **Access & Sharing**.
 
 ## Copy, status, goals, archive
 

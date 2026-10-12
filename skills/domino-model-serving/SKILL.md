@@ -43,7 +43,7 @@ Management calls go to the base above under `/api/...`. Predictions go to the de
 3. Poll the version: `GET .../modelApis/{modelApiId}/versions/{modelApiVersionId}` until `deployment.status` is `Running` and `isPending` is false (`deployment` is absent before the first deployment; treat absence as pending), then confirm `activeVersion.id` on the Model API.
 4. New code: `POST .../modelApis/{modelApiId}/versions` (same `version` fields plus `shouldDeploy: true`; optional `environmentId`, `commitId`). Poll that version, not the Model API: the old version stays active until the new one runs.
 5. Change replicas, hardware tier, name or environment: `PUT .../modelApis/{modelApiId}` (`name`, `description`, `replicas`, `environmentId` required; send the current values back, including `resourceQuotaId`). Scale changes take effect after a restart of the endpoint, which has no public route (UI).
-6. Retire: `DELETE .../modelApis/{modelApiId}` **archives** the endpoint (`isArchived: true`); it is not a hard delete. The public API has no stop route for Model APIs; stop a version in the UI (Versions > Actions).
+6. Retire: stop the running version first (UI **Versions** > **Actions**, or the internal route `POST /v4/models/{modelApiId}/{versionId}/stopModelDeployment` with `{}`; internal API, may change between Domino versions), then `DELETE .../modelApis/{modelApiId}`. The spec calls this an archive, but on Domino Cloud 6.4 a `DELETE` on a running endpoint returns 500, and after a successful one `GET` returns 404 and the endpoint leaves all lists.
 7. Verify every mutation with a `GET`; a 2xx means the request was accepted, not that the pods have changed.
 
 Logs: `GET .../versions/{modelApiVersionId}/buildLogs`, `exportLogs`, `instanceLogs`.
@@ -53,8 +53,8 @@ Logs: `GET .../versions/{modelApiVersionId}/buildLogs`, `exportLogs`, `instanceL
 ## Registered models
 
 - List: `GET /api/registeredmodels/v2?projectId=&searchPattern=&maxResults=` (token-paginated with `pageToken`). Register: `POST /api/registeredmodels/v2` (`modelName`, `modelSource{sourceType, mlflowSource|huggingFaceSource}`, `create`). `POST /api/registeredmodels/v1/{modelName}/versions` is deprecated since 6.2.1.
-- Get and patch: `GET|PATCH /api/registeredmodels/v1/{modelName}` (`description`, `discoverable`); versions at `/api/registeredmodels/v1/{modelName}/versions/{version}`; endpoints serving a version at `.../versions/{version}/modelapis`.
-- MLflow client calls (`mlflow.register_model`, aliases, tags) go to `MLFLOW_TRACKING_URI`; see `domino-experiment-tracking`.
+- Get and patch: `GET|PATCH /api/registeredmodels/v1/{modelName}` (`PATCH` takes `description` and `discoverable`; `GET` returns neither `discoverable` nor aliases, verified on Cloud 6.4); versions at `/api/registeredmodels/v1/{modelName}/versions/{version}`; endpoints serving a version at `.../versions/{version}/modelapis`.
+- Aliases and tags are MLflow registry features: use the MLflow client on `MLFLOW_TRACKING_URI` or `/api/2.0/mlflow/registered-models/...` on the deployment URL; see `domino-experiment-tracking`.
 
 ## Prediction auth
 
