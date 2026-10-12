@@ -12,7 +12,8 @@ Source: `domino_data/datasets.py`.
 
 - Code that runs where the Dataset is not mounted: an App serving many users, an endpoint, or
   an execution in another Project.
-- Reading a specific snapshot by ID without relying on mount paths.
+- Reading a specific snapshot by ID without relying on mount paths, including a snapshot
+  taken in the current execution, which is not mounted until a later execution starts.
 - Otherwise read the mount (`/domino/datasets/local/<name>` or `/mnt/data/<name>`); it is
   faster and simpler.
 

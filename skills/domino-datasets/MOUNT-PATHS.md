@@ -116,6 +116,20 @@ Git-based Projects also mount code at `/mnt/code` and artifacts at `/mnt/artifac
 (https://docs.domino.ai/cloud/platform-capabilities/core-concepts/projects/files-artifacts-and-results);
 neither is a Dataset.
 
+## When snapshot directories appear
+
+Snapshot mounts are set up when an execution starts. A snapshot taken during a Workspace or
+Job is therefore **not** visible in that execution: there is no `snapshots/<name>/<n>` entry for
+it, and a Workspace that has taken its Dataset's first snapshots has no `snapshots/` directory
+at all. Executions started after the snapshot became `active` mount it. Verified on Domino
+6.4.0: a Job started after five snapshots existed listed `/mnt/data/snapshots/<name>/2` to `/5`
+with their files, while the Workspace that took them saw none. Snapshot 0 (the empty initial
+snapshot every Dataset starts with) and snapshots whose status is `failed` are not mounted.
+
+To read a snapshot from the execution that took it, use the internal file route through the
+proxy or `DatasetClient` with `DatasetConfig(snapshot_id=...)`, both in [API.md](./API.md)
+and the domino-data-sdk skill, or start a Job that mounts it.
+
 ## Read-write or read-only
 
 - Live Dataset directories follow the user's Dataset role: Owner and Editor read-write, Reader
