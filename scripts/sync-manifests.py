@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Copies shared fields from .claude-plugin/plugin.json (source of truth) into the portable
-# plugin.json and the Cursor manifest .cursor-plugin/plugin.json.
+# plugin.json, the Cursor manifest .cursor-plugin/plugin.json and the Gemini CLI extension
+# manifest gemini-extension.json.
 import argparse
 import json
 import re
@@ -11,6 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CLAUDE = ROOT / ".claude-plugin" / "plugin.json"
 PORTABLE = ROOT / "plugin.json"
 CURSOR = ROOT / ".cursor-plugin" / "plugin.json"
+GEMINI = ROOT / "gemini-extension.json"
 SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 SHARED = ["name", "version", "description", "author", "homepage", "repository", "license",
           "keywords"]
@@ -22,6 +24,13 @@ CURSOR_ONLY = ["displayName", "logo", "mcpServers", "rules", "skills", "agents",
 CURSOR_ORDER = ["name", "displayName", "version", "description", "author", "homepage",
                 "repository", "license", "keywords", "logo", "rules", "skills", "agents",
                 "commands", "hooks", "mcpServers", "variables"]
+# Gemini CLI reads only name, version and description as identity (docs/extensions/reference.md
+# in google-gemini/gemini-cli); contextFileName, settings, mcpServers and the rest are
+# Gemini-only and kept from the file.
+GEMINI_SHARED = ["name", "version", "description"]
+GEMINI_ONLY = ["contextFileName", "settings", "mcpServers", "excludeTools", "themes", "plan",
+               "migratedTo"]
+GEMINI_ORDER = [*GEMINI_SHARED, *GEMINI_ONLY]
 # YYYY.XYY.N is semver because the OpenAI portal rejects anything else.
 VERSION = re.compile(r"[0-9]{4}\.[1-9][0-9]{2,}\.(0|[1-9][0-9]*)")
 # Public-directory limits from the OpenAI submission reference.
@@ -55,6 +64,13 @@ def expected_cursor(claude: dict) -> dict:
     return {k: out[k] for k in CURSOR_ORDER if k in out}
 
 
+def expected_gemini(claude: dict) -> dict:
+    gemini = json.loads(GEMINI.read_text()) if GEMINI.exists() else {}
+    out = {k: claude[k] for k in GEMINI_SHARED if k in claude}
+    out.update({k: gemini[k] for k in GEMINI_ONLY if k in gemini})
+    return {k: out[k] for k in GEMINI_ORDER if k in out}
+
+
 def listing_errors(manifest: dict) -> list[str]:
     interface = manifest.get("extensions", {}).get("com.openai", {}).get("interface", {})
     errors = []
@@ -81,18 +97,19 @@ def dump(manifest: dict) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Sync plugin.json and .cursor-plugin/plugin.json "
-                                                 "from .claude-plugin/plugin.json")
+    parser = argparse.ArgumentParser(description="Sync plugin.json, .cursor-plugin/plugin.json and "
+                                                 "gemini-extension.json from .claude-plugin/plugin.json")
     parser.add_argument("--check", action="store_true", help="fail instead of writing if stale")
     args = parser.parse_args()
 
     claude = load_claude()
-    want = dump(expected(claude))
-    want_cursor = dump(expected_cursor(claude))
-    targets = [(PORTABLE, want), (CURSOR, want_cursor)]
+    targets = [(PORTABLE, dump(expected(claude))),
+               (CURSOR, dump(expected_cursor(claude))),
+               (GEMINI, dump(expected_gemini(claude)))]
+    names = ", ".join(p.relative_to(ROOT).as_posix() for p, _ in targets)
     version = claude["version"]
     if args.check:
-        problems = listing_errors(json.loads(want))
+        problems = listing_errors(json.loads(targets[0][1]))
         if problems:
             sys.exit("plugin.json listing metadata:\n  " + "\n  ".join(problems))
         stale = [p.relative_to(ROOT).as_posix() for p, text in targets
@@ -100,12 +117,12 @@ def main() -> None:
         if stale:
             sys.exit(f"{', '.join(stale)} out of sync with .claude-plugin/plugin.json; "
                      "run scripts/sync-manifests.py and commit the result")
-        print(f"ok: plugin.json and .cursor-plugin/plugin.json in sync (version {version})")
+        print(f"ok: {names} in sync (version {version})")
         return
     for path, text in targets:
         path.parent.mkdir(exist_ok=True)
         path.write_text(text)
-    print(f"wrote plugin.json and .cursor-plugin/plugin.json (version {version})")
+    print(f"wrote {names} (version {version})")
 
 
 if __name__ == "__main__":
