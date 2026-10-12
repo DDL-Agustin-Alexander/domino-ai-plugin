@@ -2,8 +2,10 @@
 
 All routes below exist in both published Public API specs
 (https://docs.domino.ai/api-specs/6.3/public-api.json and
-https://docs.domino.ai/api-specs/cloud/public-api.json, tag `Datasets`) and were checked against
-a live Domino 6.4.0 deployment with read-only calls on 2026-10-12. No `/v4` route is needed.
+https://docs.domino.ai/api-specs/cloud/public-api.json, tag `Datasets`). Every write (create,
+snapshot, tag, grant, shared-dataset link, delete) was exercised on a live Domino 6.4.0
+deployment on 2026-10-12; "verified" below means observed there. The only `/v4` routes are the
+snapshot file-listing ones, labelled internal.
 Docs: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/datasets/create-and-manage-datasets
 (REST tab) and the API reference under https://docs.domino.ai/cloud/reference/api.
 
@@ -38,7 +40,7 @@ r.raise_for_status()
 Every 2xx response wraps the payload with `metadata` (`requestId`, `notices`; lists carry
 `offset` and `limit`, and the snapshot list `totalCount`, as observed on Domino 6.4.0). The spec
 describes errors as `{"code", "message"}` for 401 and 403 and `{"error"}` for 400, 404 and 500;
-a 404 on 6.4.0 was observed as `{"requestId": ..., "errors": ["..."]}`, so read either shape.
+on 6.4.0 a 400 or 404 arrives as `{"requestId": ..., "errors": ["..."]}`, so read either shape.
 
 ## Routes
 
@@ -48,25 +50,26 @@ a 404 on 6.4.0 was observed as `{"requestId": ..., "errors": ["..."]}`, so read 
 | `POST /api/datasetrw/v1/datasets` | Create | `{"name": "...", "description": "...", "projectId": "...", "grants": [...]}`; or `snapshotId` instead of `projectId` to copy a snapshot into a new Dataset; `name` required |
 | `GET /api/datasetrw/v1/datasets/{datasetId}` | Details | returns `id`, `name`, `description`, `projectId`, `createdAt`, `snapshotIds`, `tags` (tag name to snapshot ID) |
 | `PATCH /api/datasetrw/v1/datasets/{datasetId}` | Rename or re-describe | `{"name": "...", "description": "..."}` (either) |
-| `DELETE /api/datasetrw/v1/datasets/{datasetId}` | Delete a Dataset. Requires the PermanentDelete permission, which only admins hold, and may be irreversible after the deletion grace period; Owners mark for deletion in the UI instead. Never call without explicit user confirmation | none |
+| `DELETE /api/datasetrw/v1/datasets/{datasetId}` | Soft delete (verified by a non-admin Owner): returns the Dataset, which vanishes from the v2 list at once while `GET` by ID still works; internally it is `DeletionInProgress` and cancellable (internal API `DELETE /v4/datasetrw/dataset/{id}/cancel-request-to-delete`, not exercised), and it stayed in that state after 10 minutes. The spec names the PermanentDelete permission. Whether an admin must finish the deletion was not determined. Never call it without explicit user confirmation | none |
 | `GET /api/datasetrw/v1/datasets/{datasetId}/snapshots` | List snapshots | `offset`, `limit` (default 10); each has `id`, `datasetId`, `creatorId`, `createdAt`, `status` |
-| `POST /api/datasetrw/v1/datasets/{datasetId}/snapshots` | Create snapshot | `{"relativeFilePaths": ["/*"]}` for all files, or specific paths; returns `status: pending` |
+| `POST /api/datasetrw/v1/datasets/{datasetId}/snapshots` | Create snapshot | `{"relativeFilePaths": ["*"]}` for all files (verified: active in about 20 s with nested files; `["/*"]` is accepted but the snapshot ends `failed`), or paths such as `["a.txt", "sub/b.txt"]`; returns `status: pending`. One copy at a time: a second `POST` while one is pending returns 400 `a snapshot copy is already in progress` |
 | `GET /api/datasetrw/v1/snapshots/{snapshotId}` | Snapshot details | `status` is one of `pending`, `active`, `failed`, `copying`, `markForDeletion`, `deletionInProgress`, `deleted` |
-| `POST /api/datasetrw/v1/datasets/{datasetId}/tags` | Tag a snapshot. To move a tag, `DELETE` it first; behaviour when the name already exists is not documented | `{"snapshotId": "...", "tagName": "..."}` |
+| `POST /api/datasetrw/v1/datasets/{datasetId}/tags` | Tag a snapshot; returns the Dataset with its `tags` map. Re-using a name on another snapshot returns 400 `Tag ... already exists within dataset` (verified), so to move a tag `DELETE` it first | `{"snapshotId": "...", "tagName": "..."}` |
 | `DELETE /api/datasetrw/v1/datasets/{datasetId}/tags/{tagName}` | Remove a tag | none |
-| `GET /api/datasetrw/v1/datasets/{datasetId}/grants` | List grants | none |
-| `POST /api/datasetrw/v1/datasets/{datasetId}/grants` | Add a grant | `{"targetId": "<user-id>", "targetRole": "DatasetRwOwner" / "DatasetRwEditor" / "DatasetRwReader"}` |
-| `DELETE /api/datasetrw/v1/datasets/{datasetId}/grants` | Remove a grant | same body as add |
-| `GET /api/projects/v1/projects/{projectId}/shared-datasets` | Datasets shared into a Project | 404 with `sharedDatasetRwEntry ... not found` when none |
-| `POST /api/projects/v1/projects/{projectId}/shared-datasets` | Mount a shared Dataset | `{"datasetId": "..."}`; needs `ManageDatasetsRw` and `UseFileStorage` on the Project |
-| `DELETE /api/projects/v1/projects/{projectId}/shared-datasets/{datasetId}` | Unmount | none |
-| `GET /datasetrw/snapshot/{snapshotId}/files/recursive?path=` | File names under a path in a snapshot | `path` required (`/` for the root) |
-| `GET /datasetrw/snapshot/{snapshotId}/file/raw?path=` | Raw file content | `path` required; `download` optional |
+| `GET /api/datasetrw/v1/datasets/{datasetId}/grants` | List grants; returns `grantDetails[{targetId, targetName, targetRole, isOrganization}]` | none |
+| `POST /api/datasetrw/v1/datasets/{datasetId}/grants` | Set a target's role. One grant per target: posting a new role for an existing target **replaces** it (verified), and demoting the last Owner returns 400 `Dataset must have at least one owner`. Returns `grants[...]` | `{"targetId": "<user-id>", "targetRole": "DatasetRwOwner" / "DatasetRwEditor" / "DatasetRwReader"}` |
+| `DELETE /api/datasetrw/v1/datasets/{datasetId}/grants` | Remove a grant; 200 with no change when nothing matches (verified) | same body as add |
+| `GET /api/projects/v1/projects/{projectId}/shared-datasets` | Datasets shared into a Project; `{"dataset": {"projectId", "sharedDatasetIds": [...]}}`, an empty list when none (verified; one older Project returned 404 `sharedDatasetRwEntry ... not found`, so handle both) | none |
+| `POST /api/projects/v1/projects/{projectId}/shared-datasets` | Mount a shared Dataset (verified) | `{"datasetId": "..."}`; needs `ManageDatasetsRw` and `UseFileStorage` on the Project |
+| `DELETE /api/projects/v1/projects/{projectId}/shared-datasets/{datasetId}` | Unmount; returns `{"success": true}` (verified) | none |
+| `GET /v4/datasetrw/snapshot/{snapshotId}/files/recursive?path=` | **Internal API, may change between Domino versions.** File names under a path in a snapshot; rows `[{name: {label, ...}, size, lastModified}]` | `path` required; empty for the root (`/` and `.` return 400) |
+| `GET /v4/datasetrw/snapshot/{snapshotId}/file/raw?path=a.txt` | **Internal API, may change between Domino versions.** Raw file content | `path` required; `download` optional |
 
-`GET /api/datasetrw/v1/datasets` also exists but is marked deprecated; use v2. The `/datasetrw/...`
-file routes are in the Public API spec without the `/api` prefix; chunked upload routes
-(`/datasetrw/datasets/{datasetId}/snapshot/file/...`) exist but are what the CLI and
-python-domino `datasets_upload_files` drive; prefer those tools over calling them directly.
+`GET /api/datasetrw/v1/datasets` also exists but is marked deprecated; use v2. The spec lists the
+file routes as `/datasetrw/snapshot/...` without a prefix, but on Domino 6.4.0 that form (and
+`/api/datasetrw/snapshot/...`) returns 404 and only the `/v4/` form answers, hence the internal
+label. The chunked upload routes (`/datasetrw/datasets/{datasetId}/snapshot/file/...`) are what
+the CLI and python-domino `datasets_upload_files` drive; prefer those tools over calling them.
 
 ## Examples
 
@@ -80,11 +83,11 @@ DATASET_ID=$(printf '%s' "$DS" | python3 -c "import sys, json; print(json.load(s
 
 # ... write files under the mount path, then:
 curl -sS -X POST "$DOMINO_API_PROXY/api/datasetrw/v1/datasets/$DATASET_ID/snapshots" \
-  -H "Content-Type: application/json" -d '{"relativeFilePaths": ["/*"]}'
+  -H "Content-Type: application/json" -d '{"relativeFilePaths": ["*"]}'
 ```
 
-The new Dataset is mounted in executions started after it exists; a running Workspace does not
-see it until restarted.
+The new Dataset is mounted in executions started after it exists (verified from a Job); a
+running Workspace does not see it until restarted.
 
 Wait for a snapshot, then tag it:
 
@@ -92,7 +95,7 @@ Wait for a snapshot, then tag it:
 import time
 
 snap = requests.post(f"{base}/api/datasetrw/v1/datasets/{dataset_id}/snapshots",
-                     headers=headers, json={"relativeFilePaths": ["/*"]}).json()["snapshot"]
+                     headers=headers, json={"relativeFilePaths": ["*"]}).json()["snapshot"]
 while snap["status"] in ("pending", "copying"):
     time.sleep(5)
     snap = requests.get(f"{base}/api/datasetrw/v1/snapshots/{snap['id']}", headers=headers).json()["snapshot"]
@@ -117,7 +120,8 @@ def find_dataset(name, page=200):
         offset += page
 ```
 
-Share with a user and mount in another Project:
+Share with a user and mount in another Project (the grant call sets that user's single role;
+it does not stack):
 
 ```python
 requests.post(f"{base}/api/datasetrw/v1/datasets/{dataset_id}/grants", headers=headers,

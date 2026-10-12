@@ -73,7 +73,7 @@ one is in progress; time scales with size.
 
 - **Create**: UI **Take Snapshot** (all or selected files, optional tag);
   `domino create-snapshot <owner>/<project>/<dataset>`; or
-  `POST /api/datasetrw/v1/datasets/{datasetId}/snapshots` with `{"relativeFilePaths": ["/*"]}`.
+  `POST /api/datasetrw/v1/datasets/{datasetId}/snapshots` with `{"relativeFilePaths": ["*"]}`.
   `status` starts `pending` and becomes `active`; poll `GET /api/datasetrw/v1/snapshots/{id}`.
 - **Read**: the numbered or tagged path above, or pin the execution to one snapshot on the
   **Data Plane & Hardware** tab at launch; it then mounts read-only at the live path.
@@ -81,8 +81,8 @@ one is in progress; time scales with size.
   `snapshotId`, or `domino create-dataset-from-snapshot <owner>/<project>/<dataset> <n> <new-name>`.
 - **Tags** name one snapshot (`snapshots/<name>/<tag>`); Owners and Editors add or remove them on
   the **Snapshots** page or with `POST .../datasets/{datasetId}/tags`
-  `{"snapshotId": "...", "tagName": "production"}` and `DELETE .../tags/{tagName}`. Remove then
-  add to move a tag; what `POST` does with an existing name is not documented.
+  `{"snapshotId": "...", "tagName": "production"}` and `DELETE .../tags/{tagName}`. Re-using a
+  name returns 400, so to move a tag remove it, then add it.
 - **Limits**: by default 20 active snapshots per Dataset (6.3 configuration record
   `com.cerebro.domino.dataset.quota.maxActiveSnapshotsPerDataset`; Domino Support on Cloud).
   At the limit an execution that would write a snapshot fails with an error, and a manual
@@ -103,9 +103,9 @@ paths. Reads without a mount (Apps, endpoints): `DatasetClient` in the domino-da
 ## Delete
 
 Owners mark a Dataset or snapshot for deletion in the UI (**More Actions > Delete Dataset**);
-an admin deletes it permanently. `DELETE /api/datasetrw/v1/datasets/{datasetId}` needs the
-PermanentDelete permission (admin-level) and may be irreversible after the grace period; never
-call it without the user's explicit confirmation.
+an admin deletes it permanently. `DELETE /api/datasetrw/v1/datasets/{datasetId}` is the same
+soft delete (verified: `DeletionInProgress`, hidden from lists, cancellable) and affects every
+Project that mounts it; confirm with the user first.
 
 ## Troubleshooting
 

@@ -72,7 +72,7 @@ call the API through the proxy (outside a run use a Personal Access Token instea
 ```bash
 curl -sS -X POST "$DOMINO_API_PROXY/api/datasetrw/v1/datasets/$DATASET_ID/snapshots" \
   -H "Content-Type: application/json" \
-  -d '{"relativeFilePaths": ["/*"]}'
+  -d '{"relativeFilePaths": ["*"]}'
 ```
 
 Or `domino create-snapshot <owner>/<project>/<dataset>` from a machine with the CLI. Wait for
