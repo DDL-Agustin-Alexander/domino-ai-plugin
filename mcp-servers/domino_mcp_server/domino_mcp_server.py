@@ -543,9 +543,16 @@ def _read_state(user_name: str, project_name: str, path: str, project_id: str) -
                 "key": _file_key(raw), "size": len(raw)}
     if resp.status_code == 403:
         if _listed_in_directory(user_name, project_name, path):
-            raise DominoError(f"Could not read {path} in {user_name}/{project_name} although it exists "
-                              f"({_describe_http_error('GET', 'file content', resp)}). Nothing was changed.")
+            raise FileAheadOfCommitError(
+                f"Could not read {path} in {user_name}/{project_name} although the directory listing "
+                f"shows it ({_describe_http_error('GET', 'file content', resp)}). Domino's latest-commit "
+                f"index lags a write by some seconds, so the file was probably uploaded moments ago; "
+                f"retry in a minute. Nothing was changed.")
     return {"exists": False, "commit_id": commit_id, "raw": None, "content": None, "key": None, "size": 0}
+
+
+class FileAheadOfCommitError(DominoError):
+    """The directory listing shows the file but the latest commit does not contain it yet."""
 
 
 # Domino's project-file reads (latest commit, file content) lag a write by up to about 20 seconds
@@ -570,34 +577,108 @@ def _remote_state(user_name: str, project_name: str, path: str, info: Dict[str, 
     returned as is and the caller reports the lag).
     """
     project_id = (info or _project_info(user_name, project_name))["id"]
-    state = _read_state(user_name, project_name, path, project_id)
     entry = _file_version_cache.get((user_name, project_name, path))
     if not _recent_own_write(entry):
-        return state
-    expected, first_key = entry["key"], state["key"]
+        return _read_state(user_name, project_name, path, project_id)
+
+    def _read_tolerant() -> Dict[str, Any]:
+        # Right after our own write the listing can show the file before the latest commit
+        # contains it; for an own write that is "not visible yet", not an error.
+        try:
+            return _read_state(user_name, project_name, path, project_id)
+        except FileAheadOfCommitError as e:
+            return {"exists": False, "commit_id": None, "raw": None, "content": None, "key": None,
+                    "size": 0, "pending_error": e}
+
+    # Stale means the read still shows what was there before our write (entry["previous_key"],
+    # None for a created file); any other key that is not ours is a newer write by someone else.
+    state = _read_tolerant()
+    expected, previous = entry["key"], entry.get("previous_key")
     deadline = time.monotonic() + _WRITE_VISIBILITY_TIMEOUT
-    while state["key"] != expected and state["key"] == first_key and time.monotonic() < deadline:
+    while state["key"] != expected and state["key"] == previous and time.monotonic() < deadline:
         time.sleep(_WRITE_POLL_INTERVAL)
-        state = _read_state(user_name, project_name, path, project_id)
+        state = _read_tolerant()
     if state["key"] == expected:
         entry["visible"] = True
+        entry["commit_id"] = state["commit_id"]   # the newest commit known to contain this write
+    elif state.get("pending_error"):
+        raise state["pending_error"]
     else:
-        state["lagging_own_write"] = state["key"] == first_key
+        state["lagging_own_write"] = state["key"] == previous
     return state
 
 
-def _await_project_writes(user_name: str, project_name: str, info: Dict[str, Any]) -> None:
-    """Before starting a Job, wait until this process's recent writes to the project are visible.
+# For some seconds after an upload the Jobs, Apps and Model API services still resolve the previous
+# DFS head, even once the files API shows the new commit (seen on Domino Cloud 6.4: a Job submitted
+# 5 s after an upload ran from the project-creation commit). A Job started right after an upload
+# therefore pins commitId to a commit known to contain the uploaded files instead of taking the
+# head. Writes older than this many seconds are assumed to have reached every service.
+_PIN_WINDOW = 15 * 60
 
-    One timeout budget for all files: once it is spent the Job starts anyway.
+
+def _recent_writes(user_name: str, project_name: str) -> List[tuple]:
+    """[(path, entry)] for files this process wrote to the project within _PIN_WINDOW."""
+    now = time.monotonic()
+    return [(path, entry) for (owner, project, path), entry in list(_file_version_cache.items())
+            if (owner, project) == (user_name, project_name) and "written_at" in entry
+            and now - entry["written_at"] < _PIN_WINDOW]
+
+
+def _confirm_upload(user_name: str, project_name: str, path: str, info: Dict[str, Any]) -> Dict[str, Any]:
+    """After a write: the commit that contains it ("commitId"), waiting for the files API to show it."""
+    try:
+        state = _remote_state(user_name, project_name, path, info)
+    except FileAheadOfCommitError:
+        state = {"commit_id": None}
+    entry = _file_version_cache.get((user_name, project_name, path)) or {}
+    commit = entry.get("commit_id") if entry.get("visible") else None
+    result: Dict[str, Any] = {"commitId": commit}
+    if not commit:
+        result["note"] = (f"The upload succeeded but after {int(_WRITE_VISIBILITY_TIMEOUT)} s the latest "
+                          f"commit does not show it yet; run_domino_job will wait for it before starting.")
+    return result
+
+
+def _pin_commit_for_recent_writes(user_name: str, project_name: str, info: Dict[str, Any]) -> str | None:
+    """The commitId a new Job must run from so that this process's recent uploads are in it.
+
+    None when there were no recent writes (the head is fine). Otherwise every recent write is
+    waited for (one timeout budget for all files), then the latest commit is used if it contains
+    all of them, else the newest commit confirmed to contain them. Raises instead of starting
+    from a commit that would miss an upload.
     """
+    writes = _recent_writes(user_name, project_name)
+    if not writes:
+        return None
     start = time.monotonic()
-    for (owner, project, path), entry in list(_file_version_cache.items()):
-        if (owner, project) != (user_name, project_name) or not _recent_own_write(entry):
+    for path, entry in writes:
+        if entry.get("visible"):
             continue
         if time.monotonic() - start >= _WRITE_VISIBILITY_TIMEOUT:
             break
-        _remote_state(user_name, project_name, path, info)
+        try:
+            _remote_state(user_name, project_name, path, info)
+        except FileAheadOfCommitError:
+            pass
+    missing = [path for path, entry in writes if not entry.get("visible")]
+    if missing:
+        raise DominoError(f"The file(s) uploaded moments ago ({', '.join(missing)}) are not in the "
+                          f"project's latest commit yet, so the Job would start without them. Retry "
+                          f"run_domino_job in a minute, or pass commit_id of a commit that has them.")
+    project_id = info["id"]
+    latest = _latest_commit_id(project_id)
+    confirmed = sorted((entry["written_at"], entry["commit_id"]) for _, entry in writes if entry.get("commit_id"))
+    if confirmed and latest == confirmed[-1][1]:
+        return latest
+    for path, entry in writes:
+        if entry.get("commit_id") == latest:
+            continue
+        resp = _read_remote_file(project_id, latest, path)
+        if resp.status_code != 200 or _file_key(resp.content) != entry["key"]:
+            # The latest commit does not (yet) contain this write: fall back to the newest commit
+            # that was confirmed to; later writes' commits contain the earlier ones.
+            return confirmed[-1][1] if confirmed else None
+    return latest
 
 
 def _filter_domino_stdout(stdout_text: str) -> str:
@@ -909,13 +990,19 @@ def check_domino_job_run_status(run_id: str, user_name: str | None = None,
 @_threaded
 def run_domino_job(user_name: str, project_name: str, run_command: str, title: str,
                    git_branch: str | None = None, hardware_tier: str | None = None,
-                   environment_id: str | None = None, wait_seconds: int = 0) -> Dict[str, Any]:
+                   environment_id: str | None = None, wait_seconds: int = 0,
+                   commit_id: str | None = None) -> Dict[str, Any]:
     """
     Runs a command as a Job on the Domino platform, typically a script such as
-    'python my_script.py --arg1 val1'. The command runs against the project's latest files: for a
-    DFS project the synced files; for a Git-based project the repository's default branch
-    (pushed commits only) unless git_branch names another branch. Files uploaded by this server
-    moments ago are waited for (Domino file reads lag a write by about 20 s) before the Job starts.
+    'python my_script.py --arg1 val1'. The command runs against the project's files: for a
+    DFS project the synced files at commit_id, which defaults to the latest commit; for a
+    Git-based project the repository's default branch (pushed commits only) unless git_branch
+    names another branch.
+
+    Right after an upload the Job service still resolves the previous commit for some seconds,
+    so when files were uploaded by this server moments ago and commit_id is omitted, the Job is
+    pinned to a commit known to contain them (the commitId the upload tools returned, or the
+    latest commit once it contains them). The commit used comes back as "commit_id".
 
     To run a Job and get its result in one call, pass wait_seconds (for example 300): the call
     waits on the server and returns the final status and the end of the stdout. If the Job is
@@ -937,11 +1024,16 @@ def run_domino_job(user_name: str, project_name: str, run_command: str, title: s
             GET /api/environments/beta/environments. Omit for the project default.
         wait_seconds (int): Wait on the server for the Job to complete, up to this many seconds
             (capped at 600 per call, 50 under Codex). 0 returns as soon as the Job is queued.
+        commit_id (str, optional): The DFS commit to run from (the "commitId" an upload tool
+            returned, or from GET /api/projects/beta/projects/{id}/commits/latest). Omit to let the
+            server pin it after recent uploads, or to run the latest commit. On a Git-based project
+            it is the main repository commit to run (sent as mainRepoGitRef refType "commitId").
 
     Returns:
-        {"job_id", "run_id", "number", "status", "is_completed", ...} of the new job, plus
-        "hardware_tier" and "environment_id" when given. With wait_seconds: "waited_seconds",
-        and once completed "results" (end of the stdout) and "results_truncated".
+        {"job_id", "run_id", "number", "status", "is_completed", "commit_id", ...} of the new job,
+        plus "hardware_tier" and "environment_id" when given. commit_id is the DFS commit the Job
+        was pinned to (null when the latest commit was taken). With wait_seconds:
+        "waited_seconds", and once completed "results" (end of the stdout) and "results_truncated".
     """
     if not run_command or not run_command.strip():
         raise DominoError("run_command must not be empty")
@@ -954,9 +1046,27 @@ def run_domino_job(user_name: str, project_name: str, run_command: str, title: s
         payload["hardwareTier"] = _resolve_hardware_tier(hardware_tier)
     if environment_id:
         payload["environmentId"] = _resolve_environment_id(environment_id)
-    _await_project_writes(user_name, project_name, info)   # files uploaded moments ago must be at the head
+    pinned: str | None = None
+    if commit_id:
+        commit_id = commit_id.strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{7,64}", commit_id):
+            raise DominoError("commit_id must be a commit hash")
+        if info.get("git_based"):
+            if git_branch:
+                raise DominoError("Pass either git_branch or commit_id for a Git-based project, not both")
+            # NewJobV1.commitId is the DFS commit and is rejected for Git-based projects (Cloud spec);
+            # a main-repository commit is pinned through mainRepoGitRef.
+            payload["mainRepoGitRef"] = {"refType": "commitId", "value": commit_id}
+        else:
+            payload["commitId"] = commit_id
+        pinned = commit_id
+    elif not info.get("git_based"):
+        pinned = _pin_commit_for_recent_writes(user_name, project_name, info)
+        if pinned:
+            payload["commitId"] = pinned
     body = _api_json("POST", "/api/jobs/v1/jobs", json=payload) or {}   # Public API (NewJobV1)
     result = _summarize_job(body.get("job") or {})
+    result["commit_id"] = pinned
     if "hardwareTier" in payload:
         result["hardware_tier"] = payload["hardwareTier"]
     if "environmentId" in payload:
@@ -1115,9 +1225,14 @@ def list_domino_project_files(user_name: str, project_name: str, path: str = "/"
     }
 
 
-def _written(key: str, data: bytes) -> Dict[str, Any]:
-    """A cache entry for a file this process just wrote (see _WRITE_VISIBILITY_TIMEOUT)."""
-    return {"key": key, "raw": data, "written_at": time.monotonic(), "visible": False}
+def _written(key: str, data: bytes, previous_key: str | None) -> Dict[str, Any]:
+    """A cache entry for a file this process just wrote (see _WRITE_VISIBILITY_TIMEOUT).
+
+    previous_key is the remote key read just before the write (None for a new file): a later
+    read that still shows it is stale, not a conflict.
+    """
+    return {"key": key, "raw": data, "written_at": time.monotonic(), "visible": False,
+            "previous_key": previous_key}
 
 
 def _upload(user_name: str, project_name: str, path: str, data: bytes) -> Dict[str, Any]:
@@ -1145,17 +1260,19 @@ def _upload_file(user_name: str, project_name: str, file_path: str, data: bytes,
                  overwrite: bool) -> Dict[str, Any]:
     path = _normalize_project_path(file_path)
     info = _require_dfs_project(user_name, project_name)
-    if not overwrite:
-        remote = _remote_state(user_name, project_name, path, info)
-        if remote["exists"]:
-            if remote["key"] == _file_key(data):
-                return {"success": True, "action": "no_change", "path": path, "key": remote["key"],
-                        "message": "File content identical to remote, no upload needed"}
+    remote = _remote_state(user_name, project_name, path, info)   # also records the pre-write key
+    if remote["exists"]:
+        if remote["key"] == _file_key(data):
+            return {"success": True, "action": "no_change", "path": path, "key": remote["key"],
+                    "commitId": remote["commit_id"],
+                    "message": "File content identical to remote, no upload needed"}
+        if not overwrite:
             raise DominoError(f"{path} already exists in {user_name}/{project_name} with different "
                               f"content (key {remote['key']}). Use smart_sync_file to compare and "
                               f"merge, or pass overwrite=True to replace it.")
     result = _upload(user_name, project_name, path, data)
-    _file_version_cache[(user_name, project_name, path)] = _written(result["key"], data)
+    _file_version_cache[(user_name, project_name, path)] = _written(result["key"], data, remote["key"])
+    result.update(_confirm_upload(user_name, project_name, path, info))
     return result
 
 
@@ -1185,7 +1302,10 @@ def upload_file_to_domino_project(
         overwrite (bool): Replace the file if it already exists (default False).
 
     Returns:
-        {"success": True, "path", "size", "key", "lastModified"} on success.
+        {"success": True, "path", "size", "key", "commitId", "lastModified"} on success. commitId
+        is the project commit that contains the uploaded file; pass it as commit_id to
+        run_domino_job (or as the commit of an App or Model API version) so the execution starts
+        from it rather than from a head that may still be the previous commit for some seconds.
     """
     data = _bytes_from_args(file_content, content_base64, "file_content")
     return _upload_file(user_name, project_name, file_path, data, overwrite)
@@ -1257,7 +1377,9 @@ def sync_local_file_to_domino(
         overwrite (bool): Replace the remote file if it already exists (default False).
 
     Returns:
-        Upload result on success.
+        {"success": True, "path", "size", "key", "commitId", "lastModified"} on success. commitId
+        is the project commit that contains the uploaded file; pass it as commit_id to
+        run_domino_job so the Job starts from it.
     """
     try:
         with open(local_file_path, 'rb') as f:
@@ -1311,7 +1433,9 @@ def smart_sync_file(
         force_overwrite (bool): Replace the remote file whatever its current content.
 
     Returns:
-        On success: {"success": True, "action": "created"|"uploaded"|"no_change"|"force_overwritten", "key"}
+        On success: {"success": True, "action": "created"|"uploaded"|"no_change"|"force_overwritten",
+                     "key", "commitId"}. commitId is the project commit that contains the file;
+                     pass it as commit_id to run_domino_job so the Job starts from it.
         On conflict: {"conflict": True, "message", "remote_content" (text) or
                       "remote_content_base64" (binary), "remote_key", "your_base_key"?,
                       "original_content"?, "suggestion"}
@@ -1325,9 +1449,10 @@ def smart_sync_file(
 
     def _do_upload(action: str, **extra: Any) -> Dict[str, Any]:
         result = _upload(user_name, project_name, path, data)
-        _file_version_cache[cache_key] = _written(result["key"], data)
+        _file_version_cache[cache_key] = _written(result["key"], data, remote["key"])
+        confirmed = _confirm_upload(user_name, project_name, path, info)
         return {"success": True, "action": action, "path": path, "key": result["key"],
-                "size": result["size"], "message": f"{action}: {path}", **extra}
+                "size": result["size"], "message": f"{action}: {path}", **confirmed, **extra}
 
     # Case 1: the file does not exist remotely: create it.
     if not remote["exists"]:
@@ -1337,6 +1462,7 @@ def smart_sync_file(
     if remote["key"] == _file_key(data):
         _file_version_cache[cache_key] = {"key": remote["key"], "raw": remote["raw"]}
         return {"success": True, "action": "no_change", "path": path, "key": remote["key"],
+                "commitId": remote["commit_id"],
                 "message": "File content identical to remote, no upload needed"}
 
     if force_overwrite:

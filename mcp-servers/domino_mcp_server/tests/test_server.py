@@ -40,9 +40,15 @@ def _add_file(http, path, content: bytes | None, commit=COMMIT, missing_status=4
         http.add("GET", route, FakeResponse(200, content=content))
 
 
-def _add_upload(http, path):
+def _add_upload(http, path, visible_at="default"):
+    """Register the legacy PUT. Unless visible_at is None, the uploaded bytes become readable at
+    that commit (default: COMMIT) right away, which stands for the files API having caught up."""
     def handler(kwargs):
         data = kwargs["data"]
+        if visible_at is not None:
+            commit = COMMIT if visible_at == "default" else visible_at
+            http.add("GET", f"/api/projects/v1/projects/{PID}/files/{commit}/{path.replace('/', '%2F')}/content",
+                     FakeResponse(200, content=data))
         return FakeResponse(200, {"path": path, "size": len(data), "key": "server-key", "lastModified": 1})
     http.add("PUT", f"/v1/projects/{OWNER}/{PROJECT}/{path}", handler)
 
@@ -544,7 +550,8 @@ def test_upload_refuses_existing_file_without_overwrite(server, laptop, http, ru
     assert not _puts(http)
     result = run(server.upload_file_to_domino_project(OWNER, PROJECT, "scripts/train.py", "new", overwrite=True))
     assert result["success"] and result["key"] == hashlib.sha1(b"new").hexdigest()   # local key, not the server's
-    method, path, kwargs = http.calls[-1]
+    assert result["commitId"] == COMMIT
+    method, path, kwargs = _puts(http)[-1]
     assert (method, path) == ("PUT", f"/v1/projects/{OWNER}/{PROJECT}/scripts/train.py")
     assert kwargs["data"] == b"new"
 
@@ -567,7 +574,7 @@ def test_sync_local_file_reads_and_uploads(server, laptop, http, run, tmp_path):
     _add_file(http, "train.py", None)
     _add_upload(http, "train.py")
     result = run(server.sync_local_file_to_domino(OWNER, PROJECT, str(local)))
-    assert result["path"] == "train.py" and http.calls[-1][2]["data"] == b"print('hi')\n"
+    assert result["path"] == "train.py" and _puts(http)[-1][2]["data"] == b"print('hi')\n"
     with pytest.raises(server.DominoError):
         run(server.sync_local_file_to_domino(OWNER, PROJECT, str(tmp_path / "missing.py")))
 
@@ -594,7 +601,7 @@ def test_403_with_file_present_in_listing_is_an_error_and_never_overwrites(serve
                  lambda: server.download_file_from_domino_project(OWNER, PROJECT, "scripts/a.py")):
         with pytest.raises(server.DominoError) as err:
             run(call())
-        assert "although it exists" in str(err.value) and "Nothing was changed" in str(err.value)
+        assert "directory listing shows it" in str(err.value) and "Nothing was changed" in str(err.value)
     assert not _puts(http)
     listing_calls = [c for c in http.calls if c[1] == "/v4/files/browseFiles"]
     assert listing_calls and listing_calls[0][2]["params"]["filePath"] == "scripts"
@@ -713,7 +720,7 @@ def test_smart_sync_uploads_when_baseline_matches_remote(server, laptop, http, r
     run(server.download_file_from_domino_project(OWNER, PROJECT, "a.py"))
     _add_upload(http, "a.py")
     result = run(server.smart_sync_file(OWNER, PROJECT, "a.py", "v2\n"))
-    assert result["action"] == "uploaded" and http.calls[-1][2]["data"] == b"v2\n"
+    assert result["action"] == "uploaded" and _puts(http)[-1][2]["data"] == b"v2\n"
     assert server._file_version_cache[(OWNER, PROJECT, "a.py")]["key"] == hashlib.sha1(b"v2\n").hexdigest()
 
 
@@ -739,7 +746,7 @@ def test_smart_sync_force_overwrite_replaces_and_reports_previous_key(server, la
     result = run(server.smart_sync_file(OWNER, PROJECT, "a.py", "mine\n", force_overwrite=True))
     assert result["action"] == "force_overwritten"
     assert result["previous_remote_key"] == hashlib.sha1(b"remote\n").hexdigest()
-    assert http.calls[-1][2]["data"] == b"mine\n"
+    assert _puts(http)[-1][2]["data"] == b"mine\n"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -756,7 +763,10 @@ def test_tool_names_schemas_and_instructions(server, run):
     }
     # the thread wrapper keeps the real signature, so the schema has the real parameters
     assert set(tools["run_domino_job"].inputSchema["properties"]) == {
-        "user_name", "project_name", "run_command", "title", "git_branch", "hardware_tier", "environment_id", "wait_seconds"}
+        "user_name", "project_name", "run_command", "title", "git_branch", "hardware_tier", "environment_id", "wait_seconds", "commit_id"}
+    assert "commitId" in tools["upload_file_to_domino_project"].description
+    assert "commitId" in tools["sync_local_file_to_domino"].description
+    assert "commitId" in tools["smart_sync_file"].description
     assert set(tools["smart_sync_file"].inputSchema["properties"]) >= {"content", "content_base64"}
     assert tools["smart_sync_file"].inputSchema["required"] == ["user_name", "project_name", "file_path"]
     assert "wait_seconds" in tools["check_domino_job_run_status"].inputSchema["properties"]
@@ -802,8 +812,9 @@ class FakeClock:
         self.now += seconds
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def clock(server, monkeypatch):
+    """Every test runs on a fake clock: the server's waits and sleeps never take real time."""
     c = FakeClock()
     monkeypatch.setattr(server.time, "monotonic", c.monotonic)
     monkeypatch.setattr(server.time, "sleep", c.sleep)
@@ -827,7 +838,7 @@ def _add_read_sequence(http, path, contents):
 
 
 def _baseline_then_upload(server, http, run, path="a.py"):
-    """download v1 (baseline), then smart_sync v2 which uploads; returns nothing, cache holds the own write."""
+    """download v1 (baseline), then smart_sync v2 which uploads and is confirmed; sleeps cleared."""
     _add_project_lookup(http)
     _add_file(http, path, b"v1\n")
     run(server.download_file_from_domino_project(OWNER, PROJECT, path))
@@ -835,73 +846,93 @@ def _baseline_then_upload(server, http, run, path="a.py"):
     assert run(server.smart_sync_file(OWNER, PROJECT, path, "v2\n"))["action"] == "uploaded"
 
 
-def test_stale_read_after_own_upload_is_not_a_false_conflict(server, laptop, http, run, clock):
-    _baseline_then_upload(server, http, run)
-    served = _add_read_sequence(http, "a.py", [b"v1\n", b"v1\n", b"v2\n"])   # Domino still shows v1 for a while
-    result = run(server.smart_sync_file(OWNER, PROJECT, "a.py", "v3\n"))
-    assert result["action"] == "uploaded" and http.calls[-1][2]["data"] == b"v3\n"
-    assert served == [b"v1\n", b"v1\n", b"v2\n"] and clock.sleeps == [2.0, 2.0]
-
-
-def test_download_after_own_create_waits_until_the_file_is_visible(server, laptop, http, run, clock):
+def test_stale_read_after_own_upload_is_waited_out_by_the_upload(server, laptop, http, run, clock):
+    """Right after our write the files API still shows the previous version: the upload tool
+    re-reads until it shows ours and only then reports commitId; no false conflict later."""
     _add_project_lookup(http)
-    _add_file(http, "new.py", None)
-    _add_upload(http, "new.py")
-    assert run(server.upload_file_to_domino_project(OWNER, PROJECT, "new.py", "x\n"))["success"]
-    served = _add_read_sequence(http, "new.py", [None, None, b"x\n"])
+    _add_file(http, "a.py", b"v1\n")
+    run(server.download_file_from_domino_project(OWNER, PROJECT, "a.py"))
+    _add_upload(http, "a.py", visible_at=None)
+    served = _add_read_sequence(http, "a.py", [b"v1\n", b"v1\n", b"v1\n", b"v2\n"])   # pre-write read, then stale, then ours
+    result = run(server.smart_sync_file(OWNER, PROJECT, "a.py", "v2\n"))
+    assert result["action"] == "uploaded" and result["commitId"] == COMMIT
+    assert served == [b"v1\n", b"v1\n", b"v1\n", b"v2\n"] and clock.sleeps == [2.0, 2.0]
+    clock.sleeps.clear()
+    result = run(server.smart_sync_file(OWNER, PROJECT, "a.py", "v3\n"))     # remote now shows v2 = our baseline
+    assert result["action"] == "uploaded" and _puts(http)[-1][2]["data"] == b"v3\n"
+
+
+def test_create_waits_until_the_file_is_visible_and_later_reads_do_not_wait(server, laptop, http, run, clock):
+    _add_project_lookup(http)
+    _add_listing(http, [])
+    _add_upload(http, "new.py", visible_at=None)
+    served = _add_read_sequence(http, "new.py", [None, None, None, b"x\n"])   # pre-write, two stale, visible
+    result = run(server.upload_file_to_domino_project(OWNER, PROJECT, "new.py", "x\n"))
+    assert result["success"] and result["commitId"] == COMMIT and len(clock.sleeps) == 2
     result = run(server.download_file_from_domino_project(OWNER, PROJECT, "new.py"))
-    assert result["content"] == "x\n" and len(served) == 3 and len(clock.sleeps) == 2
-    # once confirmed, later reads do not wait
-    run(server.download_file_from_domino_project(OWNER, PROJECT, "new.py"))
-    assert len(served) == 4 and len(clock.sleeps) == 2
+    assert result["content"] == "x\n" and len(served) == 5 and len(clock.sleeps) == 2
 
 
-def test_another_clients_newer_write_in_the_window_is_a_conflict(server, laptop, http, run, clock):
-    _baseline_then_upload(server, http, run)
-    served = _add_read_sequence(http, "a.py", [b"v1\n", b"v3\n"])             # stale, then someone else's v3
+def test_another_clients_newer_write_during_confirmation_is_not_mistaken_for_ours(server, laptop, http, run, clock):
+    _add_project_lookup(http)
+    _add_file(http, "a.py", b"v1\n")
+    run(server.download_file_from_domino_project(OWNER, PROJECT, "a.py"))
+    _add_upload(http, "a.py", visible_at=None)
+    served = _add_read_sequence(http, "a.py", [b"v1\n", b"v1\n", b"v3\n"])   # pre-write, stale, then someone else's v3
+    result = run(server.smart_sync_file(OWNER, PROJECT, "a.py", "v2\n"))
+    assert result["action"] == "uploaded" and result["commitId"] is None and "note" in result
+    assert clock.sleeps == [2.0]                                                # stopped as soon as a foreign key appeared
     result = run(server.smart_sync_file(OWNER, PROJECT, "a.py", "v4\n"))
     assert result["conflict"] is True and result["remote_content"] == "v3\n"
-    assert result["remote_key"] == hashlib.sha1(b"v3\n").hexdigest()
     assert result["your_base_key"] == hashlib.sha1(b"v2\n").hexdigest()
-    assert "note" not in result and clock.sleeps == [2.0]                     # stopped as soon as a newer key appeared
-    assert not any(c[0] == "PUT" and c[2]["data"] == b"v4\n" for c in http.calls)
+    assert "note" not in result and not any(c[2]["data"] == b"v4\n" for c in _puts(http))
 
 
-def test_visibility_timeout_returns_the_stale_read_with_a_note(server, laptop, http, run, clock):
-    _baseline_then_upload(server, http, run)
-    served = _add_read_sequence(http, "a.py", [b"v1\n"])                      # never catches up
+def test_visibility_timeout_is_reported_and_blocks_a_job(server, laptop, http, run, clock):
+    _add_project_lookup(http)
+    _add_file(http, "a.py", b"v1\n")
+    run(server.download_file_from_domino_project(OWNER, PROJECT, "a.py"))
+    _add_upload(http, "a.py", visible_at=None)
+    _add_read_sequence(http, "a.py", [b"v1\n"])                                # never catches up
+    result = run(server.smart_sync_file(OWNER, PROJECT, "a.py", "v2\n"))
+    assert result["action"] == "uploaded" and result["commitId"] is None
+    assert "does not show it yet" in result["note"] and sum(clock.sleeps) >= server._WRITE_VISIBILITY_TIMEOUT
+    clock.sleeps.clear()
+    posted = []
+    http.add("POST", "/api/jobs/v1/jobs", lambda kw: posted.append(kw["json"]) or FakeResponse(200, {"job": {"id": "j", "status": {}}}))
+    with pytest.raises(server.DominoError) as err:
+        run(server.run_domino_job(OWNER, PROJECT, "python a.py", "t"))
+    assert "a.py" in str(err.value) and posted == [] and sum(clock.sleeps) >= server._WRITE_VISIBILITY_TIMEOUT
     result = run(server.smart_sync_file(OWNER, PROJECT, "a.py", "v3\n"))
-    assert result["conflict"] is True and result["remote_content"] == "v1\n"
-    assert "lag" in result["note"] and "again" in result["note"]
-    assert sum(clock.sleeps) >= server._WRITE_VISIBILITY_TIMEOUT and len(served) == len(clock.sleeps) + 1
-    assert not any(c[0] == "PUT" and c[2]["data"] == b"v3\n" for c in http.calls)
+    assert result["conflict"] is True and "lag" in result["note"] and result["remote_content"] == "v1\n"
 
 
-def test_run_domino_job_waits_for_recent_uploads(server, laptop, http, run, clock):
+def test_run_domino_job_waits_once_for_recent_uploads(server, laptop, http, run, clock):
     _add_project_lookup(http)
-    _add_file(http, "scripts/train.py", None)
-    _add_upload(http, "scripts/train.py")
-    run(server.upload_file_to_domino_project(OWNER, PROJECT, "scripts/train.py", "print(42)\n"))
-    served = _add_read_sequence(http, "scripts/train.py", [None, b"print(42)\n"])
-    http.add("POST", "/api/jobs/v1/jobs", FakeResponse(200, {"job": {"id": "j1", "status": {}}}))
-    assert run(server.run_domino_job(OWNER, PROJECT, "python scripts/train.py", "t"))["job_id"] == "j1"
-    paths = [c[1] for c in http.calls]
-    assert paths.index("/api/jobs/v1/jobs") > max(i for i, p in enumerate(paths) if p.endswith("/content"))
-    assert len(served) == 2 and clock.sleeps == [2.0]
-    run(server.run_domino_job(OWNER, PROJECT, "python scripts/train.py", "t2"))   # write confirmed: no wait
-    assert len(served) == 2 and clock.sleeps == [2.0]
+    _add_listing(http, [])
+    _add_upload(http, "scripts/train.py", visible_at=None)
+    served = _add_read_sequence(http, "scripts/train.py", [None, None, b"print(42)\n"])
+    up = run(server.upload_file_to_domino_project(OWNER, PROJECT, "scripts/train.py", "print(42)\n"))
+    assert up["commitId"] == COMMIT and clock.sleeps == [2.0]
+    posted = []
+    http.add("POST", "/api/jobs/v1/jobs", lambda kw: posted.append(kw["json"]) or FakeResponse(200, {"job": {"id": "j1", "status": {}}}))
+    assert run(server.run_domino_job(OWNER, PROJECT, "python scripts/train.py", "t"))["commit_id"] == COMMIT
+    assert posted[0]["commitId"] == COMMIT and len(served) == 3 and clock.sleeps == [2.0]
+    run(server.run_domino_job(OWNER, PROJECT, "python scripts/train.py", "t2"))   # confirmed: no reads, no wait
+    assert len(served) == 3 and clock.sleeps == [2.0] and posted[1]["commitId"] == COMMIT
 
 
-def test_run_domino_job_wait_has_one_budget_for_all_files(server, laptop, http, run, clock):
+def test_run_domino_job_pin_wait_has_one_budget_for_all_files(server, laptop, http, run, clock):
     _add_project_lookup(http)
+    _add_listing(http, [])
     for name in ("one.py", "two.py"):
-        _add_file(http, name, None)
-        _add_upload(http, name)
+        _add_upload(http, name, visible_at=None)
+        _add_read_sequence(http, name, [None])
         run(server.upload_file_to_domino_project(OWNER, PROJECT, name, "x\n"))
-    _add_read_sequence(http, "one.py", [None])
-    _add_read_sequence(http, "two.py", [None])
-    http.add("POST", "/api/jobs/v1/jobs", FakeResponse(200, {"job": {"id": "j1", "status": {}}}))
-    run(server.run_domino_job(OWNER, PROJECT, "python one.py", "t"))
+    clock.sleeps.clear()
+    with pytest.raises(server.DominoError) as err:
+        run(server.run_domino_job(OWNER, PROJECT, "python one.py", "t"))
+    assert "one.py" in str(err.value) and "two.py" in str(err.value)
     assert server._WRITE_VISIBILITY_TIMEOUT <= sum(clock.sleeps) < 2 * server._WRITE_VISIBILITY_TIMEOUT
 
 
@@ -1060,8 +1091,9 @@ def test_sync_local_file_uploads_binary_bytes_unchanged(server, laptop, http, ru
     _add_file(http, "model.joblib", None)
     _add_upload(http, "model.joblib")
     result = run(server.sync_local_file_to_domino(OWNER, PROJECT, str(local)))
-    assert result["success"] and http.calls[-1][2]["data"] == BINARY
-    assert http.calls[-1][2]["headers"]["Content-Type"] == "application/octet-stream"
+    put = _puts(http)[-1]
+    assert result["success"] and put[2]["data"] == BINARY
+    assert put[2]["headers"]["Content-Type"] == "application/octet-stream"
     assert result["key"] == hashlib.sha1(BINARY).hexdigest() and result["size"] == len(BINARY)
 
 
@@ -1072,11 +1104,11 @@ def test_upload_and_smart_sync_accept_base64(server, laptop, http, run):
     _add_upload(http, "a.bin")
     encoded = base64.b64encode(BINARY).decode()
     result = run(server.upload_file_to_domino_project(OWNER, PROJECT, "a.bin", content_base64=encoded))
-    assert result["success"] and http.calls[-1][2]["data"] == BINARY
+    assert result["success"] and _puts(http)[-1][2]["data"] == BINARY
     _add_file(http, "b.bin", None)
     _add_upload(http, "b.bin")
     result = run(server.smart_sync_file(OWNER, PROJECT, "b.bin", content_base64=encoded))
-    assert result["action"] == "created" and http.calls[-1][2]["data"] == BINARY
+    assert result["action"] == "created" and _puts(http)[-1][2]["data"] == BINARY
     with pytest.raises(server.DominoError) as err:
         run(server.smart_sync_file(OWNER, PROJECT, "b.bin", content="x", content_base64=encoded))
     assert "exactly one" in str(err.value)
@@ -1115,3 +1147,191 @@ def test_large_remote_file_is_compared_but_not_returned(server, laptop, http, ru
     assert "content" not in result and "content_base64" not in result and "content_omitted" in result
     assert result["key"] == hashlib.sha1(big).hexdigest()
     assert run(server.smart_sync_file(OWNER, PROJECT, "big.bin", content="x" * 11))["action"] == "no_change"
+
+
+# ---------------------------------------------------------------------------------------------
+# Commit pinning: a Job started right after an upload runs the commit that contains the upload
+# ---------------------------------------------------------------------------------------------
+
+C2 = "ab" * 20
+C3 = "cd" * 20
+
+
+def _add_commit_sequence(http, commits):
+    """commits/latest returns successive commit ids; the last repeats."""
+    served = []
+
+    def handler(kw):
+        c = commits[min(len(served), len(commits) - 1)]
+        served.append(c)
+        return FakeResponse(200, {"commitId": c, "metadata": {}})
+    http.add("GET", f"/api/projects/beta/projects/{PID}/commits/latest", handler)
+    return served
+
+
+def _add_content_at(http, commit, path, content):
+    route = f"/api/projects/v1/projects/{PID}/files/{commit}/{path.replace('/', '%2F')}/content"
+    if content is None:
+        http.add("GET", route, FakeResponse(403, {"errors": [f"Not authorized: File {path} ... are not valid."]}))
+    else:
+        http.add("GET", route, FakeResponse(200, content=content))
+
+
+def _job_post(http):
+    posted = []
+
+    def handler(kw):
+        posted.append(kw["json"])
+        return FakeResponse(200, {"job": {"id": "j1", "number": 1, "status": {"executionStatus": "Queued", "isCompleted": False}}})
+    http.add("POST", "/api/jobs/v1/jobs", handler)
+    return posted
+
+
+def test_upload_returns_the_commit_that_contains_it(server, laptop, http, run, clock):
+    _add_project_lookup(http)
+    _add_listing(http, [])
+    _add_commit_sequence(http, [COMMIT, COMMIT, C2])       # the pre-upload read, then a stale read, then the new commit
+    _add_content_at(http, COMMIT, "train.py", None)
+    _add_content_at(http, C2, "train.py", b"v2\n")
+    _add_upload(http, "train.py", visible_at=None)
+    result = run(server.upload_file_to_domino_project(OWNER, PROJECT, "train.py", "v2\n"))
+    assert result["success"] and result["commitId"] == C2 and clock.sleeps == [2.0]
+    entry = server._file_version_cache[(OWNER, PROJECT, "train.py")]
+    assert entry["visible"] and entry["commit_id"] == C2
+
+
+def test_sync_local_and_smart_sync_return_commit_id(server, laptop, http, run, clock, tmp_path):
+    _add_project_lookup(http)
+    _add_listing(http, [])
+    _add_commit_sequence(http, [COMMIT, C2])
+    _add_content_at(http, COMMIT, "a.py", None)
+    _add_content_at(http, C2, "a.py", b"x\n")
+    _add_upload(http, "a.py", visible_at=None)
+    local = tmp_path / "a.py"
+    local.write_text("x\n")
+    assert run(server.sync_local_file_to_domino(OWNER, PROJECT, str(local)))["commitId"] == C2
+    server._file_version_cache.clear()
+    http.calls.clear()
+    _add_commit_sequence(http, [COMMIT, C2])
+    result = run(server.smart_sync_file(OWNER, PROJECT, "a.py", "x\n"))
+    assert result["action"] == "created" and result["commitId"] == C2
+    # identical content: no upload, but the commit it was read at is still reported
+    _add_commit_sequence(http, [C2])
+    result = run(server.smart_sync_file(OWNER, PROJECT, "a.py", "x\n"))
+    assert result["action"] == "no_change" and result["commitId"] == C2
+
+
+def test_upload_tolerates_listing_ahead_of_the_commit_index(server, laptop, http, run, clock):
+    """Right after our own write the listing shows the file while the latest commit does not yet."""
+    _add_project_lookup(http)
+    _add_listing(http, [])
+    _add_upload(http, "a.py", visible_at=None)
+    _add_commit_sequence(http, [COMMIT])
+    _add_content_at(http, COMMIT, "a.py", None)
+    posted = run(server.upload_file_to_domino_project(OWNER, PROJECT, "a.py", "x\n"))
+    assert posted["success"]
+    # the 403-but-listed case keeps polling instead of raising, and resolves once C2 appears
+    server._file_version_cache[(OWNER, PROJECT, "a.py")]["visible"] = False
+    _add_listing(http, ["a.py"])
+    _add_commit_sequence(http, [COMMIT, COMMIT, C2])
+    _add_content_at(http, C2, "a.py", b"x\n")
+    state = server._remote_state(OWNER, PROJECT, "a.py", {"id": PID, "git_based": False})
+    assert state["exists"] and state["commit_id"] == C2
+
+
+def test_run_domino_job_pins_the_latest_commit_that_contains_recent_uploads(server, laptop, http, run, clock):
+    _add_project_lookup(http)
+    _add_listing(http, [])
+    _add_commit_sequence(http, [COMMIT, C2])
+    _add_content_at(http, COMMIT, "train.py", None)
+    _add_content_at(http, C2, "train.py", b"v2\n")
+    _add_upload(http, "train.py", visible_at=None)
+    assert run(server.upload_file_to_domino_project(OWNER, PROJECT, "train.py", "v2\n"))["commitId"] == C2
+    posted = _job_post(http)
+    result = run(server.run_domino_job(OWNER, PROJECT, "python train.py", "t"))
+    assert posted[0]["commitId"] == C2 and result["commit_id"] == C2
+
+
+def test_run_domino_job_uses_a_newer_latest_commit_when_it_contains_the_uploads(server, laptop, http, run, clock):
+    _add_project_lookup(http)
+    _add_listing(http, [])
+    _add_commit_sequence(http, [COMMIT, C2, C3])           # pre-upload, confirmation, then at job start
+    _add_content_at(http, COMMIT, "train.py", None)
+    _add_content_at(http, C2, "train.py", b"v2\n")
+    _add_content_at(http, C3, "train.py", b"v2\n")         # someone added another file after us
+    _add_upload(http, "train.py", visible_at=None)
+    run(server.upload_file_to_domino_project(OWNER, PROJECT, "train.py", "v2\n"))
+    posted = _job_post(http)
+    result = run(server.run_domino_job(OWNER, PROJECT, "python train.py", "t"))
+    assert posted[0]["commitId"] == C3 and result["commit_id"] == C3
+
+
+def test_run_domino_job_falls_back_to_the_confirmed_commit(server, laptop, http, run, clock):
+    _add_project_lookup(http)
+    _add_listing(http, [])
+    _add_commit_sequence(http, [COMMIT, C2, C3])
+    _add_content_at(http, COMMIT, "train.py", None)
+    _add_content_at(http, C2, "train.py", b"v2\n")
+    _add_content_at(http, C3, "train.py", None)            # latest moved but does not serve our file
+    _add_upload(http, "train.py", visible_at=None)
+    run(server.upload_file_to_domino_project(OWNER, PROJECT, "train.py", "v2\n"))
+    posted = _job_post(http)
+    result = run(server.run_domino_job(OWNER, PROJECT, "python train.py", "t"))
+    assert posted[0]["commitId"] == C2 and result["commit_id"] == C2
+
+
+def test_run_domino_job_refuses_to_start_without_an_unconfirmed_upload(server, laptop, http, run, clock):
+    _add_project_lookup(http)
+    _add_listing(http, [])
+    _add_commit_sequence(http, [COMMIT])                    # never moves
+    _add_content_at(http, COMMIT, "train.py", None)
+    _add_upload(http, "train.py", visible_at=None)
+    result = run(server.upload_file_to_domino_project(OWNER, PROJECT, "train.py", "v2\n"))
+    assert result["success"] and result["commitId"] is None and "note" in result
+    posted = _job_post(http)
+    with pytest.raises(server.DominoError) as err:
+        run(server.run_domino_job(OWNER, PROJECT, "python train.py", "t"))
+    assert "train.py" in str(err.value) and "commit_id" in str(err.value) and posted == []
+
+
+def test_run_domino_job_without_recent_uploads_takes_the_head(server, laptop, http, run):
+    _add_project_lookup(http)
+    posted = _job_post(http)
+    result = run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t"))
+    assert "commitId" not in posted[0] and result["commit_id"] is None
+    assert not any(p.endswith("/commits/latest") for _, p, _ in http.calls)
+
+
+def test_run_domino_job_explicit_commit_id(server, laptop, http, run):
+    _add_project_lookup(http)
+    posted = _job_post(http)
+    result = run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t", commit_id=C2))
+    assert posted[0]["commitId"] == C2 and result["commit_id"] == C2
+    with pytest.raises(server.DominoError):
+        run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t", commit_id="not a hash"))
+
+
+def test_run_domino_job_commit_id_on_git_based_project_uses_main_repo_git_ref(server, laptop, http, run):
+    _add_project_lookup(http, [{"id": PID, "name": PROJECT, "ownerUsername": OWNER, "mainRepository": GIT_REPO}])
+    posted = _job_post(http)
+    result = run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t", commit_id=C2))
+    assert "commitId" not in posted[0] and posted[0]["mainRepoGitRef"] == {"refType": "commitId", "value": C2}
+    assert result["commit_id"] == C2
+    with pytest.raises(server.DominoError):
+        run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t", commit_id=C2, git_branch="main"))
+
+
+def test_run_domino_job_wait_after_upload_pins_then_returns_results(server, laptop, http, run, clock):
+    _add_project_lookup(http)
+    _add_listing(http, [])
+    _add_commit_sequence(http, [COMMIT, C2])
+    _add_content_at(http, COMMIT, "x.py", None)
+    _add_content_at(http, C2, "x.py", b"print(42)\n")
+    _add_upload(http, "x.py", visible_at=None)
+    run(server.upload_file_to_domino_project(OWNER, PROJECT, "x.py", "print(42)\n"))
+    posted = _job_post(http)
+    _job_status_sequence(http, "j1", ["Queued", "Succeeded"])
+    http.add("GET", "/api/jobs/beta/jobs/j1/logs", FakeResponse(200, {"logs": {"logContent": [{"log": "42"}], "isComplete": True}, "metadata": {}}))
+    result = run(server.run_domino_job(OWNER, PROJECT, "python x.py", "t", wait_seconds=60))
+    assert posted[0]["commitId"] == C2 and result["commit_id"] == C2
+    assert result["status"] == "Succeeded" and result["results"] == "42"
