@@ -1,207 +1,89 @@
-# Jupyter Workspaces in Domino
+# Jupyter and JupyterLab Workspaces in Domino
 
-## Overview
-
-Domino provides both Jupyter Notebook and JupyterLab as workspace options for interactive Python development.
+Applies to Domino 6.3 and Domino Cloud. Launching, persistence, SSH and the session API are in [SKILL.md](./SKILL.md).
 
 ## Jupyter Notebook vs JupyterLab
 
-| Feature | Jupyter Notebook | JupyterLab |
-|---------|------------------|------------|
-| Interface | Single notebook | Multi-tab IDE |
-| File browser | Limited | Full-featured |
-| Terminal | No | Yes |
-| Extensions | Limited | Extensive |
-| Best for | Quick analysis | Full development |
+Both ship in the Domino Standard Environment and run on port 8888 behind the Domino proxy. Domino recommends JupyterLab (file browser, terminals, multi-tab editing, extensions). Classic Jupyter remains available for single-notebook work.
 
-## Starting a Jupyter Workspace
+## Start a Jupyter Workspace
 
-### Via UI
-1. Go to **Workspaces** > **Launch Workspace**
-2. Select **JupyterLab** or **Jupyter Notebook**
-3. Choose hardware tier and environment
-4. Click **Launch**
+1. **Workspaces** > **+ Create New Workspace**.
+2. Select an environment that includes Jupyter tools (the DSE does), then **JupyterLab** or **Jupyter** as the IDE.
+3. Choose the hardware tier and data mounts, then **Launch**.
 
-### Via Python SDK
-```python
-from domino import Domino
+A stopped Workspace is resumed with **Start** in the UI or `POST /api/projects/v1/projects/{projectId}/workspaces/{workspaceId}/sessions` (see SKILL.md). Creating a new Workspace is a UI action.
 
-domino = Domino("project-owner/project-name")
+## Where files live
 
-workspace = domino.workspace_start(
-    workspace_type="JupyterLab",
-    hardware_tier_name="small",
-    environment_id="your-environment-id"
-)
-```
+| | DFS Project | Git-based Project |
+|---|---|---|
+| Working directory (`DOMINO_WORKING_DIR`) | `/mnt` | `/mnt/code` |
+| Notebooks you want tracked | under `/mnt` | under `/mnt/code` (Git) or `/mnt/artifacts` (DFS artifacts) |
+| Datasets | `/domino/datasets/local/<name>` | `/mnt/data/<name>` |
+| Job results written from a notebook | Project root | `/mnt/artifacts/results/` |
 
-## Jupyter AI Integration
+JupyterLab opens in `DOMINO_WORKING_DIR` and can browse the whole filesystem, but only files under `/mnt` persist and sync. Save, then **File Changes > Sync** in the Workspace pane; the IDE's save does not push to Domino.
 
-Domino supports Jupyter AI for in-notebook AI assistance.
-
-### Setup
-1. Use an environment with Jupyter AI installed
-2. Configure AI provider credentials
-3. Access via magic commands
-
-### Usage
-```python
-# In a notebook cell
-%ai ask "How do I load a CSV file?"
-
-# Chat interface
-%ai chat "Explain this error"
-```
-
-### Configure Provider
-```python
-%ai config --provider openai --model gpt-4
-```
-
-## Working with Notebooks
-
-### Create New Notebook
-1. In JupyterLab: **File** > **New** > **Notebook**
-2. Select Python kernel
-
-### Save and Sync
-- Notebooks in `/mnt/` auto-sync to Domino
-- Click **Sync** to manually push changes
-- Use Git for version control
-
-### Run Cells
-- `Shift+Enter`: Run cell and move to next
-- `Ctrl+Enter`: Run cell in place
-- `Alt+Enter`: Run cell and insert new below
-
-## Notebook Best Practices
-
-### Structure
-```python
-# Cell 1: Imports
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-
-# Cell 2: Configuration
-DATA_PATH = "/mnt/data/dataset.csv"
-MODEL_PATH = "/mnt/artifacts/model.pkl"
-
-# Cell 3: Load Data
-df = pd.read_csv(DATA_PATH)
-
-# Cell 4+: Analysis and modeling
-```
-
-### Documentation
-Use Markdown cells for documentation:
-```markdown
-# Model Training
-
-## Overview
-This notebook trains a classification model on customer data.
-
-## Data Sources
-- `/mnt/data/customers.csv`: Customer features
-- `/mnt/data/labels.csv`: Target labels
-```
-
-## Environment Variables
-
-Access Domino environment variables in notebooks:
 ```python
 import os
+from pathlib import Path
 
-# Domino-provided variables
-project_name = os.environ.get('DOMINO_PROJECT_NAME')
-run_id = os.environ.get('DOMINO_RUN_ID')
-username = os.environ.get('DOMINO_USER_NAME')
-
-# Custom environment variables (set in project settings)
-api_key = os.environ.get('MY_API_KEY')
+work = Path(os.environ["DOMINO_WORKING_DIR"])
+git_based = os.environ.get("DOMINO_IS_GIT_BASED", "false").lower() == "true"
+datasets = Path("/mnt/data") if git_based else Path("/domino/datasets/local")
+df = pd.read_csv(datasets / "my-dataset" / "data.csv")
 ```
 
-## Accessing Data
+Domino also sets `DOMINO_PROJECT_ID`, `DOMINO_PROJECT_NAME`, `DOMINO_PROJECT_OWNER`, `DOMINO_RUN_ID`, `DOMINO_USER_NAME`, `DOMINO_HARDWARE_TIER_ID` and `DOMINO_API_PROXY`; project, user and environment variables you define appear in the same `os.environ`. Full list: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environments/manage-compute-environments/manage-environment-variables/5-glossary-default-variables
 
-### Domino Datasets
+## External data and the Domino API from a notebook
+
 ```python
-# Datasets are mounted at /mnt/data/{dataset-name}
-df = pd.read_csv("/mnt/data/my-dataset/data.csv")
+from domino_data.data_sources import DataSourceClient   # domino-data SDK, see domino-data-sdk skill
+
+df = DataSourceClient().get_datasource("my-datasource").query("SELECT * FROM customers").to_pandas()
 ```
 
-### Project Files
-```python
-# Project files in /mnt/
-df = pd.read_csv("/mnt/code/data/input.csv")
-```
+Platform API calls go through `os.environ["DOMINO_API_PROXY"]` with no `Authorization` header ([domino-api-intro](../domino-api-intro/SKILL.md)).
 
-### External Data
-```python
-# Use data source connectors
-from domino_data.data_sources import DataSourceClient
+## Packages
 
-client = DataSourceClient()
-df = client.get_datasource("my-datasource").get_as_df(
-    "SELECT * FROM customers"
-)
-```
+- `!pip install --user <package>` installs for the current session only, unless Package Persistence is enabled for the environment and toggled on for the Workspace.
+- `requirements.txt` in `DOMINO_WORKING_DIR` is installed at every start (skipped for packages already persisted).
+- Permanent packages belong in the environment Dockerfile ([domino-environments](../domino-environments/SKILL.md)).
 
-## Saving Results
+## Coding assistants in Jupyter
 
-### Artifacts
-```python
-import joblib
+The DSE includes CLI coding agents that work from a JupyterLab terminal; VS Code adds the extension panels. Jupyter AI is not part of the Domino Standard Environment and Domino's docs do not cover it; if a custom environment installs it, follow the jupyter-ai project documentation, not Domino's. Current Domino guidance: https://docs.domino.ai/cloud/platform-capabilities/features/coding-assistants
 
-# Save model to artifacts (persisted)
-joblib.dump(model, "/mnt/artifacts/model.joblib")
-```
+## Notebooks as Jobs
 
-### Output Files
-```python
-# Save to project (synced)
-df.to_csv("/mnt/results/predictions.csv")
-```
+- A Job whose command is `notebook.ipynb` executes the notebook and saves the executed copy as a result.
+- Convert to a script for scheduling: `jupyter nbconvert --to script notebook.ipynb`.
+- Parameterize with papermill:
 
-## Converting Notebooks to Scripts
-
-### For Scheduled Jobs
-Convert notebook to Python script:
-```bash
-jupyter nbconvert --to script notebook.ipynb
-```
-
-### Using Papermill
-Run notebooks programmatically:
 ```python
 import papermill as pm
 
-pm.execute_notebook(
-    'input_notebook.ipynb',
-    'output_notebook.ipynb',
-    parameters={'data_path': '/mnt/data/new_data.csv'}
-)
+pm.execute_notebook("input.ipynb", "output.ipynb", parameters={"data_path": "/mnt/data/my-dataset/new.csv"})
 ```
+
+See [domino-jobs](../domino-jobs/SKILL.md) for scheduling and the Jobs API.
+
+## Keyboard basics
+
+`Shift+Enter` run and advance, `Ctrl+Enter` run in place, `Alt+Enter` run and insert below.
 
 ## Troubleshooting
 
-### Kernel Dies
-- Check memory usage in Domino UI
-- Use larger hardware tier
-- Optimize code to reduce memory
+- **Kernel dies**: memory limit of the hardware tier; check **Usage** on the Workspace, pick a larger tier, or process data in chunks.
+- **Module not found after restart**: the package was installed outside the environment without Package Persistence.
+- **Notebook will not open**: validate the JSON (`python -m json.tool notebook.ipynb`); very large outputs can be cleared with `jupyter nbconvert --clear-output --inplace notebook.ipynb`.
+- **Another app's port is unreachable**: only the IDE port is proxied; use jupyter-server-proxy (SKILL.md, "Coding assistants and extra apps").
 
-### Package Not Found
-```python
-# Install in notebook (temporary)
-!pip install package-name
+## Docs
 
-# For persistence, add to environment
-```
-
-### Notebook Won't Open
-- Check file permissions
-- Verify notebook JSON is valid
-- Try opening in text editor first
-
-## Documentation Reference
-- [Start a Jupyter Workspace](https://docs.dominodatalab.com/en/latest/user_guide/93aef2/start-a-jupyter-workspace/)
-- [Set up Jupyter AI](https://docs.dominodatalab.com/en/latest/user_guide/1f4149/set-up-jupyter-ai-in-jupyter-environment/)
+- https://docs.domino.ai/cloud/platform-capabilities/core-concepts/workspaces/launch-a-workspace
+- https://docs.domino.ai/cloud/platform-capabilities/core-concepts/workspaces/use-package-persistence
+- https://docs.domino.ai/cloud/platform-capabilities/core-concepts/workspaces/run-multiple-apps-in-a-workspace

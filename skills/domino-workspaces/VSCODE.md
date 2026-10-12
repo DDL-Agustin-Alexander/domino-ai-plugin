@@ -1,216 +1,85 @@
 # VS Code Workspaces in Domino
 
-## Overview
+Applies to Domino 6.3 and Domino Cloud. Launching, persistence, SSH and the session API are in [SKILL.md](./SKILL.md).
 
-Domino provides VS Code as a workspace option, offering a full-featured code editor with extensions, debugging, and terminal access.
+Domino serves VS Code in the browser with code-server. The Domino Standard Environment includes it with the Python and Jupyter tooling and the AI coding-assistant extensions pre-installed.
 
-## Features
+## Start a VS Code Workspace
 
-- Full VS Code editor in browser
-- Extension support
-- Integrated terminal
-- Git integration
-- Debugging support
-- GitHub Copilot support
+1. **Workspaces** > **+ Create New Workspace**.
+2. Select an environment whose Pluggable Workspace Tools include `vscode` (the DSE does), then **VS Code** as the IDE.
+3. Choose the hardware tier and data mounts, then **Launch**.
 
-## Starting a VS Code Workspace
+Resume a stopped Workspace with **Start** or `POST /api/projects/v1/projects/{projectId}/workspaces/{workspaceId}/sessions` (SKILL.md). There is no Public API route that creates a Workspace.
 
-### Via UI
-1. Go to **Workspaces** > **Launch Workspace**
-2. Select **VS Code**
-3. Choose hardware tier and environment
-4. Click **Launch**
+## Extensions
 
-### Via Python SDK
-```python
-from domino import Domino
+Extensions installed from the Extensions panel land in `$HOME/.local/share/code-server/extensions` and disappear on restart unless **Home Directory Persistence** is on. To make them part of the environment (docs: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/workspaces/launch-a-workspace/launch-a-vs-code-workspace):
 
-domino = Domino("project-owner/project-name")
+- **Pre Run Script** of the environment (installs on every start; the script runs as root, so use the `ubuntu` home explicitly):
+  ```shell
+  code-server --install-extension <publisher.extension> --extensions-dir /home/ubuntu/.local/share/code-server/extensions
+  chown -R ubuntu:ubuntu /home/ubuntu/.local/share/code-server
+  ```
+- **Dockerfile Instructions** (baked into the image; runs as root, hand ownership back to `ubuntu`):
+  ```dockerfile
+  USER root
+  RUN code-server --install-extension <publisher.extension> --extensions-dir /home/ubuntu/.local/share/code-server/extensions \
+      && chown -R ubuntu:ubuntu /home/ubuntu/.local/share/code-server
+  USER ubuntu
+  ```
+  Extensions not in the open marketplace can be downloaded as `.vsix` and installed with `code-server --install-extension /tmp/x.vsix --force`.
 
-workspace = domino.workspace_start(
-    workspace_type="VSCode",
-    hardware_tier_name="medium",
-    environment_id="your-environment-id"
-)
-```
+## Settings that survive restarts
 
-## VS Code Extensions
+The documented VS Code start script runs `code-server --user-data-dir $DOMINO_WORKING_DIR/.vscode`, so user settings live with the Project files and persist; check the running flags with `ps aux | grep code-server` if your environment differs. Workspace settings in `.vscode/settings.json` of the working directory persist and sync as well. Example:
 
-### Pre-installed Extensions
-Domino VS Code workspaces typically include:
-- Python extension
-- Jupyter extension
-- Git extension
-
-### Installing Additional Extensions
-1. Open Extensions panel (`Ctrl+Shift+X`)
-2. Search for extension
-3. Click **Install**
-
-Note: Extensions installed in a session may not persist. For permanent extensions, configure in the Domino Environment.
-
-## GitHub Copilot Integration
-
-### Setup
-1. Ensure GitHub Copilot is enabled in your organization
-2. Sign in with GitHub in VS Code
-3. Authorize Copilot
-
-### Usage
-```python
-# Start typing and Copilot suggests completions
-def calculate_mean(numbers):
-    # Copilot will suggest implementation
-```
-
-## Remote SSH Access
-
-Connect to Domino workspaces from your local VS Code:
-
-### Prerequisites
-- Domino 6.1+
-- VS Code Remote SSH extension locally
-- SSH access enabled on workspace
-
-### Setup
-1. Install **Remote - SSH** extension in local VS Code
-2. Get SSH connection string from Domino workspace
-3. Add to SSH config:
-```
-Host domino-workspace
-    HostName workspace-hostname.domino.tech
-    User domino
-    IdentityFile ~/.ssh/domino_key
-```
-
-4. Connect: `Remote-SSH: Connect to Host` > `domino-workspace`
-
-### Benefits
-- Use local VS Code with remote compute
-- All local extensions available
-- Faster response than browser-based VS Code
-
-## Working with Python
-
-### Select Interpreter
-1. `Ctrl+Shift+P` > **Python: Select Interpreter**
-2. Choose the correct Python environment
-
-### Run Code
-- `F5`: Run with debugger
-- `Ctrl+F5`: Run without debugger
-- Right-click > **Run Python File**
-
-### Debug
-```python
-# Add breakpoints by clicking line numbers
-# Press F5 to start debugging
-# Use debug toolbar to step through code
-```
-
-## Working with Jupyter Notebooks
-
-VS Code supports Jupyter notebooks natively:
-
-1. Create new notebook: `Ctrl+Shift+P` > **Create: New Jupyter Notebook**
-2. Or open existing `.ipynb` file
-3. Run cells with `Shift+Enter`
-
-## Terminal Access
-
-Open integrated terminal:
-- `Ctrl+`` (backtick)
-- Or **Terminal** > **New Terminal**
-
-```bash
-# Run commands
-pip install pandas
-python train.py
-git status
-```
-
-## File Management
-
-### Project Files
-- Located in `/mnt/` directory
-- Auto-synced with Domino project
-- Use Explorer panel to navigate
-
-### Save and Sync
-- Files auto-save (configurable)
-- Click **Sync** in Domino UI to push to project
-- Or use Git for version control
-
-## Settings
-
-### User Settings
-`Ctrl+,` to open settings
-
-Common settings:
 ```json
 {
-    "editor.fontSize": 14,
-    "editor.tabSize": 4,
-    "python.linting.enabled": true,
-    "python.formatting.provider": "black",
-    "files.autoSave": "afterDelay"
+  "editor.tabSize": 4,
+  "files.autoSave": "afterDelay",
+  "python.defaultInterpreterPath": "/opt/conda/bin/python"
 }
 ```
 
-### Workspace Settings
-Create `.vscode/settings.json` in project:
-```json
-{
-    "python.defaultInterpreterPath": "/opt/conda/bin/python",
-    "python.terminal.activateEnvironment": true
-}
-```
+Check the interpreter path in the environment with `which python` before pinning it.
 
-## Git Integration
+## Local VS Code over SSH
 
-### Initialize Repository
-```bash
-git init
-git remote add origin https://github.com/user/repo.git
-```
+Prerequisites and `dom connect` are in SKILL.md ("SSH from a local IDE"). Summary:
 
-### Source Control Panel
-- View changes in Source Control panel
-- Stage, commit, push from UI
-- View diffs inline
+1. Launch with **Enable SSH access**; install the Dom CLI from the Workspace **Settings > SSH connection** pane.
+2. `dom connect <workspace_id> --domino-api-host=https://<the URL you open Domino at in the browser> -l ubuntu`
+3. Add `Include ~/.domino/ssh/config` to `~/.ssh/config` (or set `Remote.SSH: ConfigFile` to `~/.domino/ssh/config`).
+4. **Remote Explorer > SSH** > pick the workspace entry. Files, terminal and debugger then run in the Workspace with your local extensions.
 
-### Git Commands
-`Ctrl+Shift+G` to open Source Control
+Cursor users import the Remote-SSH extension the same way. Custom TLS CAs must be trusted on the local machine.
 
-## Keyboard Shortcuts
+## Python, notebooks, terminal
 
-| Action | Shortcut |
-|--------|----------|
-| Command Palette | `Ctrl+Shift+P` |
-| Quick Open File | `Ctrl+P` |
-| Find in Files | `Ctrl+Shift+F` |
-| Toggle Terminal | `Ctrl+`` |
-| Toggle Sidebar | `Ctrl+B` |
-| Go to Definition | `F12` |
-| Find References | `Shift+F12` |
+- `Ctrl+Shift+P` > **Python: Select Interpreter** picks the environment's Python.
+- `.ipynb` files open natively; cells run on the same kernel the Jupyter IDE would use.
+- Integrated terminal: Ctrl+backtick. `git`, `pip`, `python` and the Domino env vars (`DOMINO_WORKING_DIR`, `DOMINO_API_PROXY`, ...) are available.
+
+## Files and Git
+
+- DFS Project: work under `/mnt`; **File Changes > Sync to Domino** pushes to the Project.
+- Git-based Project: the repository is at `/mnt/code`; use the Source Control panel or terminal for commits, and **File Changes > Sync to Git / Pull** in the Workspace pane for Domino-managed sync. Artifacts go to `/mnt/artifacts`.
+- Files outside `/mnt` are not persisted or synced.
+
+## Coding assistants
+
+The DSE pre-installs AI coding-assistant extensions and CLIs; sign in once in the extension panel (copy the login URL manually if the link does not open) and keep **Home Directory Persistence** on so the login survives restarts. Details and troubleshooting: https://docs.domino.ai/cloud/platform-capabilities/features/coding-assistants
 
 ## Troubleshooting
 
-### VS Code Slow
-- Check hardware tier resources
-- Close unused extensions
-- Reduce number of open files
+- **Slow or unresponsive**: hardware tier too small; close heavy extensions; check **Usage**.
+- **Extension missing after restart**: install it through the environment or enable Home Directory Persistence.
+- **Remote-SSH cannot connect**: SSH not enabled at launch, Dom CLI not authenticated, the include line missing from `~/.ssh/config`, or a custom CA not trusted locally.
+- **Blank extension panel**: reload the browser tab.
 
-### Extensions Not Working
-- Check extension compatibility with VS Code version
-- Verify dependencies are installed
-- Check extension logs
+## Docs
 
-### Can't Connect Remote SSH
-- Verify SSH is enabled on workspace
-- Check firewall rules
-- Verify SSH key permissions
-
-## Documentation Reference
-- [Configure native Workspaces](https://docs.dominodatalab.com/en/latest/user_guide/4e7f25/configure-native-workspaces/)
-- [Use Workspaces](https://docs.dominodatalab.com/en/latest/user_guide/867b72/use-workspaces/)
+- https://docs.domino.ai/cloud/platform-capabilities/core-concepts/workspaces/launch-a-workspace/launch-a-vs-code-workspace
+- https://docs.domino.ai/cloud/platform-capabilities/core-concepts/workspaces/launch-a-workspace/streamline-local-development-ssh
+- https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environments/work-with-pluggable-workspaces/configure-native-workspaces

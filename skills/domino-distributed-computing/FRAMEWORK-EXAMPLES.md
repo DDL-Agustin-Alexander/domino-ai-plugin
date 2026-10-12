@@ -1,213 +1,179 @@
 # Framework examples
 
-Worked code for Spark, Ray and Dask on Domino on-demand clusters: reading, processing and writing data, distributed training and hyperparameter tuning, and GPU use.
+Worked code for Spark, Ray and Dask on Domino on-demand clusters. Connecting to each cluster, environments and cluster settings: [SKILL.md](./SKILL.md). Every example assumes the connection snippet from SKILL.md has run.
 
-Connecting to each cluster from a workspace or job: [Spark](./SKILL.md#apache-spark), [Ray](./SKILL.md#ray), [Dask](./SKILL.md#dask) in SKILL.md.
+Dataset paths: `/mnt/data/<dataset>` in a Git-based Project, `/domino/datasets/local/<dataset>` in a DFS Project; both are mounted on the cluster nodes at the same path. Project files (`/mnt`, `/mnt/code`, `/mnt/artifacts`) exist only on the execution container, never on cluster nodes, so distributed reads and writes must use a Dataset or object storage. Object storage (`s3a://`, `s3://`) needs the connector libraries in both environments and credentials (AWS credential propagation, when enabled, puts a profile on every node).
 
 ## Apache Spark
 
-### Reading Data
+### Read, transform, write
+
+Spark tasks run on the executors, so read and write only Dataset paths (with the `file:///` prefix the docs use) or object storage. Anything that must become a Job result is collected to the driver first.
+
 ```python
-# Read CSV
-df = spark.read.csv("/mnt/data/dataset/data.csv", header=True, inferSchema=True)
-
-# Read Parquet
-df = spark.read.parquet("/mnt/data/dataset/")
-
-# Read from database
-df = spark.read.jdbc(
-    url="jdbc:postgresql://host:5432/db",
-    table="schema.table",
-    properties={"user": "user", "password": "pass"}
-)
-```
-
-### Processing Data
-```python
+import os
+from pathlib import Path
 from pyspark.sql import functions as F
 
-# Transformations
-result = df.filter(F.col("value") > 100) \
-    .groupBy("category") \
-    .agg(F.mean("value").alias("avg_value")) \
-    .orderBy("avg_value", ascending=False)
+ds = "file:///mnt/data/my-dataset"           # DFS Project: file:///domino/datasets/local/my-dataset
+df = spark.read.csv(f"{ds}/data.csv", header=True, inferSchema=True)
+df = spark.read.parquet(f"{ds}/parquet/")
+df = spark.read.json("s3a://bucket/prefix/people.json")          # needs hadoop-aws in the cluster environment
 
-# Show results
+result = (df.filter(F.col("value") > 100)
+            .groupBy("category")
+            .agg(F.mean("value").alias("avg_value"))
+            .orderBy("avg_value", ascending=False))
 result.show()
+
+result.write.mode("overwrite").parquet(f"{ds}/output/")          # executors write; the Dataset is on every node
+
+# Small result for the Job results view: collect on the driver, then write to the Project files
+git_based = os.environ.get("DOMINO_IS_GIT_BASED", "false").lower() == "true"
+results_dir = Path("/mnt/artifacts/results") if git_based else Path(os.environ["DOMINO_WORKING_DIR"]) / "results"
+results_dir.mkdir(parents=True, exist_ok=True)
+result.limit(1000).toPandas().to_csv(results_dir / "summary.csv", index=False)
 ```
 
-### Machine Learning with Spark MLlib
+A DataFrame `.write` to `/mnt/...` lands on an executor's ephemeral disk (or fails) and never reaches the Job results; `coalesce(1)` does not change that.
+
+### MLlib pipeline
+
 ```python
-from pyspark.ml.feature import VectorAssembler
-from pyspark.ml.classification import RandomForestClassifier
 from pyspark.ml import Pipeline
+from pyspark.ml.classification import RandomForestClassifier
+from pyspark.ml.feature import VectorAssembler
 
-# Prepare features
-assembler = VectorAssembler(
-    inputCols=["feature1", "feature2", "feature3"],
-    outputCol="features"
-)
-
-# Create model
-rf = RandomForestClassifier(
-    featuresCol="features",
-    labelCol="label",
-    numTrees=100
-)
-
-# Build pipeline
-pipeline = Pipeline(stages=[assembler, rf])
-model = pipeline.fit(train_df)
+train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
+assembler = VectorAssembler(inputCols=["feature1", "feature2", "feature3"], outputCol="features")
+rf = RandomForestClassifier(featuresCol="features", labelCol="label", numTrees=100)
+model = Pipeline(stages=[assembler, rf]).fit(train_df)
 predictions = model.transform(test_df)
+model.write().overwrite().save(f"{ds}/models/rf")                 # Dataset path, visible to all nodes
 ```
 
-### Writing Results
+### Tune the context
+
 ```python
-# Write Parquet (recommended)
-result.write.parquet("/mnt/artifacts/output/", mode="overwrite")
-
-# Write CSV
-result.write.csv("/mnt/artifacts/output.csv", header=True)
+spark = (SparkSession.builder.appName("etl")
+         .config("spark.sql.shuffle.partitions", "400")
+         .config("spark.executor.memoryOverhead", "1g")
+         .getOrCreate())
+spark.sparkContext.getConf().getAll()     # see what Domino set
 ```
+
+Never override `spark.master` or `spark.driver.host`. Executor cores and memory follow the worker hardware tier; pick a larger tier rather than overriding them unless you understand the worker overhead.
 
 ## Ray
 
-### Parallel Tasks
+### Parallel tasks and actors
+
 ```python
 import ray
 
 @ray.remote
-def process_item(item):
-    # Your processing logic
+def process(item):
     return item * 2
 
-# Run in parallel
-items = [1, 2, 3, 4, 5]
-futures = [process_item.remote(item) for item in items]
-results = ray.get(futures)
-print(results)  # [2, 4, 6, 8, 10]
+print(ray.get([process.remote(i) for i in range(10)]))
+
+@ray.remote(num_cpus=1)
+class Counter:
+    def __init__(self):
+        self.n = 0
+    def incr(self):
+        self.n += 1
+        return self.n
+
+c = Counter.remote()
+print(ray.get([c.incr.remote() for _ in range(3)]))
 ```
 
-### Distributed Training with Ray Train
+### Distributed training with Ray Train (PyTorch)
+
 ```python
-from ray import train
+import torch
+import torch.nn as nn
+import ray.train
+import ray.train.torch
 from ray.train import ScalingConfig
 from ray.train.torch import TorchTrainer
 
-def train_func():
-    # Training logic
-    model = create_model()
-    for epoch in range(10):
-        train_epoch(model)
-        train.report({"loss": loss})
+def train_loop(config):
+    model = ray.train.torch.prepare_model(nn.Linear(10, 1))
+    opt = torch.optim.SGD(model.parameters(), lr=config["lr"])
+    for epoch in range(config["epochs"]):
+        x, y = torch.randn(64, 10), torch.randn(64, 1)      # replace with your data loader
+        loss = nn.functional.mse_loss(model(x), y)
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        ray.train.report({"epoch": epoch, "loss": loss.item()})
 
 trainer = TorchTrainer(
-    train_func,
-    scaling_config=ScalingConfig(num_workers=4, use_gpu=True)
+    train_loop,
+    train_loop_config={"lr": 0.01, "epochs": 5},
+    scaling_config=ScalingConfig(num_workers=2, use_gpu=False),   # use_gpu=True on a GPU worker tier
 )
 result = trainer.fit()
+print(result.metrics)
 ```
 
-### Hyperparameter Tuning with Ray Tune
+`num_workers` must not exceed the cluster's worker count (or max workers with autoscaling). Checkpoints and outputs go to a Dataset or object storage, not the worker's `/tmp`.
+
+### Hyperparameter tuning with Ray Tune
+
 ```python
 from ray import tune
-from ray.tune import CLIReporter
 
 def objective(config):
-    # Training with hyperparameters
-    model = train_model(
-        learning_rate=config["lr"],
-        batch_size=config["batch_size"]
-    )
-    return {"accuracy": accuracy}
+    score = (config["lr"] * 100 - 1) ** 2 + config["batch_size"] / 1000   # replace with training + eval
+    tune.report({"score": score})
 
-analysis = tune.run(
+tuner = tune.Tuner(
     objective,
-    config={
-        "lr": tune.loguniform(1e-4, 1e-1),
-        "batch_size": tune.choice([32, 64, 128])
-    },
-    num_samples=20,
-    progress_reporter=CLIReporter()
+    param_space={"lr": tune.loguniform(1e-4, 1e-1), "batch_size": tune.choice([32, 64, 128])},
+    tune_config=tune.TuneConfig(num_samples=20, metric="score", mode="min"),
 )
-
-print(f"Best config: {analysis.best_config}")
+results = tuner.fit()
+print(results.get_best_result().config)
 ```
+
+`tune.report` is exported by recent Ray releases (Domino's validated 2.55.x has it); on older cluster images such as the Ray 2.36 tags use `from ray import train` and `train.report({...})` instead. Log trials to MLflow with `mlflow.get_tracking_uri()` (preconfigured in Domino) to compare them in Experiments; see https://docs.domino.ai/cloud/platform-capabilities/features/development/ray-tune and [domino-experiment-tracking](../domino-experiment-tracking/SKILL.md).
 
 ## Dask
 
-### Dask DataFrames (Parallel pandas)
+### DataFrames and arrays
+
 ```python
 import dask.dataframe as dd
-
-# Read large CSV files
-df = dd.read_csv("/mnt/data/dataset/*.csv")
-
-# Parallel operations (lazy)
-result = df.groupby("category")["value"].mean()
-
-# Execute
-computed_result = result.compute()
-```
-
-### Dask Arrays (Parallel NumPy)
-```python
 import dask.array as da
 
-# Create large array
-x = da.random.random((100000, 100000), chunks=(1000, 1000))
+df = dd.read_csv("/mnt/data/my-dataset/*.csv")
+df = dd.read_parquet("s3://bucket/path/data-*.parquet", storage_options={"profile": "my-role"})   # needs s3fs on all nodes
+means = df.groupby("category")["value"].mean().compute()
 
-# Operations (lazy)
-result = x.mean()
-
-# Compute
-value = result.compute()
+x = da.random.random((100_000, 10_000), chunks=(1_000, 1_000))
+print(x.mean().compute())
 ```
 
-### Dask ML
+### Dask-ML
+
 ```python
 from dask_ml.model_selection import GridSearchCV
 from sklearn.ensemble import RandomForestClassifier
 
-# Distributed hyperparameter search
-param_grid = {
-    "n_estimators": [100, 200, 300],
-    "max_depth": [10, 20, 30]
-}
-
-grid_search = GridSearchCV(
-    RandomForestClassifier(),
-    param_grid,
-    cv=3
-)
-
-grid_search.fit(X_train, y_train)
-print(f"Best params: {grid_search.best_params_}")
+search = GridSearchCV(RandomForestClassifier(),
+                      {"n_estimators": [100, 200], "max_depth": [10, 20]}, cv=3)
+search.fit(X_train, y_train)          # X_train, y_train: pandas/NumPy or Dask collections
+print(search.best_params_)
 ```
 
-## GPU Clusters
+`dask_ml` must be installed in both the execution and the cluster environment. Prefer `client.persist(df)` for data reused across steps; call `client.close()` at the end, not `client.shutdown()`.
 
-### Spark RAPIDS
-```python
-# Use GPU-accelerated Spark
-spark = SparkSession.builder \
-    .config("spark.rapids.sql.enabled", "true") \
-    .getOrCreate()
+## GPUs
 
-# Operations automatically use GPU
-df = spark.read.parquet("/mnt/data/large_dataset/")
-result = df.groupBy("category").agg({"value": "mean"})
-```
-
-### Ray with GPUs
-```python
-@ray.remote(num_gpus=1)
-def train_on_gpu():
-    import torch
-    device = torch.device("cuda")
-    # GPU training logic
-    return model
-
-# Run on GPU workers
-futures = [train_on_gpu.remote() for _ in range(4)]
-```
+- Pick a GPU hardware tier for the workers (and the Ray GPU cluster image). Check allocation with `nvidia-smi` on the execution; `ray.cluster_resources()["GPU"]` on Ray.
+- Ray: `@ray.remote(num_gpus=1)` tasks or `ScalingConfig(num_workers=N, use_gpu=True)` in Ray Train.
+- Spark: GPU-accelerated workers are possible with the RAPIDS Accelerator for Apache Spark; the plugin jars and configuration must be added to the cluster environment (https://docs.domino.ai/cloud/platform-capabilities/features/development/distributed-training).
+- MPI: Domino sets slots from the worker tier's CPU/GPU requests; `mpirun python train.py` with Horovod or `torch.distributed` launched per rank.
