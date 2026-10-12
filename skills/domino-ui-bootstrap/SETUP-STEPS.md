@@ -40,7 +40,7 @@ Classify the directory into one of these states, then ask the user how to procee
 | **Unrelated content** | Files exist but no `package.json`, or a non-React `package.json` | Ask the user: overwrite (delete and scaffold fresh), bootstrap in place (let Vite prompt), or pick a different path. |
 | **Already partially Domino-wired** | `@dominodatalab/extensions-tools` already in deps | Treat as a verification/repair job: check each invariant below and only touch what's actually wrong. |
 
-Run `node -v` and `npm -v`. Stop if Node is older than 20.
+Run `node -v` and `npm -v`. The current Vite scaffold needs Node `^20.19.0 || >=22.12.0` (Vite 8's `engines`); on an older Node, apply the Node-version branch in Step 4 instead of stopping.
 
 ---
 
@@ -79,18 +79,17 @@ You're enforcing constraints, not writing a fixed file. View the current `packag
 
 **Node-version branch — check this BEFORE leaving the scaffold's toolchain alone.**
 
-Run `node -v`. The current `npm create vite@latest` scaffold writes Vite 9 / TypeScript 6 / ESLint 10 / `@types/node` 24, all of which require Node ≥ 20.19. The Domino default workspace image ships Node 20.18.3, so the scaffold's defaults will fail `npm run build` (rolldown native binding error) and TS will error on `erasableSyntaxOnly` (a 5.6+ flag) and on missing `composite: true` for `tsc -b`.
+Run `node -v`. The current `npm create vite@latest` scaffold (create-vite 9) writes Vite 8, TypeScript 6, `oxlint` and `@types/node` 24. Vite 8 declares `engines.node` as `^20.19.0 || >=22.12.0`; on an older Node `npm install` succeeds but `npm run build` fails with a rolldown native-binding error. Domino Compute Environments do not guarantee a Node that new (Domino's own React example installs Node 22 with nvm first), so check before installing.
 
-- **If Node ≥ 20.19:** the scaffold's defaults are fine. Skip to "Leave alone" below.
-- **If Node < 20.19:** pin the toolchain to a Node-20.18-compatible set before installing:
+- **If Node satisfies `^20.19.0 || >=22.12.0`:** the scaffold's defaults are fine. Skip to "Leave alone" below.
+- **Otherwise, prefer a newer Node:** `nvm install 22` in the workspace, or add Node 22+ to the Compute Environment, and keep the scaffold as is.
+- **If Node cannot change,** pin a Vite 5 toolchain before installing:
   - `vite` — `^5.4.0`
   - `@vitejs/plugin-react` — `^4.3.4`
-  - `typescript` — `~5.5.4` (or `~5.6` if you keep `erasableSyntaxOnly` — but the simpler path is to drop the flag)
+  - `typescript` — `~5.8.3` (keeps the scaffold's `erasableSyntaxOnly`, a TypeScript 5.8+ flag; on an older TypeScript remove that line from `tsconfig.app.json` and `tsconfig.node.json`)
   - `@types/node` — `^20.12.0`
-  - Remove the `eslint`, `@eslint/js`, `eslint-plugin-react-hooks`, `eslint-plugin-react-refresh`, `typescript-eslint`, and `globals` entries from `devDependencies`. The Vite-9 scaffold's ESLint pins all require Node ≥ 20.19 — easier to drop them than to find a compatible set.
-  - Strip the `erasableSyntaxOnly` line from `tsconfig.app.json` and `tsconfig.node.json` (TS 5.6+ only).
-  - Add `"composite": true` to both `tsconfig.app.json` and `tsconfig.node.json` (required when `build` runs `tsc -b`).
-  - Delete `eslint.config.js` since ESLint was removed.
+  - Remove the `oxlint` entry and the `lint` script (older scaffolds: `eslint`, `@eslint/js`, `eslint-plugin-react-hooks`, `eslint-plugin-react-refresh`, `typescript-eslint`, `globals` and `eslint.config.js`). Linting is outside this bootstrap.
+  - If `tsc -b` then complains about `composite`, add `"composite": true` to `tsconfig.app.json` and `tsconfig.node.json`.
 
 **Leave alone:**
 
@@ -134,6 +133,8 @@ The Storybook MCP is what lets future assistant sessions look up real component 
 
 - URL: `https://main--60c0de3f60dd96003bdcb1a1.chromatic.com/mcp`
 - Transport: HTTP (streamable HTTP)
+
+That URL is the library's published Storybook build at the time this skill was written and can move. Before registering it, check it answers (an HTTP POST with a JSON-RPC `initialize` body returns 200). If it does not, ask the user for the current Storybook MCP URL from the Domino design-system team; do not guess another URL and do not skip the registration silently.
 
 These rules apply on every host:
 

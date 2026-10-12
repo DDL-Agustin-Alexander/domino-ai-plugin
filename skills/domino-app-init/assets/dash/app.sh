@@ -1,20 +1,17 @@
 #!/bin/bash
-# Domino App Entry Point for Dash Application
-# This script is executed when the Domino App starts
+# Domino App entry point for a Dash application.
+# Domino runs this file when the App starts; app.py must bind 0.0.0.0:8888.
 
 set -e
 
 echo "=== Domino Dash App ==="
-echo "Project: ${DOMINO_PROJECT_NAME:-unknown}"
-echo "Owner: ${DOMINO_PROJECT_OWNER:-unknown}"
-echo "User: ${DOMINO_STARTING_USERNAME:-unknown}"
+echo "Project: $DOMINO_PROJECT_NAME"
+echo "Owner: $DOMINO_PROJECT_OWNER"
+echo "Started by: $DOMINO_STARTING_USERNAME"
 
-# Navigate to code directory
-cd /mnt/code
+# Project files live in DOMINO_WORKING_DIR (/mnt/code for Git-based projects).
+cd "$DOMINO_WORKING_DIR"
 
-# Optional: Install any additional dependencies
-# pip install -r requirements.txt
+# Install dash in the Compute Environment rather than here; pip at start slows every launch.
 
-# Start Dash application
-# The app.py file should bind to 0.0.0.0:8888
 python app.py

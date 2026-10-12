@@ -1,32 +1,36 @@
-# Framework-Specific Configurations for Domino Apps
+# Framework configurations for Domino Apps
 
-This guide covers configuration for various web frameworks when deploying to Domino Data Lab.
+Every framework must bind `0.0.0.0:8888`; an App that does not fails to start. Where a framework needs its URL prefix, read `DOMINO_RUN_HOST_PATH`. Domino's own minimal examples: https://docs.domino.ai/cloud/platform-capabilities/features/apps/common-app-frameworks (same content under `/6.3/`).
+
+## Calling a model endpoint from any framework
+
+Read the endpoint URL and a Model Access Token from environment variables set in the project (or user) settings; never hardcode them. Synchronous endpoints use HTTP Basic auth with the token as both username and password; asynchronous endpoints use `Authorization: Bearer <token>` (https://docs.domino.ai/cloud/platform-capabilities/features/model-deployment/domino-endpoint-authorization).
+
+```python
+# predict.py: shared helper for the Python examples below
+import os
+import requests
+
+
+def predict(features: dict) -> dict:
+    url = os.environ.get("MODEL_API_URL")
+    token = os.environ.get("MODEL_API_TOKEN")
+    if not url or not token:
+        raise RuntimeError("Set MODEL_API_URL and MODEL_API_TOKEN in the project environment variables")
+    response = requests.post(url, auth=(token, token), json={"data": features}, timeout=60)
+    response.raise_for_status()
+    return response.json()
+```
 
 ## Streamlit
 
-### Basic app.sh
+Streamlit defaults to port 8501; override it in `app.sh`. Domino's published example also disables CORS and XSRF protection so the websocket works behind the proxy.
 
 ```bash
 #!/bin/bash
+# app.sh
 set -e
-
-streamlit run app.py \
-    --server.port 8888 \
-    --server.address 0.0.0.0 \
-    --server.headless true \
-    --browser.gatherUsageStats false
-```
-
-### With Custom Configuration
-
-```bash
-#!/bin/bash
-set -e
-
-# Create Streamlit config directory
 mkdir -p ~/.streamlit
-
-# Write config file
 cat > ~/.streamlit/config.toml << 'EOF'
 [server]
 port = 8888
@@ -37,538 +41,240 @@ enableXsrfProtection = false
 
 [browser]
 gatherUsageStats = false
-
-[theme]
-primaryColor = "#1976d2"
-backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f5f5f5"
-textColor = "#212121"
 EOF
-
 streamlit run app.py
 ```
 
-### Example Streamlit App
+The equivalent one-liner: `streamlit run app.py --server.port 8888 --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false`.
 
 ```python
 # app.py
-import streamlit as st
 import os
-import requests
+import streamlit as st
+from predict import predict
 
-st.set_page_config(
-    page_title="ML Dashboard",
-    page_icon="📊",
-    layout="wide"
-)
-
+st.set_page_config(page_title="ML Dashboard", layout="wide")
 st.title("ML Model Dashboard")
-
-# Display Domino environment info
-with st.expander("Environment Info"):
-    st.write(f"Project: {os.environ.get('DOMINO_PROJECT_NAME', 'N/A')}")
-    st.write(f"User: {os.environ.get('DOMINO_STARTING_USERNAME', 'N/A')}")
-
-# Model prediction interface
-st.header("Make Prediction")
+st.caption(f"Project: {os.environ.get('DOMINO_PROJECT_NAME', 'n/a')}")
 
 feature1 = st.number_input("Feature 1", value=0.0)
 feature2 = st.number_input("Feature 2", value=0.0)
-
 if st.button("Predict"):
-    model_url = os.environ.get('MODEL_API_URL')
-    model_token = os.environ.get('MODEL_API_TOKEN')
-
-    if model_url and model_token:
-        response = requests.post(
-            model_url,
-            headers={
-                'Authorization': f'Bearer {model_token}',
-                'Content-Type': 'application/json'
-            },
-            json={'data': {'feature1': feature1, 'feature2': feature2}}
-        )
-        st.json(response.json())
-    else:
-        st.error("Model API not configured")
+    try:
+        st.json(predict({"feature1": feature1, "feature2": feature2}))
+    except Exception as exc:
+        st.error(f"Prediction failed: {exc}")
 ```
 
-## Dash (Plotly)
+Streamlit's frontend uses relative URLs, so no base path setting is needed. `[theme]` entries in the same `config.toml` restyle the app (see the `domino-ui-design` skill for Domino's tokens).
 
-### Basic app.sh
+## Dash
 
-```bash
-#!/bin/bash
-set -e
-
-python app.py
-```
-
-### Example Dash App
+Dash needs both prefixes: routes are served at `/` inside the container (the proxy strips the prefix) and the browser requests them under `DOMINO_RUN_HOST_PATH`. `app.run_server` was removed in Dash 3; use `app.run`.
 
 ```python
 # app.py
 import os
-import dash
-from dash import html, dcc, callback, Input, Output
-import requests
+from dash import Dash, Input, Output, callback, dcc, html
+from predict import predict
 
-# IMPORTANT: Use routes_pathname_prefix='/' for proper routing inside Domino
-app = dash.Dash(__name__, routes_pathname_prefix='/')
+app = Dash(
+    __name__,
+    routes_pathname_prefix="/",
+    requests_pathname_prefix=os.environ.get("DOMINO_RUN_HOST_PATH"),
+)
 
 app.layout = html.Div([
     html.H1("ML Model Dashboard"),
-
-    html.Div([
-        html.Label("Feature 1:"),
-        dcc.Input(id='feature1', type='number', value=0),
-
-        html.Label("Feature 2:"),
-        dcc.Input(id='feature2', type='number', value=0),
-
-        html.Button('Predict', id='predict-btn', n_clicks=0),
-    ]),
-
-    html.Div(id='prediction-output'),
-
-    # Environment info
-    html.Div([
-        html.P(f"Project: {os.environ.get('DOMINO_PROJECT_NAME', 'N/A')}"),
-        html.P(f"User: {os.environ.get('DOMINO_STARTING_USERNAME', 'N/A')}"),
-    ], style={'marginTop': '20px', 'color': 'gray'})
+    html.Label("Feature 1"), dcc.Input(id="feature1", type="number", value=0),
+    html.Label("Feature 2"), dcc.Input(id="feature2", type="number", value=0),
+    html.Button("Predict", id="predict-btn", n_clicks=0),
+    html.Div(id="prediction-output"),
+    html.P(f"Project: {os.environ.get('DOMINO_PROJECT_NAME', 'n/a')}", style={"color": "gray"}),
 ])
 
+
 @callback(
-    Output('prediction-output', 'children'),
-    Input('predict-btn', 'n_clicks'),
-    Input('feature1', 'value'),
-    Input('feature2', 'value'),
-    prevent_initial_call=True
+    Output("prediction-output", "children"),
+    Input("predict-btn", "n_clicks"),
+    Input("feature1", "value"),
+    Input("feature2", "value"),
+    prevent_initial_call=True,
 )
-def predict(n_clicks, feature1, feature2):
-    model_url = os.environ.get('MODEL_API_URL')
-    model_token = os.environ.get('MODEL_API_TOKEN')
-
-    if not model_url or not model_token:
-        return html.P("Model API not configured", style={'color': 'red'})
-
+def run_prediction(n_clicks, feature1, feature2):
     try:
-        response = requests.post(
-            model_url,
-            headers={
-                'Authorization': f'Bearer {model_token}',
-                'Content-Type': 'application/json'
-            },
-            json={'data': {'feature1': feature1, 'feature2': feature2}}
-        )
-        return html.Pre(str(response.json()))
-    except Exception as e:
-        return html.P(f"Error: {str(e)}", style={'color': 'red'})
+        return html.Pre(str(predict({"feature1": feature1, "feature2": feature2})))
+    except Exception as exc:
+        return html.P(f"Prediction failed: {exc}", style={"color": "red"})
 
-if __name__ == '__main__':
-    # CRITICAL: Bind to 0.0.0.0:8888 for Domino
-    app.run_server(
-        host='0.0.0.0',
-        port=8888,
-        debug=False
-    )
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8888, debug=False)
 ```
+
+`app.sh` is `python app.py`. Files in `assets/` are served automatically under the same prefix. Dash receives the `domino-username` header through Flask's `request.headers`.
 
 ## Flask
-
-### Basic app.sh
-
-```bash
-#!/bin/bash
-set -e
-
-python app.py
-```
-
-### Example Flask App
 
 ```python
 # app.py
 import os
-from flask import Flask, render_template, request, jsonify
-import requests
+from flask import Flask, jsonify, request
+from predict import predict
 
 app = Flask(__name__)
 
-@app.route('/')
+
+@app.route("/")
 def index():
-    return render_template('index.html',
-        project=os.environ.get('DOMINO_PROJECT_NAME', 'N/A'),
-        user=os.environ.get('DOMINO_STARTING_USERNAME', 'N/A')
-    )
+    return f"Hello {request.headers.get('domino-username', 'Anonymous')} from {os.environ.get('DOMINO_PROJECT_NAME', 'n/a')}"
 
-@app.route('/predict', methods=['POST'])
-def predict():
-    data = request.json
-    model_url = os.environ.get('MODEL_API_URL')
-    model_token = os.environ.get('MODEL_API_TOKEN')
 
-    if not model_url or not model_token:
-        return jsonify({'error': 'Model API not configured'}), 500
-
+@app.route("/predict", methods=["POST"])
+def predict_route():
     try:
-        response = requests.post(
-            model_url,
-            headers={
-                'Authorization': f'Bearer {model_token}',
-                'Content-Type': 'application/json'
-            },
-            json={'data': data}
-        )
-        return jsonify(response.json())
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify(predict(request.get_json(force=True)))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
 
-@app.route('/health')
+
+@app.route("/health")
 def health():
-    return jsonify({'status': 'healthy'})
-
-if __name__ == '__main__':
-    # CRITICAL: Bind to 0.0.0.0:8888 for Domino
-    app.run(
-        host='0.0.0.0',
-        port=8888,
-        debug=False
-    )
+    return jsonify({"status": "ok"})
 ```
-
-### Flask with Gunicorn (Production)
 
 ```bash
 #!/bin/bash
+# app.sh (development server)
 set -e
-
-pip install gunicorn
-
-gunicorn app:app \
-    --bind 0.0.0.0:8888 \
-    --workers 4 \
-    --timeout 120
+export FLASK_APP=app.py
+python -m flask run --host=0.0.0.0 --port=8888
 ```
+
+For more than a handful of concurrent users serve with gunicorn (Domino's performance guidance): `gunicorn -w 4 -b 0.0.0.0:8888 app:app`. Use relative URLs in templates (`href="static/style.css"`, `fetch("predict")`), not `/static/...`. If the app must generate absolute URLs, Domino's Flask example wraps `app.wsgi_app` in a `ReverseProxied` middleware that copies `HTTP_X_SCRIPT_NAME` into `SCRIPT_NAME`; see https://docs.domino.ai/cloud/platform-capabilities/features/apps/common-app-frameworks/flask-app .
 
 ## Gradio
 
-### Basic app.sh
-
-```bash
-#!/bin/bash
-set -e
-
-python app.py
-```
-
-### Example Gradio App
+Gradio serves assets under its `root_path`; set it from `DOMINO_RUN_HOST_PATH`, as Gradio documents for apps behind a reverse proxy.
 
 ```python
 # app.py
 import os
 import gradio as gr
-import requests
+from predict import predict
 
-def predict(feature1, feature2):
-    model_url = os.environ.get('MODEL_API_URL')
-    model_token = os.environ.get('MODEL_API_TOKEN')
 
-    if not model_url or not model_token:
-        return "Model API not configured"
-
+def run(feature1, feature2):
     try:
-        response = requests.post(
-            model_url,
-            headers={
-                'Authorization': f'Bearer {model_token}',
-                'Content-Type': 'application/json'
-            },
-            json={'data': {'feature1': feature1, 'feature2': feature2}}
-        )
-        return str(response.json())
-    except Exception as e:
-        return f"Error: {str(e)}"
+        return str(predict({"feature1": feature1, "feature2": feature2}))
+    except Exception as exc:
+        return f"Prediction failed: {exc}"
+
 
 demo = gr.Interface(
-    fn=predict,
-    inputs=[
-        gr.Number(label="Feature 1"),
-        gr.Number(label="Feature 2")
-    ],
+    fn=run,
+    inputs=[gr.Number(label="Feature 1"), gr.Number(label="Feature 2")],
     outputs=gr.Textbox(label="Prediction"),
     title="ML Model Interface",
-    description=f"Project: {os.environ.get('DOMINO_PROJECT_NAME', 'N/A')}"
 )
 
-if __name__ == '__main__':
-    # CRITICAL: Bind to 0.0.0.0:8888 for Domino
+if __name__ == "__main__":
     demo.launch(
-        server_name='0.0.0.0',
+        server_name="0.0.0.0",
         server_port=8888,
-        share=False
+        root_path=os.environ.get("DOMINO_RUN_HOST_PATH", ""),
+        share=False,
     )
 ```
 
-## Panel (HoloViz)
-
-### Basic app.sh
-
-```bash
-#!/bin/bash
-set -e
-
-panel serve app.py \
-    --address 0.0.0.0 \
-    --port 8888 \
-    --allow-websocket-origin="*"
-```
-
-### Example Panel App
-
-```python
-# app.py
-import os
-import panel as pn
-import requests
-
-pn.extension()
-
-feature1_input = pn.widgets.FloatInput(name='Feature 1', value=0)
-feature2_input = pn.widgets.FloatInput(name='Feature 2', value=0)
-predict_button = pn.widgets.Button(name='Predict', button_type='primary')
-output = pn.pane.Markdown("Click Predict to get results")
-
-def predict(event):
-    model_url = os.environ.get('MODEL_API_URL')
-    model_token = os.environ.get('MODEL_API_TOKEN')
-
-    if not model_url or not model_token:
-        output.object = "**Error:** Model API not configured"
-        return
-
-    try:
-        response = requests.post(
-            model_url,
-            headers={
-                'Authorization': f'Bearer {model_token}',
-                'Content-Type': 'application/json'
-            },
-            json={'data': {
-                'feature1': feature1_input.value,
-                'feature2': feature2_input.value
-            }}
-        )
-        output.object = f"**Result:** {response.json()}"
-    except Exception as e:
-        output.object = f"**Error:** {str(e)}"
-
-predict_button.on_click(predict)
-
-layout = pn.Column(
-    "# ML Model Dashboard",
-    f"Project: {os.environ.get('DOMINO_PROJECT_NAME', 'N/A')}",
-    feature1_input,
-    feature2_input,
-    predict_button,
-    output
-)
-
-layout.servable()
-```
+`app.sh` is `python app.py`.
 
 ## FastAPI
 
-### Basic app.sh
-
 ```bash
 #!/bin/bash
+# app.sh
 set -e
-
 uvicorn app:app --host 0.0.0.0 --port 8888
 ```
-
-### Example FastAPI App with Static Files
 
 ```python
 # app.py
 import os
 from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse
-import httpx
+from predict import predict
 
 app = FastAPI()
-
-# Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {
-        "request": request,
-        "project": os.environ.get('DOMINO_PROJECT_NAME', 'N/A'),
-        "user": os.environ.get('DOMINO_STARTING_USERNAME', 'N/A')
+    return templates.TemplateResponse(request, "index.html", {
+        "project": os.environ.get("DOMINO_PROJECT_NAME", "n/a"),
+        "user": request.headers.get("domino-username", "Anonymous"),
     })
 
+
 @app.post("/predict")
-async def predict(data: dict):
-    model_url = os.environ.get('MODEL_API_URL')
-    model_token = os.environ.get('MODEL_API_TOKEN')
+async def predict_route(features: dict):
+    return predict(features)
 
-    if not model_url or not model_token:
-        return {"error": "Model API not configured"}
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            model_url,
-            headers={
-                'Authorization': f'Bearer {model_token}',
-                'Content-Type': 'application/json'
-            },
-            json={'data': data}
-        )
-        return response.json()
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    return {"status": "ok"}
 ```
+
+Reference static files and API routes relatively in `index.html` (`static/app.js`, `fetch("predict")`). The `domino-ui-design` skill builds on this layout with Ant Design.
 
 ## Shiny (R)
 
-### Option 1: Inline R Script
+Two-file apps (`ui.R`, `server.R`) are launched by an `app.R` or `app.sh` that Domino runs as the entry point:
 
 ```r
 # app.R
 shiny::runApp("./", port = 8888, host = "0.0.0.0")
 ```
 
-### Option 2: Shell Script (app.sh)
-
 ```bash
 #!/bin/bash
+# app.sh alternative
 set -e
-
 R -e 'shiny::runApp("./", port=8888, host="0.0.0.0")'
 ```
 
-### Example Shiny App
+Model call from `server.R` (synchronous endpoint, Basic auth):
 
 ```r
-# app.R
-library(shiny)
-
-ui <- fluidPage(
-  titlePanel("ML Model Dashboard"),
-
-  sidebarLayout(
-    sidebarPanel(
-      numericInput("feature1", "Feature 1:", value = 0),
-      numericInput("feature2", "Feature 2:", value = 0),
-      actionButton("predict", "Predict")
-    ),
-
-    mainPanel(
-      h4("Prediction Result:"),
-      verbatimTextOutput("result"),
-      hr(),
-      p(paste("Project:", Sys.getenv("DOMINO_PROJECT_NAME", "N/A"))),
-      p(paste("User:", Sys.getenv("DOMINO_STARTING_USERNAME", "N/A")))
-    )
-  )
+library(httr)
+result <- POST(
+  Sys.getenv("MODEL_API_URL"),
+  authenticate(Sys.getenv("MODEL_API_TOKEN"), Sys.getenv("MODEL_API_TOKEN")),
+  body = list(data = list(feature1 = input$feature1, feature2 = input$feature2)),
+  encode = "json"
 )
-
-server <- function(input, output, session) {
-  observeEvent(input$predict, {
-    model_url <- Sys.getenv("MODEL_API_URL")
-    model_token <- Sys.getenv("MODEL_API_TOKEN")
-
-    if (model_url != "" && model_token != "") {
-      library(httr)
-      response <- POST(
-        model_url,
-        add_headers(
-          "Authorization" = paste("Bearer", model_token),
-          "Content-Type" = "application/json"
-        ),
-        body = list(data = list(
-          feature1 = input$feature1,
-          feature2 = input$feature2
-        )),
-        encode = "json"
-      )
-      output$result <- renderText({ content(response, "text") })
-    } else {
-      output$result <- renderText({ "Model API not configured" })
-    }
-  })
-}
-
-shinyApp(ui = ui, server = server)
+output$result <- renderText(content(result, "text"))
 ```
 
-### Running the Shiny App
+Identity headers reach Shiny only under Shiny Server Pro. R is single-process, so Shiny Apps serve a handful of concurrent users; see https://docs.domino.ai/cloud/platform-capabilities/features/apps/app-logs-and-versioning/app-scalability-performance .
 
-```bash
-# app.sh
-#!/bin/bash
-set -e
+## Dependencies
 
-# Run the Shiny app on required port
-R -e 'shiny::runApp("./", port=8888, host="0.0.0.0")'
-```
+Install packages in the Compute Environment (Dockerfile) rather than at start; `pip install` in `app.sh` slows every launch and fails without egress. Domino's Dash guide, for example, adds `RUN pip install dash` to the environment. Floors that match the code above:
 
-**Note:** Port selection is flexible; port 8888 is no longer required. You can use any port your application prefers.
+| Framework | Packages |
+|---|---|
+| Streamlit | `streamlit>=1.30`, `requests` |
+| Dash | `dash>=3.0` (3.0 removed `run_server`), `plotly`, `requests` |
+| Flask | `flask>=3.0`, `gunicorn>=21`, `requests` |
+| Gradio | `gradio>=4.0`, `requests` |
+| FastAPI | `fastapi`, `uvicorn`, `jinja2`, `requests` |
 
-## Common Requirements
+## Environment variables
 
-### requirements.txt Examples
-
-**Streamlit:**
-```
-streamlit>=1.28.0
-requests>=2.28.0
-pandas>=2.0.0
-```
-
-**Dash:**
-```
-dash>=2.14.0
-requests>=2.28.0
-pandas>=2.0.0
-plotly>=5.18.0
-```
-
-**Flask:**
-```
-flask>=3.0.0
-gunicorn>=21.0.0
-requests>=2.28.0
-```
-
-**Gradio:**
-```
-gradio>=4.0.0
-requests>=2.28.0
-```
-
-## Environment Variables
-
-All frameworks should access these Domino-provided variables:
-
-| Variable | Description |
-|----------|-------------|
-| `DOMINO_PROJECT_NAME` | Current project name |
-| `DOMINO_PROJECT_OWNER` | Project owner username |
-| `DOMINO_RUN_ID` | Current run identifier |
-| `DOMINO_STARTING_USERNAME` | User who started the app |
-
-Custom variables for model integration:
-
-| Variable | Description |
-|----------|-------------|
-| `MODEL_API_URL` | Endpoint URL for model predictions |
-| `MODEL_API_TOKEN` | Bearer token for API authentication |
+Injected by Domino: `DOMINO_RUN_HOST_PATH`, `DOMINO_PROJECT_ID`, `DOMINO_PROJECT_NAME`, `DOMINO_PROJECT_OWNER`, `DOMINO_RUN_ID`, `DOMINO_STARTING_USERNAME`, `DOMINO_WORKING_DIR`, `DOMINO_API_HOST` (full glossary: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environments/manage-compute-environments/manage-environment-variables/5-glossary-default-variables). Set by you in project or user settings: `MODEL_API_URL`, `MODEL_API_TOKEN`.
