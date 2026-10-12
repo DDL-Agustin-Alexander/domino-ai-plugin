@@ -3,7 +3,8 @@
 Product page: https://docs.domino.ai/cloud/platform-capabilities/features/models/integrate-ci-cd-workflows
 (same content on the 6.3 page). The API turns a project plus an inference function into the same
 container image a Domino endpoint runs (environment, project files, Flask or Plumber harness,
-auth and load-balancing layer) and pushes it to a registry you own.
+auth and load-balancing layer) and pushes it to a registry you own. The other targets (NVIDIA
+Fleet Command, Snowflake, SageMaker) and the Exports page: [EXPORT-TARGETS.md](./EXPORT-TARGETS.md).
 
 **Every `/v4/...` route in this file is Domino Internal API, may change between Domino versions.**
 They are not in the Public API spec; each cluster documents them under
@@ -171,7 +172,7 @@ examples; the mapping is here so you can read existing code. Usage of the client
 | `models_list()` | `GET /v1/projects/{owner}/{project}/models` | legacy v1, not in the Public API, may change between Domino versions |
 | `model_versions_get(model_id)` | `GET /v1/models/{modelId}/versions` (versions carry `_id`, `metadata.number`) | legacy v1, as above |
 | `model_version_export(model_id, model_version_id, registry_host, registry_username, registry_password, repository_name, image_tag)` | `POST /v4/models/{modelId}/{modelVersionId}/exportImageToRegistry` | internal API |
-| `model_version_sagemaker_export(...)` (same arguments) | `POST /v4/models/{modelId}/{modelVersionId}/exportImageForSagemaker` | internal API |
+| `model_version_sagemaker_export(...)` (same arguments) | `POST /v4/models/{modelId}/{modelVersionId}/exportImageForSagemaker` | internal API; see [EXPORT-TARGETS.md](./EXPORT-TARGETS.md#amazon-sagemaker) |
 | `model_version_export_status(model_export_id)` | `GET /v4/models/{exportId}/getExportImageStatus` | internal API |
 | `model_version_export_logs(model_export_id)` | `GET /v4/models/{exportId}/getExportLogs` | internal API |
 

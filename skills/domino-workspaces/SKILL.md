@@ -49,7 +49,7 @@ Docs: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/workspace
 
 1. The environment needs `openssh-server` (the DSE has it; custom image: `USER root` / `apt-get install -y openssh-server` / `mkdir -p /var/run/sshd` / `USER ubuntu`).
 2. Launch with **Enable SSH access**. Missing checkbox: on 6.3 the admin sets `com.cerebro.domino.workbench.workspace.ssh.enabled`; on Cloud contact Domino support.
-3. In the running Workspace open **Settings** > **SSH connection** and install the **Dom CLI** from the link (distinct from the Domino CLI). Note the **Workspace ID** (also in the URL).
+3. In the running Workspace open **Settings** > **SSH connection** and install the **Dom CLI** from the link (distinct from the Domino CLI, [domino-cli](../domino-cli/SKILL.md)). Note the **Workspace ID** (also in the URL).
 4. Locally: `dom connect <workspace_id> --domino-api-host=https://<URL you open Domino at in the browser> -l ubuntu` (add `--port 2223` for PyCharm). Add `Include ~/.domino/ssh/config` to `~/.ssh/config`, then connect from VS Code **Remote Explorer > SSH** or PyCharm **Remote Development > SSH** (host = workspace id, user `ubuntu`).
 
 ## Workspace sessions over the API

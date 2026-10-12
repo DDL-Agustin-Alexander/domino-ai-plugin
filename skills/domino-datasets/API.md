@@ -69,7 +69,8 @@ on 6.4.0 a 400 or 404 arrives as `{"requestId": ..., "errors": ["..."]}`, so rea
 file routes as `/datasetrw/snapshot/...` without a prefix, but on Domino 6.4.0 that form (and
 `/api/datasetrw/snapshot/...`) returns 404 and only the `/v4/` form answers, hence the internal
 label. The chunked upload routes (`/datasetrw/datasets/{datasetId}/snapshot/file/...`) are what
-the CLI and python-domino `datasets_upload_files` drive; prefer those tools over calling them.
+the CLI (`domino upload-dataset`, [domino-cli](../domino-cli/SKILL.md)) and python-domino
+`datasets_upload_files` drive; prefer those tools over calling them.
 
 ## Examples
 

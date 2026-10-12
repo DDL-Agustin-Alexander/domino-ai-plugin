@@ -75,7 +75,8 @@ curl -sS -X POST "$DOMINO_API_PROXY/api/datasetrw/v1/datasets/$DATASET_ID/snapsh
   -d '{"relativeFilePaths": ["*"]}'
 ```
 
-Or `domino create-snapshot <owner>/<project>/<dataset>` from a machine with the CLI. Wait for
+Or `domino create-snapshot <owner>/<project>/<dataset>` from a machine with the CLI
+([domino-cli](../domino-cli/SKILL.md)). Wait for
 the snapshot's `status` to become `active` before editing files. Tag the ones you will refer to
 (`baseline`, `pre-cleanup`) and pin Jobs to a snapshot when a run must be reproducible.
 

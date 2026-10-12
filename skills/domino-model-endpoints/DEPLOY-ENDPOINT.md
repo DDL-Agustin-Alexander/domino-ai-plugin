@@ -179,7 +179,7 @@ else:
     raise TimeoutError(prediction_id)
 ```
 
-Status values: the spec documents `Pending`, `Processing`, `Succeeded` and `Failed`; the docs' example client compares lowercase `queued`, `succeeded` and `failed`. Compare case-insensitively and treat anything else as an error. Async endpoints are not available on remote data planes. Full client with retries: https://docs.domino.ai/cloud/platform-capabilities/features/model-deployment/async-example-client.
+Status values: the spec documents `Pending`, `Processing`, `Succeeded` and `Failed`; the docs' example client compares lowercase `queued`, `succeeded` and `failed`. Compare case-insensitively and treat anything else as an error. Async endpoints are not available on remote data planes. Full client with retries: https://docs.domino.ai/cloud/platform-capabilities/features/model-deployment/async-example-client. Scoring a whole file, table or Dataset with no request/response contract at all is a batch scoring Job, not an endpoint: [domino-model-delivery](../domino-model-delivery/BATCH-SCORING.md).
 
 ## Versions
 

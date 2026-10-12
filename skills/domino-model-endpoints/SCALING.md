@@ -47,7 +47,7 @@ Async endpoints trade latency for long-running work: payloads are limited to 10 
 - Start with the smallest endpoint tier that fits the model in memory, watch CPU and memory on the version page, then move up a tier or add instances.
 - Spot node pools (preview) cut cost; if a spot instance is interrupted the endpoint degrades or stops until capacity returns, and the remedy is switching to a non-spot tier.
 - Lower the instance count for low-traffic endpoints (one instance is allowed; two is the high-availability default).
-- If you need elastic autoscaling, export the model to Amazon SageMaker: https://docs.domino.ai/cloud/platform-capabilities/features/models/deploy-sagemaker.
+- If you need elastic autoscaling, export the model to Amazon SageMaker: https://docs.domino.ai/cloud/platform-capabilities/features/models/deploy-sagemaker. Deployment targets, the legacy image export and the other export targets: [domino-model-delivery](../domino-model-delivery/EXPORT-TARGETS.md#amazon-sagemaker).
 
 ## GPU inference
 

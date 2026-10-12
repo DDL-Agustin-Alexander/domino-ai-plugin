@@ -1,6 +1,6 @@
 ---
 name: domino-model-endpoints
-description: Publish and call Domino endpoints (model APIs) for synchronous or asynchronous predictions. Covers the prediction function and request JSON, how the endpoint image is built (environment, required packages, no requirements.txt), sync Basic-auth vs async Bearer invocation, versions and routing, instance counts and endpoint hardware tiers, health checks, metrics and logs. Use when deploying a model as an API from the UI, writing predict code, calling an endpoint, or debugging a slow or failing endpoint. For scripted lifecycle automation over REST (create, version, archive, logs) use domino-model-serving; for drift and model-quality monitoring use domino-model-monitoring.
+description: Publish and call Domino endpoints (model APIs) for synchronous or asynchronous predictions. Covers the prediction function and request JSON, how the endpoint image is built (environment, required packages, no requirements.txt), sync Basic-auth vs async Bearer invocation, versions and routing, instance counts and endpoint hardware tiers, health checks, metrics and logs. Use when deploying a model as an API from the UI, writing predict code, calling an endpoint, or debugging a slow or failing endpoint. For scripted lifecycle automation over REST (create, version, archive, logs) use domino-model-serving; for drift and model-quality monitoring use domino-model-monitoring; for batch scoring Jobs and for exporting a model out of Domino (an image to your registry, NVIDIA Fleet Command, a Snowflake UDF, SageMaker) use domino-model-delivery.
 compatibility: Domino 6.3 and Domino Cloud. Management calls need DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token. Prediction calls use the endpoint's own access token.
 ---
 
@@ -17,6 +17,7 @@ A Domino endpoint wraps a function from your project in an HTTP API. Domino buil
 | Publish from the UI, write the predict function, call the endpoint, tune instances, health checks, logs | this skill |
 | Automate the lifecycle over REST: create, new version, list, archive, logs, registered models | `domino-model-serving` |
 | Drift, model quality, prediction capture, scheduled checks | `domino-model-monitoring` |
+| Score a file, table or Dataset with a Job instead of an endpoint; export the model out of Domino (the endpoint image to your own registry or Kubernetes, NVIDIA Fleet Command, a Snowflake UDF, SageMaker) | [domino-model-delivery](../domino-model-delivery/SKILL.md) |
 
 ## Reference files
 
