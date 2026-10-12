@@ -16,6 +16,42 @@ import urllib.parse
 # .env fallback and the "not set" errors below still apply.
 for _name in [k for k, v in os.environ.items() if v.startswith("${")]:
     del os.environ[_name]
+
+# Some hosts start stdio MCP servers with a minimal environment and give a plugin no way to
+# forward more: Codex passes only HOME, LANG, LC_ALL, LOGNAME, PATH, SHELL and USER, and drops a
+# plugin server that declares env_vars. Inside a Domino Workspace or Job the Domino variables are
+# still set on the process that started the agent, so copy the ones this server reads from the
+# nearest ancestor that has them. Linux only; the kernel allows reading the environment of
+# processes owned by the same user.
+_DOMINO_VARS = ("DOMINO_API_HOST", "DOMINO_API_PROXY", "DOMINO_PROJECT_ID", "DOMINO_PROJECT_NAME",
+                "DOMINO_PROJECT_OWNER", "VSCODE_PROXY_URI")
+
+
+def _recover_domino_env(max_depth: int = 8) -> None:
+    if os.environ.get("DOMINO_API_HOST") or not os.path.isdir("/proc"):
+        return
+    pid = os.getppid()
+    for _ in range(max_depth):
+        if pid <= 1:
+            return
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as f:
+                env = dict(kv.split(b"=", 1) for kv in f.read().split(b"\0") if b"=" in kv)
+            with open(f"/proc/{pid}/stat") as f:
+                stat = f.read()
+        except OSError:
+            return
+        if b"DOMINO_API_HOST" in env:
+            for name in _DOMINO_VARS:
+                value = env.get(name.encode())
+                if value is not None and name not in os.environ:
+                    os.environ[name] = value.decode("utf-8", "replace")
+            return
+        # /proc/<pid>/stat is "pid (comm) state ppid ..."; comm may contain spaces.
+        pid = int(stat.rsplit(")", 1)[1].split()[1])
+
+
+_recover_domino_env()
 load_dotenv()
 
 
