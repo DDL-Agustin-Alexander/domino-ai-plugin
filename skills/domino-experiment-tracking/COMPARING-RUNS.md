@@ -1,25 +1,28 @@
 # Comparing and Analyzing Experiment Runs
 
-This guide covers how to compare experiment runs, search for specific runs, and export results in Domino Data Lab.
+Applies to Domino 6.3 and Domino Cloud. This guide covers how to compare experiment runs, search for specific runs, and export results in Domino. Product reference: https://docs.domino.ai/cloud/platform-capabilities/features/development/track-monitor
 
 ## Viewing Runs in Domino UI
 
 ### Accessing Experiment Manager
 
 1. Navigate to your Domino project
-2. Click **Experiments** in the left sidebar
+2. Click **Experiments** in the left navigation (an experiment appears only after its first run is logged)
 3. Select your experiment by name
 4. View the runs table with metrics, parameters, and status
 
 ### Run Comparison View
 
-1. Select multiple runs using checkboxes
-2. Click **Compare** button
-3. View side-by-side comparison of:
-   - Parameters
-   - Metrics
-   - Artifacts
-   - Training curves
+1. Select two to four runs using the checkboxes (the UI compares at most four)
+2. Click **Compare**
+3. View the side-by-side comparison of parameters, metrics and artifacts
+
+### Export from the UI
+
+- Single experiment to CSV: open the experiment, three-dot menu, **Download CSV**
+- Comparison to PDF: select two to four runs, **Compare**, three-dot menu, **Export as PDF**
+
+Runs cannot be stopped from the UI; call `mlflow.end_run()` in the Workspace or Job. Deleting a parent run leaves its child runs in place.
 
 ## Programmatic Run Search
 
@@ -171,13 +174,12 @@ model = mlflow.sklearn.load_model(f"runs:/abc123def456/model")
 predictions = model.predict(X_test)
 ```
 
-### Load Model by URI
+### Load a Registered Version or Alias
 
 ```python
-# Load from artifact URI
-model = mlflow.pyfunc.load_model(
-    "mlflow-artifacts:/abc123def456/artifacts/model"
-)
+# Registered model, by version or by alias (see MODEL-REGISTRY.md)
+model = mlflow.pyfunc.load_model("models:/churn-rf/3")
+model = mlflow.pyfunc.load_model("models:/churn-rf@champion")
 ```
 
 ## Exporting Run Data
