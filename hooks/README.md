@@ -57,8 +57,10 @@ input=$(cat)
 file=$(jq -r '.tool_input.file_path // empty' <<<"$input")
 ```
 
-Exit codes: `0` lets the action proceed (stdout goes to the debug log, not to the model); `2` is
-a blocking error whose stderr the model sees. On `PreToolUse`, exit 2 blocks the tool call; on
+Exit codes: `0` lets the action proceed; on most events stdout then goes to the debug log, not to
+the model, except on `SessionStart`, `UserPromptSubmit`, `UserPromptExpansion` and
+`PostModelSwitch`, where plain stdout is added as context (that is how the plugin's `SessionStart`
+hook delivers `rules/domino.md`). `2` is a blocking error whose stderr the model sees. On `PreToolUse`, exit 2 blocks the tool call; on
 `PostToolUse` the tool has already run and the stderr arrives as feedback the model acts on. Any
 other exit code is a non-blocking error. `$CLAUDE_PROJECT_DIR` is the project root where the
 session started, so scripts can be referenced from any working directory; `timeout` is in seconds
@@ -121,7 +123,9 @@ grep -q '0\.0\.0\.0' <<<"$content" || { echo "app.sh must bind to 0.0.0.0" >&2; 
 input=$(cat)
 file=$(jq -r '.tool_input.file_path // empty' <<<"$input")
 [[ "$file" == *.py ]] || exit 0
-python3 -m py_compile "$file" || exit 2   # py_compile's SyntaxError on stderr reaches the model
+# ast.parse reports a SyntaxError on stderr (which reaches the model) and, unlike py_compile,
+# writes no __pycache__ into the project.
+python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$file" || exit 2
 ```
 
 ### Lint a Dockerfile with hadolint
@@ -154,6 +158,9 @@ black --quiet "$file"
 
 ### All four together
 
+Handlers in one matcher group run in parallel, so the formatter gets its own group: otherwise
+`black` could rewrite the file while the syntax check reads it.
+
 ```json
 {
   "hooks": {
@@ -163,7 +170,12 @@ black --quiet "$file"
         "hooks": [
           { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/check-app-sh.sh" },
           { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/check-python.sh" },
-          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/check-dockerfile.sh" },
+          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/check-dockerfile.sh" }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
           { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/format-python.sh" }
         ]
       }

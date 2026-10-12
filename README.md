@@ -3,7 +3,8 @@
 One source tree, several distributions. This repository is a **Claude Code plugin** as checked
 in; the same checkout is a **Codex / ChatGPT plugin** (and builds the package for the OpenAI
 plugin directory), a **Cursor plugin**, and a **Gemini CLI extension**. All of them share the
-same skills, the same always-on guidance, and the same Domino MCP server.
+same skills; all but the OpenAI directory package, which is skills-only, also carry the same
+always-on guidance and the same Domino MCP server.
 
 ## Overview
 
@@ -20,7 +21,7 @@ The plugin gives AI coding assistants skills for the main Domino Data Lab surfac
 - **Distributed Computing**: Spark, Ray, and Dask clusters
 - **Projects, Launchers, Flows, governance, tags and properties, LLM access, and the Domino APIs and SDKs**
 
-Each skill says which Domino versions it applies to; see [Compatibility](#compatibility).
+Skills say which Domino versions they apply to; see [Compatibility](#compatibility).
 
 ## What ships where
 
@@ -30,7 +31,7 @@ Each skill says which Domino versions it applies to; see [Compatibility](#compat
 | Domino MCP server (`mcp-servers/`) | ✅ via `.mcp.json` (stdio) | Codex local install: ✅ via `mcp.json` (stdio). Public directory: needs a hosted HTTPS endpoint (see [OpenAI build](#openai-build)) | ✅ via `.cursor-plugin/mcp.json` (stdio; Cursor asks for `DOMINO_HOST` and `DOMINO_TOKEN` at install) | ✅ via `gemini-extension.json` (stdio; Gemini CLI asks for the same two values at install) |
 | Domino docs MCP server (`https://docs.domino.ai/mcp`) | ✅ via `.mcp.json` | Codex local install: ✅ via `mcp.json`. Not in the public directory package | ✅ via `.cursor-plugin/mcp.json` | ✅ via `gemini-extension.json` |
 | Always-on Domino guidance (`rules/domino.md`) | ✅ loaded at every session start by a `SessionStart` hook | Codex local install: the lead section, as the bundled MCP server's instructions. Not available to skills-only directory plugins | ✅ always-applied plugin rule (`alwaysApply: true`) | ✅ the extension's context file (`contextFileName`) |
-| Subagents (`agents/`) | ✅ | ❌ | ✅ | ❌ Gemini CLI reads `agents/` but expects its own sub-agent frontmatter |
+| Subagents (`agents/`) | ✅ routers that preload their skills | ❌ | Routing prompts only: Cursor loads `agents/` without `skills:` or `tools:`, so nothing is preloaded | ❌ Gemini CLI reads `agents/` but expects its own sub-agent frontmatter |
 | Output styles (`output-styles/`) | ✅ | ❌ Claude-only | ❌ | ❌ |
 | Hook examples (`hooks/`) | Docs only | ❌ | ❌ | ❌ |
 | Manifest | `.claude-plugin/plugin.json` | `plugin.json` ([Agent Plugins](https://agent-plugins.org) format) | `.cursor-plugin/plugin.json` | `gemini-extension.json` |
@@ -45,7 +46,9 @@ the Codex variant. CI enforces this; see [Skill rules](#skill-rules).
 
 ### Prerequisites
 
-- **Claude Code CLI** v2.0.12 or later, the first release with plugin support (`claude --version` to check)
+- **Claude Code CLI** v2.1.133 or later (`claude --version` to check). Plugins exist since 2.0.12,
+  but the subagents need the `skills:` preload (2.0.43) and plugin skills reachable from a
+  subagent through the Skill tool (2.1.133). Tested on 2.1.296.
 - Access to a Domino Data Lab instance
 - A Domino [Personal Access Token](https://docs.domino.ai/cloud/reference/api/domino-api-authentication)
   or service account token, only for the bundled MCP server when it runs outside a Domino Workspace
@@ -273,20 +276,27 @@ gemini extensions install https://github.com/dominodatalab/domino-ai-plugin
 ```
 
 Gemini CLI installs the repository's latest GitHub Release when one exists and the default branch
-otherwise; add `--ref release-YYYY.XYY.N` to pin a release. At install it asks for the two
-settings the bundled MCP server needs outside a Domino Workspace: the Domino URL (`DOMINO_HOST`)
-and `DOMINO_TOKEN`, a Personal Access Token or service account token, kept in the system
-keychain. Inside a Workspace leave both empty, or pass `--skip-settings`: the server calls
-`$DOMINO_API_PROXY` and picks up the Workspace's own variables. Gemini CLI strips any environment
-variable whose name looks like a credential (KEY, TOKEN, SECRET, AUTH and similar) from an
-extension's MCP servers unless the manifest declares it, which is why the token is a declared
-setting rather than something read from your shell. Update with `gemini extensions update
+otherwise; add `--ref release-YYYY.XYY.N` to pin a release. Only releases that include
+`gemini-extension.json` can be installed, so the first usable one is the first release cut after
+this file landed; earlier tags fail. At install it asks for the two settings the bundled MCP
+server needs outside a Domino Workspace: the Domino URL (`DOMINO_HOST`) and `DOMINO_TOKEN`, a
+Personal Access Token or service account token, kept in the system keychain (or in an encrypted
+file where there is no keychain, such as a Domino Workspace). Inside a Workspace leave both empty,
+or pass `--skip-settings`: the server calls `$DOMINO_API_PROXY` and picks up the Workspace's own
+variables. Gemini CLI never hands your shell's `DOMINO_TOKEN` to an MCP server: it drops every
+variable whose name contains TOKEN, KEY, SECRET, AUTH, CREDENTIAL, PASSWORD or similar, and a
+declared setting is injected from Gemini's own store instead, which is why the token is a setting
+rather than something read from your shell. Stdio MCP servers start only in a folder you have
+trusted (`gemini trust`, or answer the prompt). Update with `gemini extensions update
 dominodatalab`; for a local checkout, `gemini extensions link /path/to/domino-ai-plugin` loads it
 in place. The bundled MCP server needs `uv` on `PATH`; see
 [mcp-servers/domino_mcp_server/README.md](mcp-servers/domino_mcp_server/README.md).
 
-Gemini CLI substitutes `${extensionPath}`-style variables and the declared settings into skill
-text before the model reads it, so skills never contain such references (lint enforces this).
+Gemini CLI rewrites `${name}` in skill text before the model reads it, using its own variables,
+the declared settings and every key of a trusted workspace's `.env` file. Lint therefore rejects
+`${` in any `SKILL.md`, except files listed in `scripts/gemini-substitution.allow` for product
+syntax such as Launcher `${param}` placeholders, which Gemini would rewrite only if a project
+`.env` defined those names.
 The `agents/` and `output-styles/` directories are Claude Code formats: Gemini CLI ignores
 `output-styles/` and logs one "Error loading agent" line per file in `agents/` at startup, because
 its sub-agent frontmatter differs (`tools` as a list, no `skills`). The lines are harmless; the
@@ -325,15 +335,17 @@ screenshot path in `plugin.json` is missing or outside `assets/`.
 
 ## Compatibility
 
-- **Supported targets:** Domino 6.3 (self-managed) and Domino Cloud. Each skill declares this in
-  its `compatibility:` frontmatter and opens with `Applies to Domino 6.3 and Domino Cloud.`; where
-  the two differ, the skill reads `GET $DOMINO_API_HOST/version` and branches.
+- **Supported targets:** Domino 6.3 (self-managed) and Domino Cloud. Skills declare this in
+  `compatibility:` frontmatter and open with `Applies to Domino 6.3 and Domino Cloud.`; where the
+  two differ, the skill reads `GET $DOMINO_API_HOST/version` and branches. (Lint does not enforce
+  the frontmatter yet, so a skill without it still targets both.)
 - **Domino 6.2 and earlier:** not supported. The content targets 6.3 and later; for an older
   version use its own documentation at `https://docs.dominodatalab.com/en/<version>/`.
-- **`main`** is what the Anthropic marketplace, a GitHub marketplace install, and Gemini CLI
-  serve, and it is correct for both targets: version-specific behaviour is gated inside the
-  skills, never by branch. `release-X.Y` branches exist per shipped self-managed line (see
-  CONTRIBUTING.md "Release branches, tags and backports").
+- **`main`** is where releases are cut and it is correct for both targets: version-specific
+  behaviour is gated inside the skills, never by branch. A GitHub marketplace install follows
+  `main`, Gemini CLI follows its tagged GitHub Releases, and the Anthropic marketplace pins a
+  commit (see [Updating](#updating-claude-code)). `release-X.Y` branches exist per shipped
+  self-managed line (see CONTRIBUTING.md "Release branches, tags and backports").
 
 ---
 
@@ -373,8 +385,8 @@ DFS-based projects.
   [Personal Access Token](https://docs.domino.ai/cloud/reference/api/domino-api-authentication)
   or service account token sent as `Authorization: Bearer`. Legacy API keys (`DOMINO_API_KEY`) are
   no longer accepted; the server's error names `DOMINO_TOKEN`. Hosts that strip the environment
-  (Codex on a laptop) get the values from `$DOMINO_MCP_ENV_FILE` or
-  `~/.config/domino-mcp-server/.env`.
+  (Codex on a laptop) get the values from `$DOMINO_MCP_ENV_FILE`, else
+  `$XDG_CONFIG_HOME/domino-mcp-server/.env`, else `~/.config/domino-mcp-server/.env`.
 
 Requires `uv`. Tools, routes and each host's registration are documented in
 [mcp-servers/domino_mcp_server/README.md](mcp-servers/domino_mcp_server/README.md).
@@ -420,8 +432,10 @@ replace the former slash commands of the same names. In Claude Code they're stil
 
 ### Subagents (Claude Code and Cursor)
 
-Each agent is a thin router: it preloads the skills for its area, says which skill applies to
-which request, and holds no procedure of its own, so users on other hosts miss nothing.
+Each agent is a thin router: in Claude Code it preloads the skills for its area, can load the
+others through the Skill tool, and reaches the plugin's MCP servers; it says which skill applies
+to which request and holds no procedure of its own. Cursor loads the same files as plain prompts
+without skill preload; Codex and Gemini CLI don't use them.
 
 | Agent | Routes to |
 | --- | --- |
@@ -478,8 +492,11 @@ domino-ai-plugin/
 - Every `skills/<dir>/SKILL.md` has valid YAML front matter with a unique `name` equal to its
   directory name, a `description` of at most 1,024 characters, and a non-empty body.
 - `SKILL.md` is at most 8,000 bytes; Codex truncates anything longer. Detail goes in sibling files.
-- `SKILL.md` contains no `${...}` reference that Gemini CLI would substitute (`${extensionPath}`,
-  `${workspacePath}`, `${/}`, or a variable declared in `gemini-extension.json` settings).
+- `SKILL.md` contains no `${` at all, because Gemini CLI rewrites `${name}` in skill text with its
+  own variables, the settings declared in `gemini-extension.json` and every key of a trusted
+  workspace's `.env`. Files that document product syntax written that way (Launcher `${param}`
+  placeholders) are listed in `scripts/gemini-substitution.allow` with a reason; even there,
+  Gemini's own names and the declared settings are rejected.
 - `dominodatalab:<skill-name>` is at most 64 characters.
 - Relative links resolve and stay inside `skills/`; the OpenAI package ships `skills/` without
   the rest of the repo. Links between skills are fine.

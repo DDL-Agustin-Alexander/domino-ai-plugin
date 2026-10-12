@@ -34,7 +34,7 @@ scripts/build-openai.sh   # runs the manifest sync check and the skill linter fi
 Validate the other manifests from the same checkout:
 
 ```bash
-npx -y @google/gemini-cli extensions validate .   # Gemini CLI extension (gemini-extension.json)
+npx -y @google/gemini-cli@0.63.0 extensions validate .   # Gemini CLI extension (gemini-extension.json)
 agy plugin validate .                              # Antigravity (plugin.json, skills/, agents/)
 ```
 
@@ -120,9 +120,11 @@ skills:
 ---
 ```
 
-`skills:` preloads the full text of each named skill into the agent's context; `Skill` in
-`tools:` lets the agent load any other plugin skill on demand. Agents are a Claude Code
-component (Cursor reads `agents/` too) and aren't in the OpenAI package, so an agent is a
+`skills:` preloads the full text of each named skill into the agent's context (Claude Code
+2.0.43 or later); `Skill` in `tools:` lets the agent load any other plugin skill on demand
+(2.1.133 or later), and `mcp__plugin_dominodatalab_<server>__*` grants it the plugin's MCP
+tools. Agents are a Claude Code component and aren't in the OpenAI package; Cursor loads them
+as plain prompts without `skills:` or `tools:`, and Gemini CLI rejects them. So an agent is a
 thin router: it names the skills that apply and the order to apply them, and holds no
 procedure of its own. Anything users on other hosts also need goes into a skill.
 
@@ -303,7 +305,7 @@ script is worth citing, add it to the repo under the skill (for example
 
 Installs from a git source (the Anthropic marketplace, a marketplace added as `owner/repo`, the
 OpenAI directory) are copies that update only when the `plugin.json` `version` string changes.
-Any change under `skills/`, `agents/`,
+Any change under `skills/`, `agents/`, `commands/`, `templates/`,
 `mcp-servers/`, `output-styles/`, `hooks/`, `rules/`, `assets/`, `bin/`, `workflows/`,
 `themes/`, `monitors/`, `.agents/`, `.cursor-plugin/`, `.mcp.json`, `mcp.json`,
 `mcp_config.json`, `gemini-extension.json`, `.lsp.json`, `settings.json`,
@@ -343,7 +345,11 @@ instruction really differs per host, such as which instructions file or MCP conf
 give a variant for each host in one place (see "Host-specific files" in
 `skills/domino-ui-bootstrap/SKILL.md`). `scripts/lint-skills.py` fails on any skill file that
 mentions Claude unless it is listed in `scripts/claude-mentions.allow` with a reason; Claude as
-a model name in an LLM example is a valid reason.
+a model name in an LLM example is a valid reason. It also fails on any `${` in a `SKILL.md`:
+Gemini CLI rewrites `${name}` in skill text with its own variables, the extension's declared
+settings and every key of a trusted workspace's `.env`. Put such examples in a sibling file, or
+list the file in `scripts/gemini-substitution.allow` with a reason when the braces are product
+syntax (Launcher `${param}` placeholders).
 
 ## Release branches, tags and backports
 
