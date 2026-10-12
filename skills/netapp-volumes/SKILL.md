@@ -1,146 +1,126 @@
 ---
 name: netapp-volumes
-description: Work with Domino Volumes for NetApp ONTAP - enterprise-grade, multi-terabyte storage with near-instant snapshots. Covers volume creation, snapshot versioning with commit messages, cross-project sharing, mount paths (/mnt/netapp-volumes/ or /domino/netapp-volumes/), and the NetApp Volumes REST API. Use when managing large-scale data storage, needing fast no-copy snapshots, or integrating existing NetApp ONTAP infrastructure with Domino.
+description: Work with Domino Volumes for NetApp ONTAP (NetApp Volumes) - shared, multi-terabyte storage with near-instant snapshots. Covers creating volumes, attaching them to projects, mount paths (/mnt/netapp-volumes/ or /domino/netapp-volumes/), snapshots and tags, roles, deletion, mounting volumes in jobs, and the NetApp Volumes REST API (/remotefs/v1). Use when managing large-scale shared data, taking fast no-copy snapshots, or integrating NetApp ONTAP storage with Domino.
+compatibility: Domino 6.3 and Domino Cloud. Requires DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token. An administrator must have registered a NetApp ONTAP filesystem.
 ---
 
-# Domino NetApp Volumes Skill
+# Domino NetApp Volumes
 
-## Description
-This skill helps users work with Domino Volumes for NetApp ONTAP — enterprise-grade storage that mounts NetApp ONTAP filesystems directly into Domino workloads, enabling multi-terabyte scale with near-instant snapshotting.
+Applies to Domino 6.3 and Domino Cloud.
+
+Domino Volumes for NetApp ONTAP mount NetApp ONTAP filesystems directly into Domino
+Workspaces, Jobs, Apps and Launchers. They are global entities (not scoped to a project)
+that you attach to any project that needs them. Product docs:
+https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/netapp-volumes.
 
 ## Activation
-Activate this skill when users want to:
-- Create or manage NetApp Volumes in Domino
-- Work with NetApp volume snapshots and versioning
-- Share large-scale data across projects or teams
-- Access existing NetApp ONTAP storage from Domino workspaces, jobs, or apps
-- Use the NetApp Volumes REST API programmatically
-- Understand mount paths for NetApp volumes
-- Choose between NetApp Volumes and Domino Datasets
+
+Use this skill when the user wants to create or manage NetApp Volumes, snapshot or tag
+them, share large data across projects, read NetApp data from a Workspace or Job, mount
+volumes in Jobs, or call the `/remotefs/v1` API.
 
 ## NetApp Volumes or Domino Datasets?
 
-Feature-by-feature comparison table: [DATA-ACCESS.md](./DATA-ACCESS.md).
+Per the docs, NetApp Volumes cover nearly the same ground as Datasets and are recommended
+wherever the organization runs ONTAP. Differences:
 
-**Use NetApp Volumes when:**
-- Data exceeds ~1 TB
-- Near-instant snapshotting is required
-- Your organization already has NetApp ONTAP infrastructure
-- You need snapshot commit messages for audit trails
-- High-performance shared storage across many teams
+- Snapshots are near-instant regardless of size (about 3 seconds for 100 GB or more) and
+  use redirect-on-write, so they consume no extra storage at creation; a Dataset snapshot
+  duplicates the data.
+- Datasets can be cloned from a snapshot into a new Dataset; a NetApp Volume snapshot
+  cannot be cloned into a new volume (volumes can be copied for Project Templates).
+- NetApp Volumes need ONTAP infrastructure and an administrator-registered filesystem;
+  Domino sets no volume size limit (the ONTAP volume type does, up to 300 TiB for a
+  FlexVol). There are limits on snapshots per volume (`maxSnapshots` on the volume record)
+  and volumes per filesystem.
 
-**Use Domino Datasets when:**
-- Data is Domino-managed with no external infrastructure dependency
-- You need to create editable new versions from snapshots
-- Data is under ~1 TB
+Comparison table and read/write examples: [DATA-ACCESS.md](./DATA-ACCESS.md).
 
 ## Prerequisites
 
-An admin must register at least one NetApp filesystem (Kubernetes PVC with the `netapp-storage` label) before users can create volumes. Contact your Domino administrator if no filesystems are available.
+An administrator registers an ONTAP filesystem (data plane, storage class, root PVC) before
+anyone can create volumes: https://docs.domino.ai/cloud/admin/data-administration/netapp-volumes.
+List registered filesystems with `GET /remotefs/v1/filesystems`
+([API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#filesystems)).
 
-## Creating a NetApp Volume
+## Create a volume
 
-### From the Domino Home Page
-1. Navigate to **Data > NetApp Volumes** in the toolbar
-2. Click **Add NetApp Volume > Create Volume**
-3. Fill in the form:
-   - **Name**: Letters, numbers, underscores, hyphens only
-   - **Description**: Brief overview of the data
-   - **Data Plane**: Select from available options
-   - **NetApp Filesystem**: Choose a registered filesystem
-   - **Capacity**: Set maximum storage allocation
-4. Click **Next** to configure permissions
-5. Assign users with **Reader / Editor / Owner** roles
-6. Click **Finish**
-7. Manually add the volume to projects afterward
+From Domino (then add it to projects manually) or from inside a project (auto-attached):
 
-### From within a Project (recommended — auto-associates)
-1. Open a project → **Data > NetApp Volumes** (left panel)
-2. Click **Add NetApp Volume > Create Volume**
-3. Fill in the same form fields as above
-4. The volume is automatically associated with the current project on creation
+1. **Data > NetApp Volumes** (toolbar, or a project's left panel).
+2. **Add NetApp Volume > Create Volume**.
+3. **Name** (letters, numbers, underscores, hyphens), **Description**, **Data Plane**,
+   **NetApp Filesystem**, **Capacity**. Click **Next**.
+4. Add users or organizations with a **Reader**, **Editor** or **Owner** role. **Finish**.
 
-REST API (`POST /remotefs/v1/volumes`, capacity in bytes, `grants` required): [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md).
+REST: `POST /remotefs/v1/volumes` with `name`, `filesystemId`, `capacity` (bytes) and
+`grants` ([API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#create-a-volume)).
 
-## Adding a Volume to a Project
+## Attach, detach, delete
 
-### Via Domino UI
-1. Go to project → **Data > NetApp Volumes**
-2. Click **Add NetApp Volume > Add Existing Volume**
-3. Select the volume from the list
-4. Configure access level for the project
+- **Attach**: **Data > NetApp Volumes**, three-dot menu on the volume, **Add to project**.
+  REST: `POST /remotefs/v1/rpc/attach-volume-to-project`.
+- **Detach**: in the project, **Data > NetApp Volumes**, **Remove from project**. Only the
+  attachment goes; data and other projects are unaffected. REST:
+  `POST /remotefs/v1/rpc/detach-volume-from-project`.
+- **Delete**: **Delete Volume** (if your admin enabled it for your role) or **Mark for
+  deletion** (requests that an admin delete it). Deletion is permanent. REST:
+  `POST /remotefs/v1/rpc/delete-volume` or `/rpc/mark-volume-for-deletion`.
 
-REST API: `POST /remotefs/v1/rpc/attach-volume-to-project` — see [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md).
+## Mount paths
 
-## Mount Paths
+Paths mirror the Dataset scheme; volumes are global, so there is no local/imported split.
 
-Mount paths depend on your **project type**. Check which exists in your execution to determine your project type.
+| Project type | Read-write volume | Snapshot by number | Tagged snapshot |
+|--------------|-------------------|--------------------|-----------------|
+| DFS | `/domino/netapp-volumes/<name>` | `/domino/netapp-volumes/snapshots/<name>/<number>` | `/domino/netapp-volumes/snapshot-tags/<name>/<tag>` |
+| Git-based | `/mnt/netapp-volumes/<name>` | `/mnt/netapp-volumes/snapshots/<name>/<number>` | `/mnt/netapp-volumes/snapshot-tags/<name>/<tag>` |
 
-### Git-Based Projects
+Owners and Editors mount read-write; Readers mount read-only; Apps mount with the App
+owner's permission. If a snapshot has several tags, only the most recently added tag is
+mounted. Renaming a volume changes its mount path. At launch you can pin a volume to one
+snapshot on the **Data Plane & Hardware** tab; the pinned snapshot then mounts read-only at
+the read-write path and the `snapshots/<name>` directory is disabled. Details:
+[DATA-ACCESS.md](./DATA-ACCESS.md).
 
-| Volume Type | Mount Path |
-|-------------|-----------|
-| Live volume | `/mnt/netapp-volumes/<volume-name>/` |
-| Snapshot by number | `/mnt/netapp-volumes/snapshots/<volume-name>/<snapshot-number>/` |
-| Snapshot by tag | `/mnt/netapp-volumes/snapshot-tags/<volume-name>/<tag-name>/` |
+## Snapshots and tags
 
-### DFS (Domino File System) Projects
+Owners and Editors take snapshots: open the volume, **Files** tab, **Take Snapshot**
+(all files or selected files), optionally add a commit message and one or more tags.
+The button is unavailable once the volume reaches its maximum snapshot count. Deleting a
+snapshot is permanent and needs delete permission on the volume. Docs:
+https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/datasets/version-data-with-snapshots.
 
-| Volume Type | Mount Path |
-|-------------|-----------|
-| Live volume | `/domino/netapp-volumes/<volume-name>/` |
-| Snapshot by number | `/domino/netapp-volumes/snapshots/<volume-name>/<snapshot-number>/` |
-| Snapshot by tag | `/domino/netapp-volumes/snapshot-tags/<volume-name>/<tag-name>/` |
+REST: `POST /remotefs/v1/snapshots` (`volumeId`, `tagNames`), `POST /remotefs/v1/snapshots/{id}/tags`,
+`POST /remotefs/v1/rpc/create-snapshot-from-run`, `/rpc/restore-snapshot`, `/rpc/delete-snapshot`
+([API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#snapshots)).
 
-> **Important:** Each snapshot exposes only one tag path at a time — the most recently applied tag. Older tags on the same snapshot do not have accessible paths.
+## Roles
 
-> **Important:** Renaming a volume changes its mount path. Update any hardcoded paths in your code after renaming.
+| Role | API value | Capabilities (docs) |
+|------|-----------|---------------------|
+| Reader | `VolumeReader` | Read data and view snapshots; attach to projects read-only; can only mark a snapshot for deletion |
+| Editor | `VolumeEditor` | Reader plus write data, edit the description, take and delete snapshots, mount, mark for deletion or restore |
+| Owner | `VolumeOwner` | Editor plus change who has access and their roles (grants), request volume deletion |
 
-Numbered snapshot paths appear immediately in a running workspace; tag paths need a workspace restart. Project-type detection, permissions, and read/write examples: [DATA-ACCESS.md](./DATA-ACCESS.md).
+Edit permissions: three-dot menu on the volume, **Edit permissions**, or **Share** on the
+details page. REST: `PUT /remotefs/v1/volumes/{id}/grants`.
 
-## Snapshots and Versioning
+## Volumes in Jobs
 
-### What is a Snapshot?
-A snapshot is a read-only, immutable record of the volume's data at a specific point in time. NetApp snapshots use redirect-on-write — no additional storage is consumed at creation time.
-
-### Create a Snapshot via UI
-1. Go to project → **Data > NetApp Volumes**
-2. Select the volume → click **Take Snapshot**
-3. Add an optional **commit message** (e.g., "Added Q4 customer records")
-4. Add an optional **tag name** (e.g., `v2.0`, `production`, `2024-Q4`)
-5. Click **Confirm**
-
-REST API (create with `tagNames`, add a tag, create from a run, restore): [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md).
-
-## Roles and Permissions
-
-| Role | API Value | Capabilities |
-|------|-----------|-------------|
-| **Reader** | `VolumeReader` | View files and snapshots; mount as read-only |
-| **Editor** | `VolumeEditor` | All Reader capabilities + modify description, create/delete snapshots, manage shared access, manage users |
-| **Owner** | `VolumeOwner` | All Editor capabilities + update volume grants, request deletion |
-
-### Update Permissions via UI
-1. Go to **Data > NetApp Volumes** → select volume
-2. Click the three-dot menu → **Edit permissions**
-3. Add/remove users and assign roles
-
-## Using NetApp Volumes in Jobs
-
-Set `snapshotNetAppVolumesOnCompletion: true` to automatically take a snapshot of all mounted NetApp volumes when the job completes. This is the recommended approach for training jobs — it captures the exact state of the volume at the end of the run without requiring a separate API call.
-
-Job request body with `netAppVolumeIds`: [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md).
+`POST /api/jobs/v1/jobs` takes `netAppVolumeIds` (volume ids to mount) and
+`snapshotNetAppVolumesOnCompletion: true` to snapshot every mounted volume when the job
+ends. Body: [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#mount-volumes-in-a-job).
 
 ## Reference files
 
-- [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md) — REST API: create/attach volumes, snapshots, grants, jobs, listing, swagger fetch, public doc links
-- [DATA-ACCESS.md](./DATA-ACCESS.md) — comparison with Datasets, full mount-path section, snapshot path behavior, read/write examples, best practices
-- [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) — volume not found, permission denied, snapshot tag not mounted, no filesystems, slow reads
+- [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md): REST API with spec-verified bodies (volumes, filesystems, attach/detach, snapshots, tags, grants, deletion, listing, files, jobs)
+- [DATA-ACCESS.md](./DATA-ACCESS.md): comparison with Datasets, mount paths, snapshot mounting, read/write examples, best practices
+- [TROUBLESHOOTING.md](./TROUBLESHOOTING.md): missing mounts, permission errors, tag paths, no filesystems, slow reads
 
-## Documentation Reference
+## Documentation
 
-Before writing or verifying any API call, use the cluster swagger to confirm current endpoint paths and field names. Use public docs for workflow context and field explanations.
-
-**Get the cluster base URL:** `$DOMINO_API_HOST` (injected by Domino into every workspace, job, and app).
-
-Swagger fetch script and public doc links: [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md).
+- https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/netapp-volumes (overview, create, add/remove, view/edit)
+- https://docs.domino.ai/cloud/reference/api/domino-volumes-api (API served at `/remotefs/v1`)
+- https://docs.domino.ai/cloud/admin/data-administration/netapp-volumes (administrator setup)
+- Specs: [API-SPECS.md](../domino-api-intro/API-SPECS.md); per-deployment service document `/docs/openapi/data_remotefs_service-swagger.json`

@@ -1,439 +1,163 @@
-# Domino Apps API
+# Domino Apps API (beta catalog)
 
-Agent-oriented v1 vs beta and publish chain: [apps/API-APPS.md](../domino-apps/API-APPS.md). This file is a beta-heavy endpoint catalog; prefer v1 routes from that doc for new automation.
-
-## Overview
-The Apps API allows you to create, manage, and deploy web applications in Domino.
+Catalog of the `/api/apps/beta/apps` routes, verified against both published specs. For
+the v1 publish chain (`/api/apps/v1/apps`, drafts, `createAndStart`, `liveSync`) and the
+app lifecycle, use [domino-apps/API-APPS.md](../domino-apps/API-APPS.md); prefer v1 routes
+for new automation. Product docs:
+https://docs.domino.ai/cloud/platform-capabilities/features/apps.
 
 ## Authentication
 
-https://docs.domino.ai/cloud/reference/api/domino-api-authentication
+Use the shared setup block (`base_url`, `headers`) from
+[domino-api-intro](../domino-api-intro/SKILL.md#authentication).
 
-See [SKILL.md](SKILL.md#authentication). Do not use API keys.
+## List apps
 
-```python
-import os
-import requests
-
-if os.environ.get("DOMINO_API_PROXY"):
-    base_url = os.environ["DOMINO_API_PROXY"].rstrip("/")
-    headers = {}
-else:
-    base_url = (os.environ.get("DOMINO_USER_HOST") or os.environ.get("DOMINO_API_HOST") or "").rstrip("/")
-    token = requests.get("http://localhost:8899/access-token").text.strip()
-    headers = {"Authorization": f"Bearer {token}"}
-```
-
----
-
-## Endpoints
-
-### List Apps
 ```
 GET /api/apps/beta/apps
 ```
 
-Get apps visible to the user.
+| Parameter | Notes |
+|-----------|-------|
+| `projectId`, `ownerId`, `publisherId`, `name` | Filters |
+| `status` | One of the app statuses (`Queued`, `Scheduled`, `Pending`, `Preparing`, `Building`, `Pulling`, `Running`, `Serving`, `StopRequested`, `StopAndDiscardRequested`, `Stopping`, `Finishing`, ...) |
+| `tagIds` | Repeatable taxonomy tag ids |
+| `accessStatus` | `granted`, `pending`, `noAccess` |
+| `configurationType` | `STANDARD` (default) or `AISYSTEM` |
+| `includeTemplateApps`, `prioritizePinned` | boolean |
+| `sortField` (`name`, `lastUpdated`, `status`, `views`, `lastViewed`, `published`), `sortOrder` (`asc`, `desc`) | |
+| `limit`, `offset` | Pagination |
 
-**Query Parameters:**
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `projectId` | string | Filter by project |
-| `status` | string | Filter by status |
-| `offset` | int | Pagination offset |
-| `limit` | int | Results per page |
+Response: `{"items": [...]}`. Each item has `id`, `name`, `description`, `project`
+(`id`, `name`, `ownerUsername`, `projectType`), `publisher`, `entryPoint`, `url`,
+`visibility`, `discoverable`, `mountDatasets`, `renderIFrame`, `currentVersion`
+(`id`, `hardwareTierId`, `environmentId`, `resolvedCommits`, `currentInstance`, ...).
 
-**Status Values:**
-- `Running`
-- `Stopped`
-- `Starting`
-- `Failed`
-
-**Example:**
 ```python
-response = requests.get(
-    f"{base_url}/api/apps/beta/apps",
-    headers=headers,
-    params={
-        "status": "Running",
-        "limit": 20
-    }
-)
-apps = response.json()
+apps = requests.get(f"{base_url}/api/apps/beta/apps", headers=headers,
+                    params={"projectId": project_id, "limit": 20}).json()["items"]
+for app in apps:
+    print(app["name"], app["id"], app["url"])
 ```
 
-**Response:**
-```json
-{
-  "data": [
-    {
-      "id": "app-123",
-      "name": "Dashboard App",
-      "description": "Sales analytics dashboard",
-      "projectId": "project-456",
-      "status": "Running",
-      "url": "https://your-domino.com/apps/app-123",
-      "createdAt": "2024-01-15T10:00:00Z"
-    }
-  ],
-  "offset": 0,
-  "limit": 20,
-  "totalCount": 5
-}
-```
+## Create an app
 
----
-
-### Create App
 ```
 POST /api/apps/beta/apps
 ```
 
-Create a new application.
+Required: `name`, `projectId`, `visibility`, `version`. Optional: `entryPoint`
+(default `app.sh`), `discoverable`, `mountDatasets`, `renderIFrame`, `sendNotifications`,
+`iconId`, `configurationType`, `accessStatuses[]` (`userId`, `status` `ALLOWED` /
+`DENIED` / `PENDING`).
 
-**Request Body:**
-```json
-{
-  "projectId": "project-123",
-  "name": "analytics-dashboard",
-  "description": "Real-time analytics dashboard",
-  "hardwareTierId": "small",
-  "environmentId": "env-789"
-}
-```
+`version` fields (none required by the schema): `hardwareTierId`, `environmentId`,
+`environmentRevisionId`, `entryScript`, `gitRef` (`{"type": "head|commitId|branches|tags|custom", "value": "..."}`),
+`dfsCommitId`, `externalVolumeMountIds`, `netAppVolumeIds`, `dataPlaneId`,
+`autoscalingSpecification` (`enabled` required; `minReplicas`, `maxReplicas` 1 to 30,
+CPU/memory targets, stabilization windows, `useSessionAffinity`), `bundleId`,
+`extendedIdentityPropagationToAppsEnabled`, `vanityUrl`, `tags`.
 
-**Example:**
 ```python
-response = requests.post(
-    f"{base_url}/api/apps/beta/apps",
-    headers=headers,
-    json={
-        "projectId": "project-123",
-        "name": "customer-insights",
-        "description": "Customer analytics dashboard",
-        "hardwareTierId": "small",
-        "environmentId": "env-789"
-    }
-)
-app = response.json()
-print(f"Created app: {app['id']}")
-print(f"URL: {app['url']}")
+app = requests.post(f"{base_url}/api/apps/beta/apps", headers=headers, json={
+    "name": "customer-insights",
+    "projectId": project_id,
+    "visibility": "GRANT_BASED",
+    "entryPoint": "app.sh",
+    "version": {"hardwareTierId": "small-k8s", "environmentId": env_id},
+}).json()
 ```
 
----
+`visibility` values are not enumerated in the beta schema; live deployments return
+`GRANT_BASED` for shared apps. Check the v1 chain in
+[domino-apps/API-APPS.md](../domino-apps/API-APPS.md) for the documented values.
 
-### Get App
+## Get, update, delete
+
 ```
-GET /api/apps/beta/apps/{appId}
-```
-
-**Example:**
-```python
-app_id = "app-123"
-response = requests.get(
-    f"{base_url}/api/apps/beta/apps/{app_id}",
-    headers=headers
-)
-app = response.json()
-```
-
----
-
-### Update App
-```
-PATCH /api/apps/beta/apps/{appId}
-```
-
-Update app metadata.
-
-**Request Body:**
-```json
-{
-  "name": "new-name",
-  "description": "Updated description"
-}
-```
-
----
-
-### Delete App
-```
+GET    /api/apps/beta/apps/{appId}
+PATCH  /api/apps/beta/apps/{appId}        body: metadata fields such as name, description, discoverable
 DELETE /api/apps/beta/apps/{appId}
 ```
 
----
+## Versions
 
-## App Versions
-
-### List Versions
 ```
-GET /api/apps/beta/apps/{appId}/versions
-```
-
-Get all versions of an app.
-
-### Create New Version
-```
-POST /api/apps/beta/apps/{appId}/versions
-```
-
-Publish a new version of the app.
-
-**Request Body:**
-```json
-{
-  "hardwareTierId": "medium",
-  "environmentId": "env-789"
-}
-```
-
-### Get Version
-```
-GET /api/apps/beta/apps/{appId}/versions/{versionId}
-```
-
-### Update Version
-```
+GET   /api/apps/beta/apps/{appId}/versions
+POST  /api/apps/beta/apps/{appId}/versions                       body: the version object above
+GET   /api/apps/beta/apps/{appId}/versions/{versionId}
 PATCH /api/apps/beta/apps/{appId}/versions/{versionId}
+POST  /api/apps/beta/apps/{appId}/versions/{versionId}/start
+POST  /api/apps/beta/apps/{appId}/versions/{versionId}/stop
 ```
 
----
+Use `start` and `stop` on a version to run or halt the app.
 
-## App Instances
+## Instances and logs
 
-### List Instances
 ```
-GET /api/apps/beta/apps/{appId}/versions/{versionId}/instances
-```
-
-Get running instances of an app version.
-
-### Get Instance
-```
-GET /api/apps/beta/apps/{appId}/versions/{versionId}/instances/{instanceId}
-```
-
-### Delete Instance
-```
+GET    /api/apps/beta/apps/{appId}/versions/{versionId}/instances
+GET    /api/apps/beta/apps/{appId}/versions/{versionId}/instances/{instanceId}
 DELETE /api/apps/beta/apps/{appId}/versions/{versionId}/instances/{instanceId}
+GET    /api/apps/beta/apps/{appId}/versions/{versionId}/instances/{instanceId}/logs
+GET    /api/apps/beta/apps/{appId}/versions/{versionId}/instances/{instanceId}/realTimeLogs
+POST   /api/apps/beta/apps/{appId}/versions/{versionId}/instances/{instanceId}/views
 ```
-
-Stop and remove an app instance.
-
-### Get Instance Logs
-```
-GET /api/apps/beta/apps/{appId}/versions/{versionId}/instances/{instanceId}/logs
-```
-
-**Example:**
-```python
-response = requests.get(
-    f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}/instances/{instance_id}/logs",
-    headers=headers
-)
-logs = response.text
-print(logs)
-```
-
-### Get Real-Time Logs
-```
-GET /api/apps/beta/apps/{appId}/versions/{versionId}/instances/{instanceId}/realTimeLogs
-```
-
-Stream logs in real-time.
-
-### Record View
-```
-POST /api/apps/beta/apps/{appId}/versions/{versionId}/instances/{instanceId}/views
-```
-
-Record an app view for analytics.
-
----
-
-## App Thumbnail
-
-### Get Thumbnail
-```
-GET /api/apps/beta/apps/{appId}/thumbnail
-```
-
-### Upload Thumbnail
-```
-POST /api/apps/beta/apps/{appId}/thumbnail
-```
-
-Upload a thumbnail image for the app.
-
-### Delete Thumbnail
-```
-DELETE /api/apps/beta/apps/{appId}/thumbnail
-```
-
-### Get Thumbnail Metadata
-```
-GET /api/apps/beta/apps/{appId}/thumbnail/metadata
-```
-
----
-
-## App Views Analytics
-
-### Get Views
-```
-GET /api/apps/beta/apps/{appId}/views
-```
-
-Get view statistics for an app.
-
-**Query Parameters:**
-- `startTime`: Filter start timestamp
-- `endTime`: Filter end timestamp
-
----
-
-## Vanity URLs
-
-### Get by Vanity URL
-```
-GET /api/apps/beta/apps/vanityUrls/{vanityUrl}
-```
-
-Look up an app by its vanity URL.
-
----
-
-## Filter Options
-
-### Get Project Filter Options
-```
-GET /api/apps/beta/apps/projectFilterOptions
-```
-
-Get list of projects that have apps.
-
-### Get Publisher Filter Options
-```
-GET /api/apps/beta/apps/publisherFilterOptions
-```
-
-Get list of users who have published apps.
-
----
-
-## Access Requests
-
-### Request Access
-```
-POST /api/apps/beta/apps/{appId}/access/requests
-```
-
-Request access to a private app.
-
----
-
-## Complete Workflow Example
 
 ```python
-import os
-import requests
-import time
-
-if os.environ.get("DOMINO_API_PROXY"):
-    base_url = os.environ["DOMINO_API_PROXY"].rstrip("/")
-    headers = {}
-else:
-    base_url = (os.environ.get("DOMINO_USER_HOST") or os.environ.get("DOMINO_API_HOST") or "").rstrip("/")
-    token = requests.get("http://localhost:8899/access-token").text.strip()
-    headers = {"Authorization": f"Bearer {token}"}
-
-# 1. Create app
-response = requests.post(
-    f"{base_url}/api/apps/beta/apps",
-    headers=headers,
-    json={
-        "projectId": "project-123",
-        "name": "ml-dashboard",
-        "description": "Machine learning model dashboard",
-        "hardwareTierId": "small",
-        "environmentId": "env-789"
-    }
-)
-app = response.json()
-app_id = app['id']
-print(f"Created app: {app_id}")
-
-# 2. Wait for app to start
-while True:
-    response = requests.get(
-        f"{base_url}/api/apps/beta/apps/{app_id}",
-        headers=headers
-    )
-    status = response.json()['status']
-
-    if status == 'Running':
-        print(f"App is running!")
-        break
-    elif status == 'Failed':
-        print("App failed to start")
-        break
-    else:
-        print(f"Status: {status}")
-        time.sleep(10)
-
-# 3. Get app URL
-response = requests.get(
-    f"{base_url}/api/apps/beta/apps/{app_id}",
-    headers=headers
-)
-app_url = response.json()['url']
-print(f"App URL: {app_url}")
-
-# 4. View logs
-versions = requests.get(
-    f"{base_url}/api/apps/beta/apps/{app_id}/versions",
-    headers=headers
-).json()
-version_id = versions['data'][0]['id']
-
-instances = requests.get(
-    f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}/instances",
-    headers=headers
-).json()
-instance_id = instances['data'][0]['id']
-
+versions = requests.get(f"{base_url}/api/apps/beta/apps/{app_id}/versions", headers=headers).json()
+version_id = versions["items"][0]["id"]
+instances = requests.get(f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}/instances",
+                         headers=headers).json()
+instance_id = instances["items"][0]["id"]
 logs = requests.get(
     f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}/instances/{instance_id}/logs",
-    headers=headers
-).text
-print(f"Logs:\n{logs}")
-
-# 5. Stop app (delete instance)
-requests.delete(
-    f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}/instances/{instance_id}",
-    headers=headers
-)
-print("App stopped")
+    headers=headers)
+print(logs.text)
 ```
 
----
+Check the list envelope key (`items`) once on your deployment; beta list responses may
+differ from v1.
 
-## App Types and Configuration
+## Thumbnail, views, vanity URLs, filters, access
 
-Apps in Domino require:
-1. **app.sh**: Launch script that starts the app
-2. **Proper host binding**: Bind to `0.0.0.0`
-3. **Environment**: With required dependencies
-
-Example `app.sh` for Streamlit:
-```bash
-#!/bin/bash
-streamlit run app.py --server.port 8888 --server.address 0.0.0.0
+```
+GET, POST, DELETE /api/apps/beta/apps/{appId}/thumbnail;  GET .../thumbnail/metadata
+GET /api/apps/beta/apps/{appId}/views?startTimestamp=&endTimestamp=&granularity=     (epoch ms; granularity default 86400000)
+GET /api/apps/beta/apps/vanityUrls/{vanityUrl}
+GET /api/apps/beta/apps/projectFilterOptions;  GET /api/apps/beta/apps/publisherFilterOptions
+POST /api/apps/beta/apps/{appId}/access/requests
+GET, PUT /api/apps/beta/apps/{appId}/roles        (Cloud only)
 ```
 
-Example for React/Vite:
-```bash
-#!/bin/bash
-npm run build
-npm run preview -- --host 0.0.0.0 --port 8888
+## Workflow: create, wait, read logs, stop
+
+```python
+import time
+
+app = requests.post(f"{base_url}/api/apps/beta/apps", headers=headers, json={
+    "name": "ml-dashboard", "projectId": project_id, "visibility": "GRANT_BASED",
+    "version": {"hardwareTierId": "small-k8s", "environmentId": env_id},
+}).json()
+app_id = app["id"]
+version_id = app["currentVersion"]["id"]
+
+requests.post(f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}/start", headers=headers)
+
+while True:
+    current = requests.get(f"{base_url}/api/apps/beta/apps/{app_id}", headers=headers).json()
+    status = current["currentVersion"]["currentInstance"]["status"] \
+        if current.get("currentVersion", {}).get("currentInstance") else "Pending"
+    if status in ("Running", "Serving"):
+        print("App is up:", current["url"]); break
+    if status in ("Failed", "Stopped"):
+        print("App did not start:", status); break
+    time.sleep(10)
+
+requests.post(f"{base_url}/api/apps/beta/apps/{app_id}/versions/{version_id}/stop", headers=headers)
 ```
+
+## App requirements
+
+Apps need an `app.sh` entry point that binds to `0.0.0.0:8888`; see
+[domino-apps](../domino-apps/SKILL.md) for framework-specific scripts and proxy rules.

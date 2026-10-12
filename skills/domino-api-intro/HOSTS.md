@@ -1,143 +1,77 @@
-# How to reach Domino HTTP endpoints
+# Which base URL for which API
 
-Authentication: https://docs.domino.ai/cloud/reference/api/domino-api-authentication .
+Authentication rules: [SKILL.md](./SKILL.md#authentication) and
+https://docs.domino.ai/cloud/reference/api/domino-api-authentication.
 
-In-run: `DOMINO_API_PROXY` with **no** `Authorization` header when that works, else `DOMINO_USER_HOST` / `DOMINO_API_HOST` + Bearer from `http://localhost:8899/access-token`. Outside a run: **public deployment HTTPS URL** + PAT or SA. Legacy user API keys are described as deprecated, never recommended.
+| Where the code runs | Base URL | Credential |
+|---|---|---|
+| Inside a Domino execution, `DOMINO_API_PROXY` set | `$DOMINO_API_PROXY` | none (proxy adds the token) |
+| Inside a Domino execution, proxy not set | `$DOMINO_API_HOST` | Bearer from `http://localhost:8899/access-token` |
+| Outside Domino | The deployment URL (set `DOMINO_API_HOST` to it) | Bearer PAT or service account token |
 
-## Outside any Domino run (external access)
+Do not derive the deployment URL from a JWT claim, and do not copy hostnames out of one
+execution into another. Read `DOMINO_API_HOST` or use the URL an API response returns.
 
-| What to set | Value |
-|-------------|--------|
-| Base URL | Public deployment URL (what users open in the browser), e.g. `https://yourcompany.domino.ai` |
-| Credential | Bearer PAT (you) or service account token (automation) |
+## One base for the Public API
 
+Both published specs declare a single server, the deployment hostname. Every path in
+them (`/api/...`, `/remotefs/v1`, `/datasetrw/...`, `/model-monitor/...`) is served on that
+base; inside a run `$DOMINO_API_PROXY` or `$DOMINO_API_HOST` stands in for it. Verified on
+a Domino Cloud deployment with `GET /api/users/v1/self`, `/api/jobs/beta/jobs`,
+`/api/taxonomy/v1/config` and `/remotefs/v1/volumes` on the same base.
 
-## In-run: two layers (routing + auth)
+## NetApp Volumes (`/remotefs/v1`)
 
-**Routing:** Most control-plane paths go on **`DOMINO_USER_HOST`** when the platform API gateway is on, or on the legacy sidecar base when it is off. Some paths (governance when gateway is off, WebVFS, inference) use a **different** base; see below.
+Reference: https://docs.domino.ai/cloud/reference/api/domino-volumes-api (file-operation
+hosts are spelled out on the 6.3 page,
+https://docs.domino.ai/6.3/reference/api/domino-volumes-api).
 
-**Auth:** Prefer **`DOMINO_API_PROXY`** (JWT credential propagation, common on Domino 5.4.0+ when your admin enabled it). The proxy URL is for **auth**, not a substitute for knowing whether a path is registered on the gateway. If the proxy is unset, use access-token + `DOMINO_USER_HOST`. Details: auth page above.
+| Operation | Inside a run | Outside Domino |
+|-----------|--------------|----------------|
+| Volume and filesystem CRUD, snapshots, grants, transfers | `$DOMINO_REMOTE_FILE_SYSTEM_HOSTPORT` when Domino injects it, else the proxy or `$DOMINO_API_HOST` | deployment URL |
+| File operations under `/remotefs/v1/volumes/{id}/files/*` and `/remotefs/v1/snapshots/{id}/files/*` | `http://data-webvfs-service.domino-compute:80` with the path as shown in the reference | deployment URL with `/webvfs` prefixed to the path |
 
-**Canonical host name:** use **`DOMINO_USER_HOST`**. **`DOMINO_API_HOST`** is the same base in runs; treat it as a deprecated alias.
+Details: [netapp-volumes](../netapp-volumes/API-NETAPP-VOLUMES.md).
 
-**Sanity check:** confirm paths against https://docs.domino.ai/llms-full.txt before calling an endpoint you have not used on this cluster.
+## Model API invocation
 
-## Platform API gateway (routing through port 8763)
+Management calls (`/api/modelServing/v1/...`, `/api/registeredmodels/...`) use the Public
+API base. Prediction requests go to the Model API's own URL shown on its page in Domino,
+with the endpoint's access token, not a platform token:
 
-The **platform API gateway** (`operations-api-gateway-service`) registers selected routes so user code can call them on one local HTTP listener instead of many legacy localhost ports.
+- Restricted **synchronous** endpoints: HTTP Basic with the access token as both username
+  and password.
+- Restricted **asynchronous** endpoints (`/api/modelApis/async/v1/{asyncModelId}`):
+  `Authorization: Bearer <access token>`.
+- Unrestricted endpoints: no token.
 
-### When the gateway is ON
+Source: https://docs.domino.ai/cloud/platform-capabilities/features/model-deployment/domino-endpoint-authorization.
+Workflow: [domino-model-endpoints](../domino-model-endpoints/SKILL.md).
 
-All of the following must be true (typical modern local data-plane runs):
+## Governance
 
-| Requirement | Meaning |
-|-------------|---------|
-| Feature flag **`ApiGateway.UserCodeLocalDpEnabled`** | Enabled in central config (available since Domino 6.3; default off until your admin turns it on) |
-| Run on **local control-plane data plane** | Remote data-plane runs may not get gateway wiring even if the flag is on elsewhere |
+Governance routes use the suffix `/api/governance/v1` on the same base. The
+[domino-governance](../domino-governance/SKILL.md) skill owns base resolution: try
+`$DOMINO_API_PROXY`, then `$DOMINO_API_HOST` with an access token, and on a 404 fall back
+to the deployment URL with a PAT or service account token. Use that skill's procedure
+rather than restating it.
 
-When ON, Domino injects roughly:
+## API gateway (Domino 6.3 feature flag)
 
-| Variable | Typical value | Use |
-|----------|---------------|-----|
-| `DOMINO_USER_HOST` | `http://127.0.0.1:8763` | Prefix for gateway-registered platform paths |
-| `DOMINO_API_HOST` | same | Deprecated alias of `DOMINO_USER_HOST` |
-| `DOMINO_DATASOURCE_PROXY_HOST` | `http://127.0.0.1:8763` | Datasource HTTP on gateway listener |
-| `DOMINO_DATASOURCE_PROXY_FLIGHT_HOST` | `grpc://127.0.0.1:8764` | Datasource gRPC |
-| `MLFLOW_TRACKING_URI` | `http://127.0.0.1:8763` | MLflow tracking |
-| `DOMINO_DATA_API_GATEWAY` | `http://127.0.0.1:8763/vectordb` | Vector DB path |
-| `DOMINO_MLFLOW_DEPLOYMENTS` | `http://127.0.0.1:8763/mlflow-deployments` | MLflow deployments path |
+Self-managed Domino 6.3 exposes the feature flag `ShortLived.ApiGateway.UserCodeLocalDpEnabled`
+(default `true`). It routes traffic from user workloads on the local data plane through the
+Envoy gateway and ext-auth service; `false` reverts to per-service proxy routing in the
+execution's nginx sidecar
+(https://docs.domino.ai/6.3/admin/configuration/feature-flags). Domino Cloud is operated by
+Domino; there is no customer-side switch.
 
-Example call (gateway ON, path registered on gateway):
-
-```bash
-curl "$DOMINO_USER_HOST/v4/users/self" -H "Authorization: Bearer $(curl -s http://localhost:8899/access-token)"
-```
-
-With `DOMINO_API_PROXY` set and routing working for that path:
-
-```bash
-curl "$DOMINO_API_PROXY/v4/users/self"
-```
-
-Whether a **specific** path is on 8763 varies by Domino version and gateway registration. If you get **404** on `DOMINO_USER_HOST`, the path may be legacy-only, external-only, or on another host env var.
-
-### When the gateway is OFF
-
-Feature flag off and/or remote data plane: **`DOMINO_USER_HOST`** often points at a **nucleus-internal** sidecar base, **not** `127.0.0.1:8763`. MLflow, vector DB, and datasource may use **separate** localhost ports (8766-8768) instead of 8763.
-
-| Variable | Typical role when gateway OFF |
-|----------|-------------------------------|
-| `DOMINO_USER_HOST` / `DOMINO_API_HOST` | Legacy platform sidecar (many `/v4` routes) |
-| `MLFLOW_TRACKING_URI`, `DOMINO_DATA_API_GATEWAY`, `DOMINO_MLFLOW_DEPLOYMENTS` | Separate legacy listeners |
-| `DOMINO_DATASOURCE_PROXY_*` | Direct datasource proxy, not unified on 8763 |
-
-Many **`/api/*`** routes were **never** on the legacy sidecar. A **404** on the sidecar does not always mean the path is wrong globally; try the public deployment URL with Bearer PAT/SA (see governance below).
-
-### Paths that usually need a different base (even when gateway is ON)
-
-| Need | Env / source (not `DOMINO_USER_HOST` alone) |
-|------|---------------------------------------------|
-| WebVFS file ops | Data-plane `/webvfs/...` host (see netapp-volumes skill) |
-| Inference predict | `url` / vanity from management API response |
-| Remote filesystem volume admin | `DOMINO_REMOTE_FILE_SYSTEM_HOSTPORT` |
-
-## Governance: `/api/governance/v1`
-
-Governance (guardrails) always uses the suffix **`/api/governance/v1`** on whatever base works. Pick the base where **`GET .../policy-overviews` returns HTTP 200**. Try in order; stop at the first success.
-
-Auth: https://docs.domino.ai/cloud/reference/api/domino-api-authentication . Workflow detail: [domino-governance](../domino-governance/SKILL.md).
-
-### Gateway ON (governance registered on 8763)
-
-When `ApiGateway.UserCodeLocalDpEnabled` is on and governance is registered on the platform gateway, **`DOMINO_USER_HOST`** can reach governance like other `/api/*` routes.
-
-| Try | Base | Authorization |
-|-----|------|----------------|
-| 1 | `{DOMINO_API_PROXY}/api/governance/v1` | None (proxy adds JWT) when `DOMINO_API_PROXY` is set |
-| 2 | `{DOMINO_USER_HOST or DOMINO_API_HOST}/api/governance/v1` | Bearer from `http://localhost:8899/access-token` |
-
-```bash
-GOV="/api/governance/v1"
-# 1) Proxy (preferred when DOMINO_API_PROXY is set)
-curl -s "$DOMINO_API_PROXY$GOV/policy-overviews"
-# 2) Platform gateway (no proxy)
-curl -s "$DOMINO_USER_HOST$GOV/policy-overviews" \
-  -H "Authorization: Bearer $(curl -s http://localhost:8899/access-token)"
-```
-
-If step 1 or 2 returns **404**, governance is not on the sidecar/gateway for this deployment; use the gateway OFF path below even if other routes work on 8763.
-
-### Gateway OFF (or governance 404 on `DOMINO_USER_HOST`)
-
-Guardrails is often reachable only on the **public deployment ingress**, not on nucleus-internal.
-
-| Context | Base | Authorization |
-|---------|------|----------------|
-| In-run, 404 on proxy and `DOMINO_USER_HOST` | `{public deployment URL}/api/governance/v1` | Bearer PAT or SA |
-| Outside any run | `{public deployment URL}/api/governance/v1` | Bearer PAT or SA |
-
-Domino does **not** inject `DOMINO_EXTERNAL_URL`. Set it yourself or derive the public host from:
-
-| Source | Notes |
-|--------|--------|
-| `DOMINO_EXTERNAL_URL` | If you define it in the run or app |
-| `X-Forwarded-Host` + `X-Forwarded-Proto` | Apps/workspaces behind ingress |
-| `VSCODE_PROXY_URI` | Workspaces (parse hostname) |
-| `DOMINO_PUBLIC_HOST` / `DOMINO_EXTERNAL_HOST` | App/extension conventions |
-
-Do not scrape JWT `iss` to discover the cluster URL.
-
-```bash
-BASE="https://your-deployment.domino.tech/api/governance/v1"
-curl -s "$BASE/policy-overviews" -H "Authorization: Bearer $PAT_OR_SA"
-```
-
-## Executor vs notebook (one pitfall)
-
-On **executors**, `DOMINO_USER_HOST` can mean the public `dominoUrl`. In **user code inside the run container**, it means the in-pod sidecar/gateway base. Do not copy executor env into notebook API examples.
+What it means for callers: none of the variable names above change. If an `/api/...` route
+returns 404 on `$DOMINO_API_HOST` inside a run, confirm the path against
+[API-SPECS.md](./API-SPECS.md), then retry on the deployment URL with a PAT or service
+account token.
 
 ## Related
 
-- [LIMITS.md](./LIMITS.md) legacy API key guidance and pagination
-- [ERRORS.md](./ERRORS.md) 404 and retry behavior
-- [API-SPECS.md](./API-SPECS.md) for OpenAPI files and route discovery
+- [LIMITS.md](./LIMITS.md) pagination and deprecated credentials
+- [ERRORS.md](./ERRORS.md) status codes and retries
+- [API-SPECS.md](./API-SPECS.md) OpenAPI files and route discovery

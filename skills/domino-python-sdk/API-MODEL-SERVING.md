@@ -1,60 +1,72 @@
 # Model serving REST (agent reference)
 
-Deep reference for `/api/modelServing/v1` and registered-models paths. Orientation and pitfalls: [domino-model-serving/SKILL.md](../domino-model-serving/SKILL.md).
+Orientation for `/api/modelServing/v1` and the registered-models routes. Route details
+and bodies: [API-MODELS.md](./API-MODELS.md). Pitfalls and workflow:
+[domino-model-serving](../domino-model-serving/SKILL.md).
 
-Authentication: https://docs.domino.ai/cloud/reference/api/domino-api-authentication . In-run prefer `DOMINO_API_PROXY` (no header) or `DOMINO_USER_HOST` + access-token; outside run use public URL + PAT/SA.
+Authentication: [domino-api-intro](../domino-api-intro/SKILL.md#authentication).
 
 ## Registered models v1 vs v2
 
 | Operation | Path | Notes |
 |-----------|------|--------|
-| List / register (bulk) | `/api/registeredmodels/v2/...` | Prefer for discovery and create |
-| Get / update / versions | `/api/registeredmodels/v1/{modelName}/...` | Path key is **model name**, not id |
+| List, register | `/api/registeredmodels/v2` | `pageToken` / `maxResults` pagination; `modelCategory` filter |
+| Get, update, versions, model APIs for a version | `/api/registeredmodels/v1/{modelName}/...` | Path key is the **model name**, not an id |
+| Versions (v2 read) | `/api/registeredmodels/v2/{modelName}/versions[/{version}]` | |
 
-Both may appear in swagger; do not assume one base path for all registry operations.
+Both families are in both specs; use v2 for discovery and create, v1 for per-model reads
+and version creation.
 
 ## Model Serving (`/api/modelServing/v1`)
 
 Common flow:
 
 ```
-POST /api/modelServing/v1/modelApis
-GET  /api/modelServing/v1/modelApis/{modelApiId}
-POST /api/modelServing/v1/modelApis/{modelApiId}/versions
-GET  /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}
+POST /api/modelServing/v1/modelApis                                    create (body includes the first version)
+GET  /api/modelServing/v1/modelApis/{modelApiId}                       poll activeVersion.deployment.status
+POST /api/modelServing/v1/modelApis/{modelApiId}/versions              new version from a file or registry entry
+GET  /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/buildLogs
 ```
 
-Use response fields `url`, `status`, and version ids for invoke and polling. Async batch predict uses `/api/modelApis/async/v1/...` (separate from synchronous `url` invoke).
+Read `activeVersion.deployment.status` and `activeVersion.deployment.isPending` to know
+when a version is serving. The Model API record does not contain the invocation URL;
+copy it from the Model API's page in Domino. Async batch prediction uses
+`/api/modelApis/async/v1/{asyncModelId}` ([API-MODELS.md](./API-MODELS.md#invoking-a-model-api)).
 
-## Lifecycle pitfalls
+## Model Deployments vs Model APIs
 
-- **Stop**, **archive**, and **delete** are not interchangeable; wrong verb leaves billable or stale resources.
-- **Deployment delete** has been unreliable in the field; after DELETE, GET the resource or list endpoints to confirm removal.
-- **Stop** can be async and non-idempotent; repeated stop without checking status may confuse automation.
-- **Service account auth** may fail on some modelServing routes on remote data planes while PAT works; test the identity you automate with.
+`/api/modelServing/v1/modelDeployments` deploys registered models to a deployment target
+(`/api/admin/v1/deploymentTargets`) with a `SYNC_ENDPOINT` or `ASYNC_ENDPOINT`
+configuration and has explicit `start` / `stop` routes. `modelApis` are the classic
+file-or-registry Model APIs whose versions deploy on create (`shouldDeploy`). They are
+separate resources with separate lifecycles; do not mix their ids.
 
-Treat these as product bugs to work around; do not assume a fix when automating.
+## Lifecycle
+
+- A Model API `DELETE` archives the record (`isArchived`); versions stay listed.
+- A Model Deployment has `start` and `stop`; after `stop` or `DELETE`, `GET` the resource
+  to confirm the state before issuing the next call.
+- Collaborator and visibility routes under `/api/modelServing/beta` exist only in the
+  Cloud spec.
 
 ## MLflow vs REST
 
 | Need | Use |
 |------|-----|
-| Experiment tracking, run artifacts | `MLFLOW_TRACKING_URI`, MLflow client |
+| Experiment tracking, run artifacts | `MLFLOW_TRACKING_URI` and the MLflow client ([domino-experiment-tracking](../domino-experiment-tracking/SKILL.md)) |
 | Registry record, governance attachments | `/api/registeredmodels/...` |
-| Hosted prediction endpoint | `/api/modelServing/v1/modelApis` + inference `url` |
-
-MLflow proxy/monitoring specs are not a substitute for registered-models or modelServing OpenAPI.
+| Hosted prediction endpoint | `/api/modelServing/v1/modelApis` plus the endpoint's invocation URL |
 
 ## GenAI endpoints
 
-List/create: GenAI management routes under `/api/gen-ai/...` (beta in many deployments). Invoke: vanity URL on data-plane/apps host (`/endpoints/{vanity}`), not `DOMINO_API_HOST/api/...`. Confirm paths in [API-SPECS.md](../domino-api-intro/API-SPECS.md) (public routes section).
-
-## Calling predictions
-
-1. Deploy or fetch model API; read **`url`** from GET response.
-2. POST to that **url** with auth required by that endpoint (verify on cluster; see API-MODELS.md invoke section).
-3. Do not POST predictions to `/api/modelServing/v1/modelApis/{id}` unless [API-SPECS.md](../domino-api-intro/API-SPECS.md) (public routes section) documents that route for invoke.
+`GET/POST /api/gen-ai/beta/endpoints`, `GET/DELETE .../{endpointId}`,
+`GET/PATCH .../versions/{versionNumber}`, `.../start`, `.../stop`, `.../realTimeLogs`,
+`.../request-metrics`, `.../pod-resource-metrics`, `.../vllm-*-metrics`,
+`GET /api/gen-ai/beta/default-endpoint-environment`,
+`GET /api/gen-ai/beta/vanity-url-availability/{vanityUrl}` are in both specs. Invoke a
+GenAI endpoint at the URL the endpoint's page shows, not at a management route. Workflow:
+[domino-model-endpoints](../domino-model-endpoints/SKILL.md).
 
 ## Discovery
 
-OpenAPI and route discovery: [API-SPECS.md](../domino-api-intro/API-SPECS.md) (public routes section).
+OpenAPI and route discovery: [API-SPECS.md](../domino-api-intro/API-SPECS.md).

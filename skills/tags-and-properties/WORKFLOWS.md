@@ -1,130 +1,90 @@
 # Taxonomy workflows
 
-Worked end-to-end examples by persona (building a hierarchy, discovering entities by tag, autocomplete, defining a property, setting property values) plus taxonomy design best practices. Workflow 1 (tag a project) is the quick start in [SKILL.md](./SKILL.md).
+Worked examples by persona plus design practices. Workflow 1 (tag a project) is the quick
+start in [SKILL.md](./SKILL.md#quick-start-tag-a-project). All examples assume `BASE`
+and `H` from [SKILL.md](./SKILL.md#configuration).
 
-All examples assume the configuration block from [SKILL.md](./SKILL.md#configuration):
-
-```bash
-TOKEN=$(curl -s http://localhost:8899/access-token)
-BASE="$DOMINO_API_HOST/api/taxonomy/v1"
-H="Authorization: Bearer $TOKEN"
-```
-
-### Workflow 2 — Build a hierarchical taxonomy (governance admin)
+## Workflow 2: build a hierarchical taxonomy (Librarian or admin)
 
 ```bash
-# Create a namespace
 NS=$(curl -s -X POST -H "$H" -H "Content-Type: application/json" \
-  -d '{"label":"Analysis","description":"Type of analysis","allowMultipleAssignments":false}' \
-  "$BASE/namespaces" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+  -d '{"label":"Analysis","allowMultipleAssignments":false}' "$BASE/namespaces" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
-# Create a parent tag
 PARENT=$(curl -s -X POST -H "$H" -H "Content-Type: application/json" \
-  -d "{\"label\":\"Interim\",\"namespaceId\":\"$NS\"}" \
-  "$BASE/tags" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+  -d "{\"label\":\"Interim\",\"namespaceId\":\"$NS\"}" "$BASE/tags" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
-# Create a child tag under it
 curl -s -X POST -H "$H" -H "Content-Type: application/json" \
-  -d "{\"label\":\"Milestone_01\",\"namespaceId\":\"$NS\",\"parentId\":\"$PARENT\"}" \
-  "$BASE/tags"
+  -d "{\"label\":\"Milestone_01\",\"namespaceId\":\"$NS\",\"parentId\":\"$PARENT\"}" "$BASE/tags"
 ```
 
-Tag depth is capped at `maxDepth` from `GET /config` (5 on most deployments).
+Nesting depth is capped at `maxDepth` from `GET /config`.
 
-### Workflow 3 — Find all entities with a tag (discovery)
+## Workflow 3: find entities by tag (discovery)
 
 ```bash
-# Single tag
-curl -s -H "$H" "$BASE/tags/<tag-id>/entities" | python3 -m json.tool
-
-# Multiple tags (intersection) — tagIds is a REPEATED query parameter, not comma-separated
-curl -s -H "$H" "$BASE/entities?tagIds=<tag-id-1>&tagIds=<tag-id-2>&entityType=project"
+curl -s -H "$H" "$BASE/tags/<tag-id>/entities?entityTypes=project"
+curl -s -H "$H" "$BASE/entities?tagIds=<tag-1>&tagIds=<tag-2>&entityTypes=project&includeDescendants=true"
 ```
 
-Both endpoints return paginated results with `meta.pagination.{total,limit,offset}`.
-Paginate with `?limit=50&offset=50`.
+Both return `{"data": [...], "meta": {"pagination": {"total", "limit", "offset"}}}`;
+page with `limit` and `offset`. `tagIds` and `entityTypes` are repeated parameters.
 
-> **Heads-up:** `tagIds` on `/entities` must be repeated per value
-> (`?tagIds=A&tagIds=B`). Comma-separating returns
-> `400 {"message":"invalid tag ID: A,B"}`. By contrast, `entityIds` on
-> `/entity-tags` *is* comma-separated. Yes, the convention is inconsistent.
-
-### Workflow 4 — Autocomplete in a tagging UI (discovery)
+## Workflow 4: autocomplete in a tagging UI
 
 ```bash
-curl -s -H "$H" "$BASE/tags/autocomplete?q=clin"
+curl -s -H "$H" "$BASE/tags/autocomplete?q=clin&limit=10"
+# {"items":[{"id":"...","path":"Clinical_Data"},{"id":"...","path":"Clinical_Data / SDTM"}]}
 ```
 
-Response:
+`q` is required; `namespaceId` narrows to one namespace. Show `path` verbatim to
+disambiguate same-named tags in different branches.
 
-```json
-{"items":[
-  {"id":"23ca6d78-...","path":"Clinical_Data"},
-  {"id":"0b55bf67-...","path":"Clinical_Data / SDTM"},
-  {"id":"57454f72-...","path":"Clinical_Data / ADaM"}
-]}
-```
-
-`path` shows the full hierarchy with ` / ` between levels — surface it
-verbatim in the UI to disambiguate same-named tags in different branches.
-
-### Workflow 5 — Define a property (governance admin)
+## Workflow 5: define a property (Librarian or admin)
 
 ```bash
 curl -s -X POST -H "$H" -H "Content-Type: application/json" \
-  -d '{
-        "label":"Review Status",
-        "groupName":"Governance",
-        "type":"select",
-        "allowedEntities":["project","model"],
-        "allowedValues":[{"value":"Draft"},{"value":"In Review"},{"value":"Approved"}]
-      }' \
+  -d '{"label":"Review Status","groupName":"Governance","type":"select",
+       "allowedEntities":["project","model"],
+       "allowedValues":[{"value":"Draft"},{"value":"In Review"},{"value":"Approved"}]}' \
   "$BASE/properties"
-# 201 → full Property with id, status, timestamps
 ```
 
-`type` is immutable after creation. `select`/`multi_select` require
-`allowedValues`; other types reject it. `project_template` is not allowed in
-`allowedEntities` — use `project` and it applies to templates too. See
-[PROPERTIES.md](./PROPERTIES.md).
+Details and limits: [PROPERTIES.md](./PROPERTIES.md).
 
-### Workflow 6 — Set property values on an entity (data scientist)
+## Workflow 6: set property values (data scientist)
 
 ```bash
-# See which properties apply and their current values
-curl -s -H "$H" "$BASE/property-values/project/$DOMINO_PROJECT_ID" | python3 -m json.tool
-
-# Set several at once (best-effort batch: per-item failures don't abort)
+curl -s -H "$H" "$BASE/property-values/project/$DOMINO_PROJECT_ID"
 curl -s -X PATCH -H "$H" -H "Content-Type: application/json" \
-  -d '{"items":[
-        {"propertyId":"<budget-id>","value":"50000"},
-        {"propertyId":"<review-status-id>","value":"Approved"}
-      ]}' \
+  -d '{"items":[{"propertyId":"<budget-id>","value":"50000"},{"propertyId":"<review-status-id>","value":"Approved"}]}' \
   "$BASE/property-values/project/$DOMINO_PROJECT_ID"
 ```
 
-`multi_select` properties take a `values[]` array; all other types use `value`.
-An empty `value` clears the property. Versioned entities (`model_version`,
-`app_version`) require a `?version=` query param. See
-[PROPERTY-VALUES.md](./PROPERTY-VALUES.md).
+Details, versioned entities and copy policies: [PROPERTY-VALUES.md](./PROPERTY-VALUES.md).
 
-## Best Practices
+## Workflow 7: clone classification onto a new project
 
-- **One namespace per dimension.** Don't pile orthogonal concepts (e.g.
-  Indication and Analysis Type) into one namespace; separate so users can
-  filter cleanly.
-- **Use `allowMultipleAssignments=false`** for mutually exclusive concepts
-  (e.g. "Phase" — a project is in exactly one phase). Use `true` when an
-  entity can plausibly carry several values from the same namespace
-  (e.g. multiple "Indication" tags).
-- **Hierarchy via `parentId`** rather than encoding hierarchy into labels
-  (e.g. `Clinical_Data/SDTM`). This lets autocomplete and tree views render
-  the structure for you.
-- **Query `GET /config` once** at app startup and cache `maxLabelLength` /
-  `maxDepth` for client-side validation.
-- **Pin tag IDs, not labels.** Tag labels can be renamed via `PUT /tags/{id}`;
-  IDs are stable. Workflows that automate tagging should reference tag IDs.
-- **Discoverability**: use `GET /taxonomy` for full-tree views,
-  `GET /tags/autocomplete?q=...` for typeaheads, and
-  `GET /entities?tagIds=A&tagIds=B&entityType=...` (one `tagIds` per value,
-  not comma-separated) for filtered lists.
+```bash
+curl -s -X POST -H "$H" -H "Content-Type: application/json" \
+  -d '{"entityType":"project","sourceEntityId":"<template-like-project>","targetEntityId":"<new-project>"}' \
+  "$BASE/rpc/copy-entity-tags"
+```
+
+Project Templates do this automatically: a project created from a template inherits the
+template's tags and property values.
+
+## Design practices
+
+- **One namespace per dimension.** Keep orthogonal concepts (Indication, Analysis type)
+  in separate namespaces so filters stay clean.
+- **`allowMultipleAssignments: false`** for mutually exclusive concepts (Phase);
+  `true` where an entity can carry several values (Indication).
+- **Hierarchy via `parentId`**, not slashes in labels; autocomplete and the tree view
+  render it.
+- **Deprecate instead of delete** when a tag is still on entities.
+- **Read `GET /config` once** and validate labels and depth client-side.
+- **Pin tag ids, not labels**: labels can be renamed with `PUT /tags/{id}`.
+- **Discovery routes**: `GET /taxonomy` for the tree, `GET /tags/autocomplete?q=` for
+  typeahead, `GET /entities?tagIds=...` for filtered lists.
