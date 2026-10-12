@@ -153,7 +153,7 @@ RULES = ROOT / "rules"
 # rules/*.md is loaded into every session of every user (Claude Code session-start hook, Gemini CLI
 # contextFileName, Antigravity always-on rule), and its lead section is the bundled MCP server's
 # instructions, which Codex truncates at 1,000 bytes. Keep it short, plain and host-neutral.
-MAX_RULES_CHARS = 2500
+MAX_RULES_CHARS = 2600
 MAX_RULES_LEAD_BYTES = 900
 # Product names, matched case-sensitively so ordinary words ("a pagination cursor") pass.
 HOST_NAMES = re.compile(r"\b(Claude|Codex|ChatGPT|Gemini|Antigravity|Copilot|Cursor)\b")
@@ -188,6 +188,8 @@ def lint_rules(errors: list[str]) -> int:
             continue
         if meta.get("trigger") != "always_on":
             errors.append(f"{rel}: front matter needs `trigger: always_on`")
+        if meta.get("alwaysApply") is not True:
+            errors.append(f"{rel}: front matter needs `alwaysApply: true` (Cursor's always-on key; it ignores `trigger`)")
         if not meta.get("description"):
             errors.append(f"{rel}: front matter needs a `description`")
         body = m.group(2)
