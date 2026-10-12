@@ -7,7 +7,8 @@ skills and in `CONTRIBUTING.md`.
 ## What this is
 
 A Claude Code plugin (`.claude-plugin/plugin.json`, name `dominodatalab`) that is also an
-Agent Plugins package (`plugin.json`, `mcp.json`) for ChatGPT and Codex. `scripts/build-openai.sh`
+Agent Plugins package (`plugin.json`, `mcp.json`) for ChatGPT and Codex, a Cursor plugin
+(`.cursor-plugin/`) and a Gemini CLI extension (`gemini-extension.json`). `scripts/build-openai.sh`
 builds the OpenAI plugin-directory ZIP from `skills/` alone. Copilot, OpenCode and Antigravity
 read the same agentskills.io layout from their own skills directories. Content here ships to
 customer environments from a **public** repository. Three facts drive most rules below:
@@ -30,13 +31,14 @@ customer environments from a **public** repository. Three facts drive most rules
 |---|---|
 | `skills/<name>/SKILL.md` | One skill per directory. Reference files sit beside `SKILL.md`. |
 | `skills/<name>/assets/` | Templates a skill copies into the user's project (no `templates/` or `commands/` dirs) |
-| `agents/`, `output-styles/` | Claude-only components; not in the OpenAI package |
-| `hooks/` | Documentation only today; no `hooks.json` is shipped |
-| `rules/domino.md` | Always-on Domino guidance, loaded into every session: by a `SessionStart` hook in `.claude-plugin/plugin.json` (Claude Code), as an always-on rule (Antigravity reads `trigger: always_on`, Cursor reads `alwaysApply: true`), and as the bundled MCP server's instructions (lead section only, for Codex). Every user pays for it on every turn, so it holds only what an assistant needs to work in Domino: lint caps it at 2,600 characters, ASCII, host-neutral, with a lead section under 900 bytes |
-| `mcp-servers/` | Bundled MCP server, started by `.mcp.json` (Claude Code) and `mcp.json` (Codex). Both files also register the Domino docs MCP server, `domino_docs` at `https://docs.domino.ai/mcp`; `mcp_config.json` registers it for Antigravity |
-| `.claude-plugin/plugin.json` | Claude manifest and source of truth for name and `version`; see the rules below before touching it |
+| `agents/`, `output-styles/` | Claude Code components; not in the OpenAI package. An agent is a thin router: it preloads the skills for its area (`skills:`, Claude Code 2.0.43+; loading further plugin skills from a subagent needs 2.1.133+) and holds no procedure of its own. Cursor reads `agents/` as plain prompts (its frontmatter has no `skills:` or `tools:`), Gemini CLI rejects the files (its sub-agent schema differs) |
+| `hooks/` | Documentation only (`hooks/README.md`); no `hooks.json` is shipped, so neither Claude Code nor Gemini CLI loads anything from it. The plugin's only hook is the inline `SessionStart` entry in `.claude-plugin/plugin.json` |
+| `rules/domino.md` | Always-on Domino guidance, loaded into every session: by a `SessionStart` hook in `.claude-plugin/plugin.json` (Claude Code), as an always-on rule (Antigravity reads `trigger: always_on`, Cursor reads `alwaysApply: true`), as the Gemini CLI extension's context file (`contextFileName` in `gemini-extension.json`), and as the bundled MCP server's instructions (lead section only, for Codex). Every user pays for it on every turn, so it holds only what an assistant needs to work in Domino: lint caps it at 2,600 characters, ASCII, host-neutral, with a lead section under 900 bytes |
+| `mcp-servers/` | Bundled MCP server, started by `.mcp.json` (Claude Code), `mcp.json` (Codex), `.cursor-plugin/mcp.json` (Cursor) and `gemini-extension.json` (Gemini CLI). All four also register the Domino docs MCP server, `domino_docs` at `https://docs.domino.ai/mcp`; `mcp_config.json` registers it for Antigravity |
+| `.claude-plugin/plugin.json` | Claude manifest and source of truth for name, `version` and `description`; see the rules below before touching it |
 | `plugin.json` | Portable manifest plus OpenAI listing metadata; identity fields are copied by `scripts/sync-manifests.py` |
 | `.cursor-plugin/` | Cursor: `plugin.json` (identity fields copied by `scripts/sync-manifests.py`; Cursor's schema is closed, so only its own keys), `mcp.json` (`${CURSOR_PLUGIN_ROOT}` paths, `${env:NAME}` values Cursor asks for at install) and `marketplace.json` (needed to import the repo from GitHub) |
+| `gemini-extension.json` | Gemini CLI extension manifest: name, version and description copied by `scripts/sync-manifests.py`; `contextFileName` points at `rules/domino.md` (Gemini loads the whole file, YAML front matter included; a few tokens per session); `mcpServers` starts the bundled server via `${extensionPath}` and registers the docs server; `settings` declares the values the server needs outside a Workspace. Gemini CLI (0.63) passes a stdio MCP server a filtered copy of the environment: names matching TOKEN, SECRET, PASSWORD, PASSWD, KEY, AUTH, CREDENTIAL, CREDS, PRIVATE or CERT and values that look like known tokens are removed, and under `GITHUB_SHA` everything outside a small allowlist is; a declared setting is injected from Gemini's own store (the shell's value of that name is still dropped). It also rewrites `${name}` in skill and agent text with its built-ins, the declared settings and every key of a trusted workspace's `.env`, which is why lint rejects `${` in `SKILL.md` outside `scripts/gemini-substitution.allow` |
 | `assets/` | OpenAI listing icon |
 | `scripts/check-version.sh` | The CI version gate; run it locally before opening a PR |
 | `scripts/build-openai.sh` | Builds the OpenAI ZIP; runs `sync-manifests.py --check` and `lint-skills.py` first |
@@ -57,7 +59,8 @@ customer environments from a **public** repository. Three facts drive most rules
   because the OpenAI portal requires it. `N` never repeats and never resets. Releases up to
   `2026.6-3.2` wrote the line as `6-3`.
   CI creates the tag `release-<version>` on merge to `main` or `release-*`. After a bump, run
-  `scripts/sync-manifests.py` so `plugin.json` carries it too; CI fails if they drift.
+  `scripts/sync-manifests.py` so `plugin.json`, `.cursor-plugin/plugin.json` and
+  `gemini-extension.json` carry it too; CI fails if they drift.
 - Never create a branch named `release-*` for anything but a real snapshot. The Domino
   Workspace updater resolves `release-X.Y.Z`, `release-X.Y`, `main` by exact name and would
   serve an integration branch to every matching cluster on its next launch.
@@ -113,6 +116,8 @@ claude plugin validate .                              # marketplace manifest (.c
 scripts/build-openai.sh                               # manifest sync, skill lint, OpenAI ZIP in dist/
 scripts/check-version.sh origin/develop               # what CI will say (use your PR's base)
 scripts/check-codeowners.py                           # every skill has its own CODEOWNERS line
+npx -y @google/gemini-cli@0.63.0 extensions validate . # Gemini CLI: manifest name and version, context file path and existence, semver
+agy plugin validate .                                 # Antigravity: plugin.json, skills/, agents/, MCP config
 scripts/verify-update-flow.sh                         # install/update behaviour (needs the claude CLI, ~2 min)
 claude --plugin-dir .                                 # load this checkout in place; replaces a same-named installed plugin for the session
 /reload-plugins                                       # inside a session, after editing a skill
@@ -149,7 +154,6 @@ trusting a change. When adding a skill, add a case whose prompt should trigger i
   read in place. A release reaches a Workspace when its clone checks out the new commit: at
   launch on Domino 6.3 with `updateSkillsOnLaunch`, and only through a newer image on Domino
   Cloud. Laptops on the Anthropic marketplace get it once Anthropic advances its pin.
-- `SKILL_AUDIT.md` is from May 2026 and stale; do not treat it as current.
 - Every skill's directory name equals its frontmatter `name` (`skills/domino-jobs/` is
   `domino-jobs`), and `scripts/lint-skills.py` fails otherwise. This matters across hosts:
   Claude Code invokes a plugin skill by its directory name (`dominodatalab:domino-jobs`), Codex

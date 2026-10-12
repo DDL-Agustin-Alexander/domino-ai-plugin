@@ -24,7 +24,7 @@ For each task, verify these production requirements:
 ### Code & Environment
 - [ ] Dependencies pinned to specific versions
 - [ ] Environment tested and reproducible
-- [ ] Secrets managed via Domino secrets (not hardcoded)
+- [ ] Credentials in Project or User environment variables, never hard-coded
 - [ ] Code version controlled with meaningful commits
 
 ### Data
