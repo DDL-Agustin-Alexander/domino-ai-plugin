@@ -135,8 +135,10 @@ Never read a token from `import.meta.env`: Vite inlines every `VITE_` variable i
 
 | Variable | Where to set it | Value |
 |---|---|---|
-| `MODEL_API_URL` | Project environment variables (project **Settings**) or user environment variables | The endpoint's URL from its overview page |
-| `MODEL_API_TOKEN` | Same; never in the repository | A Model Access Token created on the endpoint under **Settings > Invocation > Add Model Access Token** |
+| `MODEL_API_URL` | Project environment variables (project **Settings**) or user environment variables | The endpoint's URL from its overview page (the deployment's external URL; `$DOMINO_API_HOST` does not route `/models/`) |
+| `MODEL_API_TOKEN` | Same; never in the repository | A Model Access Token created on the endpoint under **Settings > Invocation > Add Model Access Token**, shown once; no API returns it |
+
+Both values have to come from a person with access to the endpoint's page; an agent cannot look them up.
 
 A changed variable takes effect on the next start of the App. `.env.example` documents the names; `.env` files stay out of git. For a local run, `node --env-file=.env server.js`.
 

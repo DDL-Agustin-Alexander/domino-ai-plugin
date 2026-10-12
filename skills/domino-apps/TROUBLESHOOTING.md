@@ -17,7 +17,11 @@ streamlit run app.py --server.port 8888 --server.address 0.0.0.0
 python -m flask run --host=0.0.0.0 --port=8888
 ```
 
-Other causes, visible in the logs: `app.sh` not executable (`git update-index --chmod=+x app.sh`), wrong working directory (start `app.sh` with `cd "$(dirname "$0")"` so it runs next to `package.json` or `app.py`), a dependency missing from the Compute Environment, `npm ci` without a `package-lock.json`.
+Other causes, visible in the logs:
+
+- `streamlit: not found` / `ModuleNotFoundError` / `exit code 127`: the framework is not in the Compute Environment. Packages pip-installed in a Workspace are not in the App. Use an environment that has it, a `requirements.txt` at the project root, or (prototype) `python -m pip install --user -q <pkg>` at the top of `app.sh`; see [FRAMEWORKS.md](./FRAMEWORKS.md), Dependencies.
+- `entry script 'app.sh' not found in the root directory of your project`: the file was never synced or committed. DFS project: **File Changes > Sync to Domino**; Git-based: commit and push. Then publish a new version.
+- `app.sh` not executable (`git update-index --chmod=+x app.sh`); wrong working directory (start `app.sh` with `cd "$(dirname "$0")"` so it runs next to `package.json` or `app.py`); `npm ci` without a `package-lock.json`.
 
 ## 2. 404 on CSS and JS files
 
@@ -56,7 +60,8 @@ Publish a new version with the change and deploy it. Reference: https://docs.dom
 
 ## 6. Model endpoint calls fail (401, 403, CORS)
 
-- **401 from a synchronous endpoint:** the call used `Authorization: Bearer`. Synchronous endpoints need HTTP Basic with the Model Access Token as both username and password; only asynchronous endpoints take Bearer. Tokens are created per endpoint under **Settings > Invocation**, not in account settings.
+- **401 from a synchronous endpoint:** the call used `Authorization: Bearer`, or a Domino user token instead of a Model Access Token. Synchronous endpoints need HTTP Basic with the Model Access Token as both username and password; only asynchronous endpoints take Bearer. Tokens are created per endpoint under **Settings > Invocation** and shown once; no API returns them, so the user has to supply the value.
+- **404 when calling `$DOMINO_API_HOST/models/...` or `$DOMINO_API_PROXY/models/...` from inside Domino:** those hosts do not route `/models/`. Use the endpoint URL from its overview page (the deployment's external URL) in `MODEL_API_URL`.
 - **CORS error in the browser:** the frontend calls the endpoint directly. Route the call through the App's backend (`server.js`, Flask, FastAPI); this also keeps the token out of the bundle.
 - **`MODEL_API_URL` / `MODEL_API_TOKEN` undefined:** set them as project environment variables in Domino and restart the App; variables added after a start are not visible until the next start.
 - **Token visible in the bundle:** a `VITE_MODEL_API_TOKEN` variable is inlined at build time. Remove it, rotate the token, and read it server-side.
