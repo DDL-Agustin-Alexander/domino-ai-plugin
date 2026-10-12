@@ -113,7 +113,7 @@ Prompt:
 Run test_domino.py as a Domino job
 ```
 
-The assistant should call `run_domino_job`, poll `check_domino_job_run_status` with the returned `run_id`, and read the output with `check_domino_job_run_results`.
+The assistant should call `run_domino_job(..., wait_seconds=300)`, which waits on the server and returns the final status with the end of the output; if the Job outlives one call (at most 600 s, or 50 s under Codex), the assistant calls `check_domino_job_run_status(run_id, wait_seconds=300)` again rather than sleeping or polling, then reads the full output with `check_domino_job_run_results`.
 
 ## Step 4: Choose a compute environment
 
@@ -166,13 +166,17 @@ Codex strips the shell environment from MCP servers, so on a laptop use the env 
 
 ### File conflicts on DFS projects
 
-`smart_sync_file` reports a conflict, with the remote content, when the remote file changed since this session last saw it (or was never seen). Review and merge, then sync again; pass `force_overwrite=True` only when the remote version should be discarded. `upload_file_to_domino_project` and `sync_local_file_to_domino` need `overwrite=True` to replace an existing, different file.
+`smart_sync_file` reports a conflict, with the remote content, when the remote file changed since this session last saw it (or was never seen). Review and merge, then sync again; pass `force_overwrite=True` only when the remote version should be discarded. `upload_file_to_domino_project` and `sync_local_file_to_domino` need `overwrite=True` to replace an existing, different file. Binary files (model artifacts, images) are uploaded as `content_base64` or through `sync_local_file_to_domino`, which reads the local file as bytes; the file tools refuse Git-based projects, where you commit and push instead.
 
 ### Jobs fail immediately
 
 1. Check the compute environment is available.
-2. Verify the hardware tier is valid.
+2. If `run_domino_job` was given `hardware_tier` or `environment_id`, the server validates both against the deployment before starting and the error lists the valid values; omit them to use the project defaults.
 3. Read the job's `stdErr` with `check_domino_job_run_results(run_id, log_type="stdErr")`.
+
+### The assistant polls or gives up while a Job runs
+
+Hosts block shell `sleep`, so a status call without `wait_seconds` returns at once. The assistant should pass `wait_seconds=300` to `run_domino_job` or `check_domino_job_run_status` and call again when the response says so; see [SKILL.md](./SKILL.md#important-considerations).
 
 ## Next steps
 
