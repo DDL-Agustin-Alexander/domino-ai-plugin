@@ -1,5 +1,5 @@
 ---
 type: regex
-target: trace
-pattern: 'mlflow\.(sklearn\.)?autolog'
+target: { source: file, path: train.py }
+pattern: 'autolog'
 ---
