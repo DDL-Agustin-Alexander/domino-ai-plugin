@@ -8,5 +8,3 @@
 # An entry whose file no longer contains `${` is reported as a note, not an error, so a skill
 # can drop the syntax in its own PR without breaking the integration branch.
 skills/domino-launchers/SKILL.md        # Domino Launcher command syntax: one ${name} placeholder per form field
-skills/domino-governance/SKILL.md       # ${TOKEN:+-H ...} shell parameter expansion in curl examples; no plain ${NAME}
-skills/domino-model-serving/SKILL.md    # ${TOKEN:+-H ...} shell parameter expansion in curl examples; no plain ${NAME}

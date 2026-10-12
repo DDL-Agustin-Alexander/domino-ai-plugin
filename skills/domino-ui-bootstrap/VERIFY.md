@@ -10,7 +10,7 @@ The most reliable verification is a clean production build:
 npm run build
 ```
 
-**`npm install` is not a sufficient check.** It can succeed while the toolchain is broken in ways that only surface at build time — most commonly the rolldown native-binding error when Vite 9 runs on Node < 20.19, which `install` happily writes to disk and only fails when `build` tries to load. Always run `npm run build` before reporting success.
+**`npm install` is not a sufficient check.** It can succeed while the toolchain is broken in ways that only surface at build time — most commonly the rolldown native-binding error when Vite 8 runs on a Node outside `^20.19.0 || >=22.12.0`, which `install` happily writes to disk and only fails when `build` tries to load. Always run `npm run build` before reporting success.
 
 This catches version mismatches deterministically. If it passes, the pinning and the entry-point wiring are correct.
 
@@ -25,9 +25,9 @@ Expected, not a failure: Vite will emit a warning that some chunks are larger th
 
 If `build` fails:
 
-- **Rolldown native binding error** (`Cannot find module @rolldown/binding-*` or similar) → the Vite toolchain in `package.json` requires Node ≥ 20.19 but the workspace is on an older Node. Go back to Step 4's Node-version branch and apply the downgrade set.
+- **Rolldown native binding error** (`Cannot find module @rolldown/binding-*` or similar) → the Vite toolchain in `package.json` requires Node `^20.19.0 || >=22.12.0` but the workspace is on an older Node. Go back to Step 4's Node-version branch: install a newer Node or apply the Vite 5 set.
 - JSX runtime or React typing errors → React or `@types/react` versions don't match. Recheck Step 4.
-- TypeScript errors about `erasableSyntaxOnly` or missing `composite` → leftover from a TS-6 scaffold on a downgraded TS. Recheck the Node-version branch in Step 4 (strip `erasableSyntaxOnly`, add `composite: true`).
+- TypeScript errors about `erasableSyntaxOnly` or missing `composite` → leftover from a TS-6 scaffold on a downgraded TS. Recheck the Node-version branch in Step 4 (TypeScript `~5.8.3` keeps the flag; add `composite: true` if `tsc -b` asks for it).
 - Missing modules from `@dominodatalab/extensions-tools` → install didn't complete. Check `node_modules/@dominodatalab/extensions-tools/dist`.
 - TypeScript errors in the user's existing code (only relevant on retrofits) → don't try to fix them as part of this skill. Surface them to the user and let them decide.
 
@@ -48,5 +48,5 @@ Tell the user:
 - That future component additions should go through the Storybook MCP (which the instructions file you wrote will remind the next session about).
 - Anything that changed in their existing code (downgraded versions, swapped router, edited entry point) so they're not surprised.
 - **Bundle-size warning is expected.** Vite emits a `>500 KB chunk` warning on build because the Domino component library bundles a lot. It's not a failure — don't chase it.
-- **Port 8888 is reserved inside Domino workspaces.** If the user runs both a Vite dev server and a backend dev server inside a Domino workspace, port 8888 is occupied by code-server. Pick a different port for one of them.
-- **Next step toward a deployable app:** suggest that the user create an `app.sh` launch script that runs `npm run build` to produce the frontend bundle. Remind them that `npm run build` alone is not enough to serve the app — they'll need a backend or a static file server to actually serve the built `dist/` output. Point them at the `domino-apps` skill for the full deploy shape.
+- **Port 8888 means two different things.** A published Domino App must listen on `0.0.0.0:8888`. Inside a Domino workspace that port belongs to the workspace IDE (Jupyter, for example), so the Vite dev server cannot bind it there, and Vite ignores a relative `base` in dev mode anyway. Test inside Domino with **App Preview** in the workspace, which runs `app.sh` in a real App runtime behind the real proxy; keep `npm run dev` for a laptop.
+- **Next step toward a deployable app:** suggest that the user create an `app.sh` launch script that runs `npm ci`, `npm run build`, and then serves `dist/` on `0.0.0.0:8888` (`npx serve -s dist -l 8888`, or an Express server when the app calls a model endpoint or the Domino API, so tokens stay server-side). `npm run build` alone does not serve anything. Point them at the `domino-apps` skill for the full deploy shape.

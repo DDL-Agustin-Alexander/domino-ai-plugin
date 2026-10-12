@@ -27,7 +27,7 @@ Skills say which Domino versions they apply to; see [Compatibility](#compatibili
 
 | Component | Claude Code | ChatGPT / Codex | Cursor | Gemini CLI |
 | --- | --- | --- | --- | --- |
-| `skills/` (30 skills) | ✅ | ✅ | ✅ | ✅ discovered from `skills/` |
+| `skills/` (34 skills) | ✅ | ✅ | ✅ | ✅ discovered from `skills/` |
 | Domino MCP server (`mcp-servers/`) | ✅ via `.mcp.json` (stdio) | Codex local install: ✅ via `mcp.json` (stdio). Public directory: needs a hosted HTTPS endpoint (see [OpenAI build](#openai-build)) | ✅ via `.cursor-plugin/mcp.json` (stdio; Cursor asks for `DOMINO_HOST` and `DOMINO_TOKEN` at install) | ✅ via `gemini-extension.json` (stdio; Gemini CLI asks for the same two values at install) |
 | Domino docs MCP server (`https://docs.domino.ai/mcp`) | ✅ via `.mcp.json` | Codex local install: ✅ via `mcp.json`. Not in the public directory package | ✅ via `.cursor-plugin/mcp.json` | ✅ via `gemini-extension.json` |
 | Always-on Domino guidance (`rules/domino.md`) | ✅ loaded at every session start by a `SessionStart` hook | Codex local install: the lead section, as the bundled MCP server's instructions. Not available to skills-only directory plugins | ✅ always-applied plugin rule (`alwaysApply: true`) | ✅ the extension's context file (`contextFileName`) |
@@ -391,7 +391,7 @@ DFS-based projects.
 Requires `uv`. Tools, routes and each host's registration are documented in
 [mcp-servers/domino_mcp_server/README.md](mcp-servers/domino_mcp_server/README.md).
 
-### Skills (30 total)
+### Skills (34 total)
 
 | Skill | Description |
 | --- | --- |
@@ -414,15 +414,19 @@ Requires `uv`. Tools, routes and each host's registration are documented in
 | `domino-model-endpoints` | Deploy and call model APIs |
 | `domino-model-serving` | Model API and registered-model lifecycle over REST |
 | `domino-model-monitoring` | Drift detection and model quality tracking |
+| `domino-model-delivery` | Batch scoring Jobs, the Model Export API for CI/CD, NVIDIA Fleet Command and Snowflake exports |
 | `domino-governance` | Policies, bundles, and evidence for model risk governance |
 | `domino-flows` | Flyte-based workflow orchestration |
+| `domino-airflow-kubeflow` | Trigger and wait for Domino Jobs from Apache Airflow or Kubeflow Pipelines |
 | `domino-distributed-computing` | Spark, Ray, Dask cluster management |
-| `domino-ai-gateway` | LLM proxy for OpenAI, Bedrock, etc. |
+| `domino-llm-access` | Which LLM path to use: provider SDKs, Domino-hosted vLLM endpoints, legacy AI Gateway (6.3) |
+| `domino-llm-gateway` | Call models through LLM Gateway 2.0: aliases, in-run token, OpenAI and Anthropic SDKs, coding assistants, admin overview |
 | `domino-launchers` | Parameterized web forms for self-service |
 | `domino-modeling-assistant` | MCP server for AI-assisted model development |
 | `domino-data-connectivity` | S3 Mountpoint, AWS IRSA, Azure credentials |
 | `domino-api-intro` | Start here for Domino APIs: auth, hosts, pagination, errors |
 | `domino-python-sdk` | Python SDK (python-domino) and REST API |
+| `domino-cli` | Domino CLI and the R package: sync project files, run Jobs, upload to Datasets from a laptop |
 | `domino-data-sdk` | Data SDK (domino-data) for data sources, datasets, training sets |
 | `tags-and-properties` | Taxonomy API for tags, namespaces, and typed properties |
 
@@ -467,7 +471,7 @@ domino-ai-plugin/
 ├── mcp_config.json              # Docs MCP server for Antigravity
 ├── rules/domino.md              # Always-on guidance for every host
 ├── assets/logo.svg              # OpenAI listing icon (square)
-├── skills/                      # Shared, provider-neutral skills (30)
+├── skills/                      # Shared, provider-neutral skills (34)
 ├── mcp-servers/domino_mcp_server/
 ├── evals/                       # claude plugin eval cases (not shipped to OpenAI)
 ├── agents/                      # Subagents: thin routers to skills (Claude Code; Cursor reads them too)

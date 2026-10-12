@@ -1,220 +1,127 @@
 ---
 name: domino-datasets
-description: Work with Domino Datasets - high-performance, versioned filesystem storage. Covers dataset creation, snapshots for versioning, sharing across projects, mounting paths (/domino/datasets/), and performance optimization. Use when managing data storage, creating reproducible data versions, or sharing data between projects.
+description: Work with Domino Datasets, the versioned filesystem storage mounted into Workspaces, Jobs, Apps and Launchers. Covers mount paths (/domino/datasets/local/<name> in DFS Projects, /mnt/data/<name> in Git-based Projects), creating and uploading (UI, domino upload-dataset), snapshots, tags and limits, sharing with Owner, Editor and Reader roles, and the /api/datasetrw REST routes. Use when storing or versioning data in Domino, reading a Dataset or snapshot from code, sharing data between Projects, or automating Dataset creation, snapshots and tags.
+compatibility: Domino 6.3 and Domino Cloud. Requires DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token.
 ---
 
-# Domino Datasets Skill
+# Domino Datasets
 
-## Description
-This skill helps users work with Domino Datasets - high-performance, versioned filesystem storage for data science projects.
+Applies to Domino 6.3 and Domino Cloud.
 
-## Activation
-Activate this skill when users want to:
-- Create or manage Domino Datasets
-- Work with dataset snapshots and versioning
-- Share data between projects
-- Access large datasets efficiently
-- Understand dataset paths and mounting
+A Dataset is Domino-managed, versioned filesystem storage. Executions mount it as an ordinary
+directory: live data is read-write for Dataset Owners and Editors, read-only for Readers, and
+every snapshot is a read-only directory beside it. Sharing is zero-copy; Domino sets no size or
+file-count cap. For data beyond a few TB or already in object storage use a Data Source
+(domino-data-sdk skill); NetApp ONTAP storage is the netapp-volumes skill.
 
-## What is a Domino Dataset?
+## Paths
 
-A Domino Dataset is:
-- **High-performance storage**: Network filesystem optimized for data science
-- **Versioned**: Create snapshots for reproducibility
-- **Shareable**: Access across projects
-- **Scalable**: No file size or count limits
-- **Persistent**: Data persists across executions
+| | DFS Project | Git-based Project |
+|---|---|---|
+| Dataset of this Project (RW) | `/domino/datasets/local/<name>` | `/mnt/data/<name>` |
+| Its snapshots (RO) | `/domino/datasets/local/snapshots/<name>/<n>` and `/<tag>` | `/mnt/data/snapshots/<name>/<n>` and `/<tag>` |
+| Dataset shared from another Project | `/domino/datasets/<name>` | `/mnt/imported/data/<name>` |
+| Its snapshots (RO) | `/domino/datasets/snapshots/<name>/<n>` and `/<tag>` | `/mnt/imported/data/snapshots/<name>/<n>` and `/<tag>` |
 
-## Creating a Dataset
+`<n>` is the snapshot number, `<tag>` the most recently added tag. Every Project starts with a
+default Dataset named after the Project: Project `churn` has `/mnt/data/churn` (Git-based) or
+`/domino/datasets/local/churn` (DFS); verified live. Detect the layout from the injected
+variables, not by probing paths:
 
-### Via Domino UI
-1. Navigate to your project
-2. Go to **Data** > **Domino Datasets**
-3. Click **Create New Dataset**
-4. Enter:
-   - **Name**: Dataset name (e.g., `training-data`)
-   - **Description**: What the dataset contains
-5. Click **Create**
-
-### Via Python SDK
-```python
-from domino import Domino
-
-domino = Domino("project-owner/project-name")
-
-# Create a new dataset
-dataset = domino.datasets_create(
-    name="training-data",
-    description="Training data for classification model"
-)
-```
-
-## Dataset Paths
-
-Dataset paths differ based on your **project type**. Domino has two project types with different mount structures.
-
-### DFS (Domino File System) Projects
-
-| Dataset Type | Path |
-|-------------|------|
-| Local datasets | `/domino/datasets/local/{dataset-name}/` |
-| Local snapshots | `/domino/datasets/local/snapshots/{dataset-name}/{tag-or-number}/` |
-| Shared datasets | `/domino/datasets/{dataset-name}/` |
-| Shared snapshots | `/domino/datasets/snapshots/{dataset-name}/{tag-or-number}/` |
-
-### Git-Based Projects
-
-| Dataset Type | Path |
-|-------------|------|
-| Local datasets | `/mnt/data/{dataset-name}/` |
-| Local snapshots | `/mnt/data/snapshots/{dataset-name}/{tag-or-number}/` |
-| Shared datasets | `/mnt/imported/data/{dataset-name}/` |
-| Shared snapshots | `/mnt/imported/data/snapshots/{dataset-name}/{tag-or-number}/` |
-
-Full mount trees (local vs shared, snapshot tags vs numbers) and read examples: [MOUNT-PATHS.md](./MOUNT-PATHS.md).
-
-### How to Identify Your Project Type
-
-Check which paths exist in your execution:
 ```python
 import os
+import pandas as pd
 
-if os.path.exists("/domino/datasets"):
-    print("DFS Project")
-    dataset_root = "/domino/datasets/local"
-elif os.path.exists("/mnt/data"):
-    print("Git-Based Project")
-    dataset_root = "/mnt/data"
+root = os.environ["DOMINO_DATASETS_DIR"]          # /mnt/data or /domino/datasets
+git_based = os.environ.get("DOMINO_IS_GIT_BASED") == "true"
+local = root if git_based else f"{root}/local"
+df = pd.read_csv(f"{local}/{os.environ['DOMINO_PROJECT_NAME']}/raw/customers.csv")
 ```
 
-### Permissions
+Full trees, pinned snapshots, tags and read examples: [MOUNT-PATHS.md](./MOUNT-PATHS.md). The
+UI lists mounted paths under **Data > Datasets** (Workspace) and **Details > Data** (Job).
 
-Both project types follow the same permission model:
-- **Owners/Editors**: Read-write access to datasets
-- **Readers**: Read-only access
+## Create a Dataset
 
-## Uploading Data
+- **UI**: in the Project, **Data > Domino Datasets > Create New Dataset**; name, description,
+  then users or organizations with a Dataset role (or **Add all project members**), **Finish**.
+- **REST**: `POST /api/datasetrw/v1/datasets` with
+  `{"name": "...", "description": "...", "projectId": "<project-id>", "grants": []}`;
+  `name` is required and unique in the Project; `snapshotId` instead of `projectId` copies a
+  snapshot into a new Dataset. All routes, bodies and auth: [API.md](./API.md).
+- **python-domino**: `Domino.datasets_create(dataset_name, dataset_description)` (positional
+  names, not `name=`/`description=`) creates it in the client's configured Project through the
+  legacy `/dataset` routes, which are not in the Public API; prefer the REST route.
 
-### Via Domino UI
-1. Go to dataset page
-2. Click **Upload**
-3. Select files (up to 50GB or 50,000 files via UI)
-4. Click **Upload**
+## Upload files
 
-### Via Domino CLI (Large Uploads)
-```bash
-# For large uploads, use CLI
-domino upload /local/path/to/data /mnt/data/training-data/
-```
+- **UI**: open the Dataset, **Upload files**: up to 50 GB or 50,000 files per upload;
+  drag-and-drop keeps folder structure.
+- **CLI** (larger uploads): `domino upload-dataset [--fileUploadSetting Ignore|Overwrite|Rename]
+  [--targetRelativePath <dir>] <owner>/<project>/<dataset> <local-folder>`; flags and values
+  are case-sensitive; tune with `DOMINO_UPLOAD_CHUNK_BYTES` (default 3 MB) and
+  `DOMINO_UPLOAD_THREADS` (default 8). Install: https://docs.domino.ai/cloud/reference/cli/install-the-cli
+- **From code**: write to the mount path; every execution sees the change at once, and it
+  becomes a version when you snapshot.
+- **python-domino**: `datasets_upload_files(dataset_id, local_path, ...)`; signature in
+  [API.md](./API.md).
 
-### Via Code in Workspace
-```python
-import shutil
+## Snapshots and tags
 
-# Copy from local to dataset
-shutil.copy("local_file.csv", "/mnt/data/training-data/")
+A snapshot is a read-only, immutable copy taken at a point in time. Do not modify files while
+one is in progress; time scales with size.
 
-# Write directly
-df.to_csv("/mnt/data/training-data/processed.csv", index=False)
-```
+- **Create**: UI **Take Snapshot** (all or selected files, optional tag);
+  `domino create-snapshot <owner>/<project>/<dataset>`; or
+  `POST /api/datasetrw/v1/datasets/{datasetId}/snapshots` with `{"relativeFilePaths": ["*"]}`.
+  `status` starts `pending` and becomes `active`; poll `GET /api/datasetrw/v1/snapshots/{id}`.
+- **Read**: the numbered or tagged path above, or pin the execution to one snapshot on the
+  **Data Plane & Hardware** tab at launch; it then mounts read-only at the live path.
+- **Iterate**: snapshots never change. **Copy to New Dataset**, `POST .../datasets` with
+  `snapshotId`, or `domino create-dataset-from-snapshot <owner>/<project>/<dataset> <n> <new-name>`.
+- **Tags** name one snapshot (`snapshots/<name>/<tag>`); Owners and Editors add or remove them on
+  the **Snapshots** page or with `POST .../datasets/{datasetId}/tags`
+  `{"snapshotId": "...", "tagName": "production"}` and `DELETE .../tags/{tagName}`. Re-using a
+  name returns 400, so to move a tag remove it, then add it.
+- **Limits**: by default 20 active snapshots per Dataset (6.3 configuration record
+  `com.cerebro.domino.dataset.quota.maxActiveSnapshotsPerDataset`; Domino Support on Cloud).
+  At the limit an execution that would write a snapshot fails with an error, and a manual
+  **Take Snapshot** warns and, if you proceed, marks the oldest snapshot for deletion (it stops
+  mounting; an admin deletes it permanently). Delete old snapshots, raise the limit, or exempt
+  the Project; details in [BEST-PRACTICES.md](./BEST-PRACTICES.md).
 
-## Snapshots
+## Share across Projects
 
-### What is a Snapshot?
-A snapshot is a read-only, immutable version of your dataset at a point in time. Use snapshots for:
-- Reproducibility
-- Versioning training data
-- Rolling back to previous states
+Dataset roles are independent of Project roles: **Owner** (everything, including permissions),
+**Editor** (upload, snapshot, tag, update metadata), **Reader** (view and mount). Grant them on
+the Dataset's permissions panel or with `POST /api/datasetrw/v1/datasets/{datasetId}/grants`
+(`DatasetRwOwner`, `DatasetRwEditor`, `DatasetRwReader`). A user with a role mounts it in
+another Project via **Data > Domino Datasets > Mount Shared Dataset** or
+`POST /api/projects/v1/projects/{projectId}/shared-datasets`; it appears under the imported
+paths. Reads without a mount (Apps, endpoints): `DatasetClient` in the domino-data-sdk skill.
 
-### Create a Snapshot
-```python
-# Via Python SDK
-snapshot = domino.datasets_snapshot(
-    dataset_name="training-data",
-    tag="v1.0"
-)
-```
+## Delete
 
-Or via UI:
-1. Go to dataset page
-2. Click **Create Snapshot**
-3. Add optional tag (e.g., `v1.0`, `production`)
-
-### Access Snapshots
-```python
-# Latest snapshot
-df = pd.read_csv("/mnt/data/training-data/data.csv")
-
-# Specific tagged snapshot
-df = pd.read_csv("/mnt/data/training-data@v1.0/data.csv")
-```
-
-### Snapshot Limits
-- Default limit: 20 snapshots per dataset
-- Configurable by admins
-- Oldest snapshots auto-deleted when limit reached
-
-## Tags
-
-### What are Tags?
-Tags provide friendly names for snapshots:
-- `production`: Current production data
-- `v1.0`, `v2.0`: Version numbers
-- `2024-01-15`: Date-based tags
-
-### Move Tags
-Tags can be moved to different snapshots:
-```python
-# Move 'production' tag to latest snapshot
-domino.datasets_tag(
-    dataset_name="training-data",
-    snapshot_id="snapshot-123",
-    tag="production"
-)
-```
-
-## Sharing Datasets
-
-### Within Organization
-1. Go to dataset settings
-2. Set visibility to **Organization**
-3. Other projects can mount the dataset
-
-### Cross-Project Access
-```python
-# Import dataset from another project
-# Configured in project settings
-df = pd.read_csv("/mnt/data/shared-dataset/data.csv")
-```
+Owners mark a Dataset or snapshot for deletion in the UI (**More Actions > Delete Dataset**);
+an admin deletes it permanently. `DELETE /api/datasetrw/v1/datasets/{datasetId}` is the same
+soft delete (verified: `DeletionInProgress`, hidden from lists, cancellable) and affects every
+Project that mounts it; confirm with the user first.
 
 ## Troubleshooting
 
-### Dataset Not Found
-- Verify dataset name is correct
-- Check dataset is mounted to project
-- Confirm you have access permissions
-
-### Permission Denied
-- Check project role (need Contributor+)
-- Verify dataset sharing settings
-- Contact dataset owner
-
-### Slow Performance
-- Use efficient file formats (Parquet > CSV)
-- Read only needed columns
-- Use chunked/lazy loading for large files
-
-### Snapshot Failed
-- Check disk quota
-- Verify no files are open/locked
-- Check snapshot limit not reached
+| Symptom | Check |
+|---|---|
+| Path missing in the execution | `DOMINO_IS_GIT_BASED`; Dataset mounted in this Project; execution started after the mount |
+| Permission denied writing | Dataset role (Reader is read-only); snapshot paths are always read-only; a pinned snapshot replaces the live mount; test with `os.access(path, os.W_OK)` |
+| Snapshot error at launch or `failed` status | Snapshot limit reached; delete snapshots or raise the limit |
+| Slow reads | Parquet, column projection, chunked reads ([BEST-PRACTICES.md](./BEST-PRACTICES.md)) |
 
 ## Reference files
 
-- [MOUNT-PATHS.md](./MOUNT-PATHS.md) — full DFS and Git-based mount trees, path tables, project-type detection, permissions, read examples
-- [BEST-PRACTICES.md](./BEST-PRACTICES.md) — storage selection, layout, file formats, metadata, snapshot-before-change, chunked/Dask/memmap reading
+- [MOUNT-PATHS.md](./MOUNT-PATHS.md): full mount trees, env-based detection, pinned snapshots
+- [API.md](./API.md): every Dataset route with bodies, auth and examples
+- [BEST-PRACTICES.md](./BEST-PRACTICES.md): layout, formats, snapshot limits, large reads
 
-## Documentation Reference
-- [Create and manage Datasets](https://docs.dominodatalab.com/en/latest/user_guide/0a8d11/create-and-manage-datasets/)
-- [Version data with Snapshots](https://docs.dominodatalab.com/en/cloud/user_guide/dbdbff/version-data-with-snapshots/)
-- [Datasets best practices](https://archive.docs.dominodatalab.com/en/4.4/user_guide/a222c9/datasets-best-practices/)
+Docs: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/datasets and child
+pages, https://docs.domino.ai/cloud/admin/data-administration/datasets,
+https://docs.domino.ai/cloud/reference/cli/cli-reference (`/6.3/` for self-managed).

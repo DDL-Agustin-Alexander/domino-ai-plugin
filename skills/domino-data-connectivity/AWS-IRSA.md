@@ -1,320 +1,226 @@
-# AWS IRSA (IAM Role for Service Accounts) for Domino
+# AWS identity for Domino workloads: credential propagation, IRSA and Pod Identity
 
-This guide covers configuring AWS IRSA to enable secure credential propagation for Domino workloads.
+Three ways to give code in a Workspace or Job an AWS identity without long-lived keys, from the
+documented product feature to the Professional Services blueprints. All three are self-managed
+(Domino 6.3) procedures that need AWS and cluster administration; on Domino Cloud, ask Domino
+Support for the equivalent.
 
-## What is IRSA?
+| Option | Identity | Workload types | Where documented |
+|---|---|---|---|
+| AWS credential propagation (SAML) | The user's own IAM roles, chosen by the identity provider | Workspaces and Jobs started by the user | https://docs.domino.ai/6.3/admin/identity-and-access/authentication/sso/aws-credential-propagation |
+| IAM-authenticated Data Sources | The user's SAML-propagated AWS role, read from `AWS_SHARED_CREDENTIALS_FILE` (requires credential propagation; 6.3 admins add `AWSIAMRole` to `com.cerebro.domino.datasource.<Type>Config.enabledAuthTypes`, Cloud asks Domino Support) | Workspaces and Jobs (not scheduled Jobs or endpoints) | https://docs.domino.ai/6.3/admin/data-administration/external-data#iam-authentication-for-aws-data-sources |
+| IRSA through Domsed (blueprint) | A Kubernetes service account mapped per Domino user, trusted by IAM roles in any account | Workspace, Batch (Job), Scheduled; selectable by label | https://domino.ai/resources/blueprints/aws-irsa, code in https://github.com/dominodatalab/domino-blueprints (IRSA-README.md, advanced-credential-propagation/irsa) |
+| EKS Pod Identity (blueprint) | A static service account mapped per Domino service account | Same as IRSA; EKS only | https://domino.ai/resources/blueprints/advanced-credential-propagation-aws-eks, code in advanced-credential-propagation/eks-pod-identity |
 
-IRSA (IAM Role for Service Accounts) enables Kubernetes workloads to assume AWS IAM roles securely using OpenID Connect (OIDC) authentication, eliminating the need for long-lived credentials.
+## 1. AWS credential propagation (documented)
 
-### Benefits
+With SSO enabled, Domino exchanges the user's SAML assertion for temporary role credentials
+(`sts:AssumeRoleWithSAML`) and refreshes them during the session.
 
-- **No hardcoded credentials**: Eliminates static access keys
-- **Short-lived tokens**: Automatic token rotation
-- **Least privilege**: Fine-grained IAM policies
-- **Audit trails**: Full CloudTrail logging
-- **Cross-account access**: Support for multi-account architectures
+Follow the docs page end to end; its key steps are:
 
-### When to Use
+1. Federate the AWS account with the identity provider; create a SAML identity provider in IAM.
+2. Create each role with `SAML 2.0 federation` as the trusted entity, then edit its trust policy
+   to allow both `sts:AssumeRoleWithSAML` from the provider and `sts:AssumeRole` from the role's
+   own ARN (Domino refreshes credentials mid-session, so the role must be able to assume itself).
+3. Create a permissions policy allowing `sts:AssumeRole` and `sts:AssumeRoleWithSAML` on the
+   role's ARN and attach it to the role.
+4. Have the identity provider emit `https://aws.amazon.com/SAML/Attributes/Role`
+   (`<provider-arn>,<role-arn>`, multi-valued), `.../RoleSessionName` and `.../SessionDuration`.
+5. In Keycloak, on the SAML identity provider turn **Store Tokens** and **Store Tokens
+   Readable** on (Domino needs the users' SAML assertions), and add `Attribute Importer` mappers
+   for the three attributes to user attributes `aws-roles`, `aws-role-session-name` and
+   `aws-session-duration`.
+6. On the `domino-play` client add a mapper named `identity-provider-mapper` of type
+   User Session Note, note `identity_provider`, token claim `idpbroker`.
+7. In **Admin > Platform Settings > Configuration Records** set
+   `com.cerebro.domino.auth.aws.sts.enabled=true`, `com.cerebro.domino.auth.aws.sts.region`
+   (for example `us-west-2`) and `com.cerebro.domino.auth.aws.sts.defaultSessionDuration`
+   (for example `1h`), then restart services. Users log out and in again.
 
-Organizations should consider IRSA when:
-- Security policy prohibits long-lived credentials
-- Need IAM roles for all Domino workloads (Apps, Jobs, Workspaces)
-- Require complex, rule-based role mappings
-- Need cross-account role assumption
-
-## How IRSA Works
-
-```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Domino         │────▶│  Kubernetes      │────▶│  AWS STS        │
-│  Workload       │     │  Service Account │     │  AssumeRole     │
-└─────────────────┘     └──────────────────┘     └────────┬────────┘
-                                                          │
-                        ┌──────────────────┐              │
-                        │  OIDC Provider   │◀─────────────┘
-                        │  (EKS/Kubernetes)│   Validates JWT
-                        └──────────────────┘
-```
-
-### Flow:
-
-1. **JWT Token Generation**: Kubernetes generates tokens via OIDC provider
-2. **Token Mounting**: Tokens are projected as volumes in pods
-3. **Web Identity Auth**: Workload calls `STS:AssumeRoleWithWebIdentity`
-4. **Role Assumption**: AWS validates token and returns temporary credentials
-5. **AWS Access**: Workload uses temporary credentials for AWS services
-
-## Setup Steps
-
-### Step 1: Enable OIDC Provider
-
-For EKS clusters:
-
-```bash
-# Get OIDC issuer URL
-aws eks describe-cluster \
-  --name YOUR-CLUSTER-NAME \
-  --query "cluster.identity.oidc.issuer" \
-  --output text
-
-# Create OIDC provider
-eksctl utils associate-iam-oidc-provider \
-  --cluster YOUR-CLUSTER-NAME \
-  --approve
-```
-
-### Step 2: Create IAM Policy
-
-Define permissions for your workloads:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:ListBucket"
-      ],
-      "Resource": [
-        "arn:aws:s3:::your-bucket",
-        "arn:aws:s3:::your-bucket/*"
-      ]
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "sagemaker:InvokeEndpoint"
-      ],
-      "Resource": "arn:aws:sagemaker:REGION:ACCOUNT_ID:endpoint/your-endpoint-name"
-    }
-  ]
-}
-```
-
-### Step 3: Create IAM Role with Trust Policy
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Federated": "arn:aws:iam::ACCOUNT_ID:oidc-provider/oidc.eks.REGION.amazonaws.com/id/OIDC_ID"
-      },
-      "Action": "sts:AssumeRoleWithWebIdentity",
-      "Condition": {
-        "StringEquals": {
-          "oidc.eks.REGION.amazonaws.com/id/OIDC_ID:sub": "system:serviceaccount:domino-compute:SERVICEACCOUNT_NAME"
-        }
-      }
-    }
-  ]
-}
-```
-
-### Step 4: Create Kubernetes Service Account
-
-```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: domino-irsa-sa
-  namespace: domino-compute
-  annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/DominoWorkloadRole
-```
-
-### Step 5: Configure Domino Workloads
-
-Domino uses a mutating webhook (Domsed) to inject IRSA configuration. Configure mutations based on:
-
-- User identity
-- Project
-- Hardware tier
-- Custom labels
-
-## Using IRSA in Workloads
-
-### Python with boto3
+What the user sees: `AWS_SHARED_CREDENTIALS_FILE` points at
+`/var/lib/domino/home/.aws/credentials`, one profile per role. boto3, the AWS CLI and the
+Data API pick it up without code changes:
 
 ```python
 import boto3
 
-# No explicit credentials - IRSA provides them automatically
-s3 = boto3.client('s3')
-
-# List objects
-response = s3.list_objects_v2(Bucket='my-bucket')
-for obj in response.get('Contents', []):
-    print(obj['Key'])
-
-# Get object
-response = s3.get_object(Bucket='my-bucket', Key='data.csv')
-data = response['Body'].read()
+session = boto3.Session(profile_name="DataScientist-dev")   # omit for the default profile
+for obj in session.resource("s3").Bucket("my-bucket").objects.filter(Prefix="raw/"):
+    print(obj.key)
 ```
 
-### Access Other AWS Services
+## 2. IRSA through Domsed (blueprint)
+
+IAM Roles for Service Accounts lets a pod call `sts:AssumeRoleWithWebIdentity` with a JWT that
+the EKS cluster's OIDC provider issues for the pod's Kubernetes service account. Domino's
+adaptation uses Domsed, a Domino-aware mutating webhook
+(https://github.com/dominodatalab/domino-field-solutions-installations/tree/main/domsed), to
+swap the workload's generated service account for one mapped to the Domino user and to project
+the token into the pod. It works across AWS accounts and for scheduled Jobs, which SAML
+propagation does not cover.
+
+Prerequisites (from the blueprint): Domsed installed; one Kubernetes service account per mapped
+user in `domino-compute`; agreement with Domino Professional Services, because this changes how
+Domino manages pod identity.
+
+### Steps
+
+1. Create a service account per user:
+
+   ```bash
+   kubectl -n domino-compute create sa sa-jane-doe
+   ```
+
+2. In every AWS account whose roles the workloads will assume, register the EKS cluster's OIDC
+   provider as an IAM identity provider. Its ARN has the form
+   `arn:aws:iam::<TARGET_ACCOUNT>:oidc-provider/oidc.eks.<REGION>.amazonaws.com/id/<OIDC_ID>`
+   (`eksctl utils associate-iam-oidc-provider --cluster <name> --approve` creates it in the
+   cluster's own account).
+
+3. Trust the service accounts in each role's trust policy:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [{
+       "Effect": "Allow",
+       "Principal": {
+         "Federated": "arn:aws:iam::<TARGET_ACCOUNT>:oidc-provider/oidc.eks.<REGION>.amazonaws.com/id/<OIDC_ID>"
+       },
+       "Action": "sts:AssumeRoleWithWebIdentity",
+       "Condition": {
+         "StringLike": {
+           "oidc.eks.<REGION>.amazonaws.com/id/<OIDC_ID>:sub": [
+             "system:serviceaccount:domino-compute:sa-jane-doe"
+           ]
+         }
+       }
+     }]
+   }
+   ```
+
+   Attach a least-privilege permissions policy to the role (named buckets and prefixes, named
+   SageMaker endpoints; no `*` resources). Hardening beyond the blueprint, per AWS's IRSA
+   guidance: use `StringEquals` on `sub` and add
+   `"oidc.eks.<REGION>.amazonaws.com/id/<OIDC_ID>:aud": "sts.amazonaws.com"` so only tokens
+   minted for STS can assume the role.
+
+4. Apply the Domsed mutation in `domino-platform`. This is the blueprint's
+   `user-identity-based-irsa.yaml`, with the user mappings and region edited:
+
+   ```yaml
+   apiVersion: apps.dominodatalab.com/v1alpha1
+   kind: Mutation
+   metadata:
+     name: user-identity-based-irsa
+     namespace: domino-platform
+   rules:
+   - labelSelectors:
+     - dominodatalab.com/workload-type in (Workspace,Batch,Scheduled)
+     cloudWorkloadIdentity:
+       cloud_type: aws
+       default_sa: ""
+       assume_sa_mapping: false
+       user_mappings:
+         jane-doe: sa-jane-doe
+         john-doe: sa-john-doe
+     insertVolumes:
+     - name: aws-user-token
+       projected:
+         defaultMode: 422
+         sources:
+         - serviceAccountToken:
+             audience: sts.amazonaws.com
+             expirationSeconds: 86400
+             path: token
+     insertVolumeMounts:
+       volumeMounts:
+         - mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount/
+           name: aws-user-token
+     modifyEnv:
+       env:
+       - name: AWS_WEB_IDENTITY_TOKEN_FILE
+         value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+       - name: AWS_DEFAULT_REGION
+         value: us-west-2
+       - name: AWS_REGION
+         value: us-west-2
+       - name: AWS_STS_REGIONAL_ENDPOINTS
+         value: regional
+     modifySecurityContext:
+       context:
+         fsGroup: 12574
+   ```
+
+   `user_mappings` keys are Domino usernames; `default_sa` is the service account for unmapped
+   users (empty keeps Domino's generated one); `labelSelectors` matches the pod label
+   `dominodatalab.com/workload-type`. The projected token is a JWT whose `sub` is
+   `system:serviceaccount:domino-compute:<sa>`, issued by the EKS OIDC provider, with `exp` set.
+
+### Using it from a workload
+
+Set the role to assume, then let boto3 do the exchange:
 
 ```python
+import os
 import boto3
 
-# SageMaker
-sagemaker = boto3.client('sagemaker')
-
-# DynamoDB
-dynamodb = boto3.resource('dynamodb')
-
-# Secrets Manager
-secretsmanager = boto3.client('secretsmanager')
-secret = secretsmanager.get_secret_value(SecretId='my-secret')
-
-# Athena
-athena = boto3.client('athena')
+os.environ["AWS_ROLE_ARN"] = "arn:aws:iam::<TARGET_ACCOUNT>:role/my-irsa-test-role"
+print(boto3.client("sts").get_caller_identity()["Arn"])
+# arn:aws:sts::<TARGET_ACCOUNT>:assumed-role/my-irsa-test-role/botocore-session-...
 ```
 
-### Verify Credentials
-
-```python
-import boto3
-
-# Check current identity
-sts = boto3.client('sts')
-identity = sts.get_caller_identity()
-
-print(f"Account: {identity['Account']}")
-print(f"ARN: {identity['Arn']}")
-print(f"UserId: {identity['UserId']}")
-```
-
-## Role Mapping Strategies
-
-### Per-User Roles
-
-Map each Domino user to a specific IAM role:
-
-```yaml
-# Domsed mutation
-mutations:
-  - match:
-      user: alice@company.com
-    patch:
-      serviceAccountName: alice-irsa-sa
-```
-
-### Per-Project Roles
-
-Map roles based on Domino project:
-
-```yaml
-mutations:
-  - match:
-      project: sensitive-data-project
-    patch:
-      serviceAccountName: sensitive-data-sa
-```
-
-### Per-Hardware-Tier Roles
-
-Different permissions for GPU workloads:
-
-```yaml
-mutations:
-  - match:
-      hardwareTier: gpu-large
-    patch:
-      serviceAccountName: gpu-workload-sa
-```
-
-## Cross-Account Access
-
-### Trust Policy for Cross-Account
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Federated": "arn:aws:iam::DOMINO_ACCOUNT:oidc-provider/oidc.eks.REGION.amazonaws.com/id/OIDC_ID"
-      },
-      "Action": "sts:AssumeRoleWithWebIdentity",
-      "Condition": {
-        "StringEquals": {
-          "oidc.eks.REGION.amazonaws.com/id/OIDC_ID:sub": "system:serviceaccount:domino-compute:cross-account-sa"
-        }
-      }
-    }
-  ]
-}
-```
-
-### Using Cross-Account Role
-
-Chain the role through an AWS config profile so the SDK assumes and refreshes it. Raw keys never
-appear in code.
+Several roles at once: declare profiles in `~/.aws/config` (or the file named by
+`AWS_CONFIG_FILE`) using the standard AWS SDK `web_identity_token_file` and `source_profile`
+settings (https://docs.aws.amazon.com/sdkref/latest/guide/feature-assume-role-credentials.html);
+no keys appear anywhere.
 
 ```ini
-# ~/.aws/config (or the file named by AWS_CONFIG_FILE)
 [profile domino-irsa]
-role_arn = arn:aws:iam::DOMINO_ACCOUNT:role/DominoWorkloadRole
+role_arn = arn:aws:iam::<TARGET_ACCOUNT>:role/DominoWorkloadRole
 web_identity_token_file = /var/run/secrets/eks.amazonaws.com/serviceaccount/token
 
 [profile data-account]
-role_arn = arn:aws:iam::OTHER_ACCOUNT:role/DataAccessRole
+role_arn = arn:aws:iam::<OTHER_ACCOUNT>:role/DataAccessRole
 source_profile = domino-irsa
 role_session_name = domino-workload
 ```
 
 ```python
-import boto3
-
 s3 = boto3.Session(profile_name="data-account").client("s3")
 ```
 
+The second role's trust policy names the first role's ARN as principal for `sts:AssumeRole`.
+
+## 3. EKS Pod Identity (blueprint)
+
+Same Domsed mechanism, but the identity comes from EKS Pod Identity associations instead of
+OIDC federation, so it is EKS-only and keyed on Domino service accounts rather than users:
+
+1. Install the **EKS Pod Identity Agent** add-on on the cluster and give the node role
+   `eks-auth:AssumeRoleForPodIdentity` (AWS prerequisites, called out in the blueprint).
+2. Create Domino service accounts (https://docs.domino.ai/6.3/admin/identity-and-access/manage-users/service-accounts)
+   and one static Kubernetes service account each in `domino-compute`.
+3. Create Pod Identity associations from each Kubernetes service account to its IAM role; the
+   role trusts `pods.eks.amazonaws.com` for `sts:AssumeRole` and `sts:TagSession`.
+4. Apply a `Mutation` with the same `labelSelectors` and a `cloudWorkloadIdentity` block whose
+   `user_mappings` map Domino service-account names to the Kubernetes service accounts. No
+   projected volume or environment variables are needed; the Pod Identity agent injects them.
+
 ## Troubleshooting
 
-### Token Not Mounted
+| Symptom | Check |
+|---|---|
+| `AWS_WEB_IDENTITY_TOKEN_FILE` unset or file missing | The pod did not match the mutation: `kubectl describe pod <pod> -n domino-compute` and compare labels with `labelSelectors`; confirm Domsed is running in `domino-platform` |
+| Pod runs as Domino's generated service account | The username is not in `user_mappings` and `default_sa` is empty |
+| `AccessDenied` on `AssumeRoleWithWebIdentity` | Trust policy `sub` condition versus `system:serviceaccount:domino-compute:<sa>`; OIDC provider registered in the target account; `AWS_ROLE_ARN` spelled correctly |
+| Credentials expire mid-run | `expirationSeconds` on the projected token (86400 in the blueprint); STS session duration on the role |
+| Wrong identity | `boto3.client("sts").get_caller_identity()` shows the assumed role; check profiles in `~/.aws/config` |
+
+Inspect without entering the pod:
 
 ```bash
-# Confirm the role annotation and the projected token volume without opening a shell in the pod
-kubectl get serviceaccount SERVICEACCOUNT_NAME -n domino-compute -o yaml
-kubectl describe pod POD_NAME -n domino-compute | grep -A3 -E 'AWS_ROLE_ARN|aws-iam-token'
+kubectl get serviceaccount sa-jane-doe -n domino-compute -o yaml
+kubectl describe pod <pod> -n domino-compute | grep -A3 -E "AWS_WEB_IDENTITY_TOKEN_FILE|aws-user-token"
 ```
-
-### AssumeRoleWithWebIdentity Fails
-
-```
-An error occurred (AccessDenied) when calling the AssumeRoleWithWebIdentity operation
-```
-
-**Solutions:**
-1. Verify OIDC provider is correctly configured
-2. Check trust policy conditions match exactly
-3. Verify service account annotation
-4. Check namespace matches trust policy
-
-### Wrong Role Assumed
-
-```python
-# Debug: Check which role was assumed
-sts = boto3.client('sts')
-print(sts.get_caller_identity())
-```
-
-## Security Best Practices
-
-1. **Least Privilege**: Grant minimum necessary permissions
-2. **Session Duration**: Use short session durations
-3. **Condition Keys**: Add extra conditions to trust policies
-4. **Audit Logging**: Enable CloudTrail for all AssumeRole calls
-5. **Regular Review**: Periodically audit role assignments
-
-## Blueprint Reference
-
-Complete implementation available at:
-https://domino.ai/resources/blueprints/aws-irsa

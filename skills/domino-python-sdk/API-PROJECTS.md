@@ -1,409 +1,195 @@
 # Domino Projects API
 
-## Overview
-The Projects API allows you to create, manage, and configure Domino projects programmatically.
+Create and manage projects, collaborators, git repositories, goals and shared datasets.
+All routes and bodies below are in both published specs unless marked **Cloud**.
+Product docs: https://docs.domino.ai/cloud/platform-capabilities/core-concepts/projects.
 
 ## Authentication
 
-https://docs.domino.ai/cloud/reference/api/domino-api-authentication
+Use the shared setup block (`base_url`, `headers`) from
+[domino-api-intro](../domino-api-intro/SKILL.md#authentication).
 
-See [SKILL.md](SKILL.md#authentication). Do not use API keys.
+## List projects
+
+```
+GET /api/projects/beta/projects?offset=0&limit=20
+```
+
+Only `offset` and `limit` (default 10) are accepted; there is no name or owner filter, so
+filter client-side. Response: `{"projects": [...], "metadata": {"offset", "limit", "totalCount", "notices", "requestId"}}`.
+Each project has `id`, `name`, `description`, `visibility`, `ownerId`, `ownerUsername`,
+`collaborators`, `isRestricted`, optional `billingTag` and `mainRepository`. The spec
+enum for `visibility` is lowercase (`public`, `searchable`, `private`); live (Domino
+Cloud 6.4.0) the server accepts either case on create and returns `Private`, so compare
+case-insensitively. An unknown value fails with a 500 naming the accepted set.
 
 ```python
-import os
-import requests
-
-if os.environ.get("DOMINO_API_PROXY"):
-    base_url = os.environ["DOMINO_API_PROXY"].rstrip("/")
-    headers = {}
-else:
-    base_url = (os.environ.get("DOMINO_USER_HOST") or os.environ.get("DOMINO_API_HOST") or "").rstrip("/")
-    token = requests.get("http://localhost:8899/access-token").text.strip()
-    headers = {"Authorization": f"Bearer {token}"}
+projects = requests.get(f"{base_url}/api/projects/beta/projects", headers=headers,
+                        params={"limit": 50}).json()["projects"]
+mine = [p for p in projects if p["name"] == "fraud-detection"]
 ```
 
-Project routes use both `/api/projects/...` and `/v4/projects/...` (settings, git attach, notification preferences). Confirm paths in [API-SPECS.md](../domino-api-intro/API-SPECS.md).
+## Create a project
 
----
-
-## Collaborator and settings permissions
-
-| Route | Typical permission | Who can call |
-|-------|-------------------|--------------|
-| `GET /v4/projects/{projectId}/collaborators` (optional `?getUsers=true`) | Project membership | Any project member; least-privilege way to list people on the project |
-| `GET /v4/projects/{projectId}/projectSettingsCollaborators` | `ManageCollaborators` | Project owner / admin only |
-| `GET /v4/projects/{projectId}/settings` | Read project settings | Any project member; use for defaults (e.g. hardware tier) without admin collaborators route |
-| `PATCH /v4/projects/{projectId}/notificationPreference` | `ManageCollaborators` + change settings | Project admin; not available to regular contributors |
-
-If `projectSettingsCollaborators` returns 403, try `GET .../collaborators?getUsers=true` or `GET .../settings` depending on whether you need admin collaborator editing vs read-only defaults.
-
----
-
-## Endpoints
-
-### List Projects
 ```
-GET /api/projects/beta/projects
+POST /api/projects/beta/projects      (also POST /api/projects/v2/projects, same body)
 ```
 
-Get projects visible to the authenticated user.
+Required: `name`, `description`, `visibility` (`public`, `searchable`, `private`).
+Optional: `ownerId`, `isRestricted`, `billingTag` (`{"tag": "..."}`), `mainRepository`
+(`uri` required; `name`, `serviceProvider`, `gitCredentialId`, `defaultRef`
+`{"refType": "head|branch|tag|commit", "value": "..."}`) to make a Git-based project,
+`repoToCreate`, `templateDetails` (`name`, `templateId` required).
 
-**Query Parameters:**
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `offset` | int | Pagination offset (default: 0) |
-| `limit` | int | Results per page (default: 10) |
-| `name` | string | Filter by project name |
-| `ownerId` | string | Filter by owner ID |
-
-**Example:**
 ```python
-response = requests.get(
-    f"{base_url}/api/projects/beta/projects",
-    headers=headers,
-    params={"limit": 20, "name": "ml-project"}
-)
-projects = response.json()
+project = requests.post(f"{base_url}/api/projects/beta/projects", headers=headers, json={
+    "name": "fraud-detection",
+    "description": "Fraud detection model",
+    "visibility": "private",
+}).json()["project"]
+project_id = project["id"]
 ```
 
-**Response:**
-```json
-{
-  "data": [
-    {
-      "id": "project-123",
-      "name": "ml-project",
-      "description": "Machine learning project",
-      "ownerId": "user-456",
-      "visibility": "Private",
-      "createdAt": "2024-01-15T10:00:00Z"
-    }
-  ],
-  "offset": 0,
-  "limit": 20,
-  "totalCount": 1
-}
-```
+Response: `{"project": {...}, "metadata": {...}}` with HTTP 200. A `mainRepository`
+of `{"uri": "https://github.com/org/repo", "serviceProvider": "github", "defaultRef": {"refType": "head"}}`
+creates a Git-based project (verified live; the server echoes `Head` and `Github`).
 
----
+## Get a project
 
-### Create Project
-```
-POST /api/projects/beta/projects
-```
-
-Create a new project.
-
-**Request Body:**
-```json
-{
-  "name": "my-new-project",
-  "description": "Project description",
-  "visibility": "Private",
-  "ownerId": "user-id"
-}
-```
-
-**Example:**
-```python
-response = requests.post(
-    f"{base_url}/api/projects/beta/projects",
-    headers=headers,
-    json={
-        "name": "fraud-detection",
-        "description": "Fraud detection model",
-        "visibility": "Private"
-    }
-)
-project = response.json()
-print(f"Created project: {project['id']}")
-```
-
----
-
-### Get Project by ID
 ```
 GET /api/projects/v1/projects/{projectId}
 ```
 
-**Example:**
-```python
-project_id = "project-123"
-response = requests.get(
-    f"{base_url}/api/projects/v1/projects/{project_id}",
-    headers=headers
-)
-project = response.json()
-```
+Returns `{"project": {...}, "metadata": {...}}`.
 
----
+## Archive a project
 
-### Archive Project
 ```
 DELETE /api/projects/beta/projects/{projectId}
 ```
 
-Archives a project (soft delete).
+## Copy a project
 
-**Example:**
-```python
-project_id = "project-123"
-response = requests.delete(
-    f"{base_url}/api/projects/beta/projects/{project_id}",
-    headers=headers
-)
-```
-
----
-
-### Copy Project
 ```
 POST /api/projects/v1/projects/{projectId}/copy-project
 ```
 
-Create a copy of an existing project.
+Required: `copyDatasets` (boolean). Optional: `name`, `ownerId`, `visibility`,
+`billingTag`, `copyNetAppVolumes`, `importedGitReposCredentialId`, `gitCodeRepoSpec`
+(`credentialId` required, plus one of `referenceCopy`, `deepCopy`, `importFilesTarget`).
 
-**Request Body:**
-```json
-{
-  "name": "copied-project",
-  "description": "Copy of original project"
-}
-```
+## Project status
 
----
-
-### Update Project Status
 ```
 PUT /api/projects/v1/projects/{projectId}/status
 ```
 
-Update project status (active, complete, etc.).
-
----
+Body: `{"status": "active" | "complete", "isBlocked": false, "blockedReason": "...", "completedMessage": "..."}`;
+`status` and `isBlocked` are required.
 
 ## Collaborators
 
-### Add Collaborator
 ```
-POST /api/projects/v1/projects/{projectId}/collaborators
-```
-
-**Request Body:**
-```json
-{
-  "userId": "user-id",
-  "role": "Contributor"
-}
-```
-
-**Roles:**
-- `Owner`
-- `Admin`
-- `Contributor`
-- `LauncherUser`
-- `ResultsConsumer`
-
-**Example:**
-```python
-response = requests.post(
-    f"{base_url}/api/projects/v1/projects/{project_id}/collaborators",
-    headers=headers,
-    json={
-        "userId": "user-789",
-        "role": "Contributor"
-    }
-)
-```
-
-### Remove Collaborator
-```
+POST   /api/projects/v1/projects/{projectId}/collaborators
 DELETE /api/projects/v1/projects/{projectId}/collaborators/{collaboratorId}
 ```
 
----
+Body: `{"id": "<user-id>", "role": "contributor"}`. `role` is one of `contributor`,
+`launcherUser`, `resultsConsumer`, `projectImporter` (owner is not assignable here). Find
+user ids with `GET /api/users/v1/users`.
 
-## Project settings (prefetch defaults)
-
-Scheduled jobs and some automation require an explicit hardware tier even when the UI would use the project default. Prefetch defaults before create:
-
-```
-GET /v4/projects/{projectId}/settings
-```
-
-Readable by any project member. Use the response to fill `hardwareTierIdentifier` / tier fields on `POST /v4/projects/{projectId}/scheduledjobs`, or call `POST /v4/jobs/{projectId}/resolveJobDefaults` where your cluster documents it.
-
----
-
-## Git Repositories
-
-Two paths attach a git repo to a project; they are aliases of the same operation. Prefer the catalog path.
-
-### List Repositories
-```
-GET /api/projects/v1/projects/{projectId}/repositories
+```python
+requests.post(f"{base_url}/api/projects/v1/projects/{project_id}/collaborators",
+              headers=headers, json={"id": user_id, "role": "contributor"})
 ```
 
-Get all imported Git repositories in a project.
+There is no Public API route that lists collaborators separately; the project object from
+`GET /api/projects/v1/projects/{projectId}` carries `collaborators`. Adding a user who is
+already on the project returns `400 User <id> is already part of project <id>`.
 
-### Add Repository (preferred)
-```
-POST /api/projects/v1/projects/{projectId}/repositories
-```
+## Git repositories
 
-Body fields (confirm in swagger):
-```json
-{
-  "uri": "https://github.com/org/repo.git",
-  "ref": "main",
-  "credentialId": "cred-id"
-}
 ```
-
-### Add Repository (alternate path)
-```
-POST /v4/projects/{projectId}/gitRepositories
-```
-
-Same operation on the older project-scoped path; useful when your automation already targets `/v4/projects/...`.
-
-### Remove Repository
-```
+GET    /api/projects/v1/projects/{projectId}/repositories
+POST   /api/projects/v1/projects/{projectId}/repositories
 DELETE /api/projects/v1/projects/{projectId}/repositories/{repositoryId}
 ```
 
----
+Create body: `uri` required; optional `name`, `serviceProvider` (`github`,
+`githubEnterprise`, `gitLab`, `gitLabEnterprise`, `bitbucket`, `bitbucketServer`,
+`unknown`), `gitCredentialId`, `defaultRef` `{"refType": "head|branch|tag|commit", "value": "main"}`.
 
-## Project Goals
-
-### List Goals
-```
-GET /api/projects/v1/projects/{projectId}/goals
-```
-
-### Add Goal
-```
-POST /api/projects/v1/projects/{projectId}/goals
-```
-
-**Request Body:**
-```json
-{
-  "title": "Achieve 95% accuracy",
-  "description": "Model should reach 95% test accuracy"
-}
+```python
+requests.post(f"{base_url}/api/projects/v1/projects/{project_id}/repositories", headers=headers, json={
+    "uri": "https://github.com/org/repo.git",
+    "name": "repo",
+    "serviceProvider": "github",
+    "defaultRef": {"refType": "branch", "value": "main"},
+    "gitCredentialId": "<credential-id>",
+})
 ```
 
-### Update Goal
-```
-PATCH /api/projects/v1/projects/{projectId}/goals/{goalId}
-```
+**Cloud only:** `PUT .../repositories/{repositoryId}/default-ref`, `GET .../file-metadata`,
+`GET .../readme`, `GET .../rendered-file`.
 
-**Request Body:**
-```json
-{
-  "status": "Complete"
-}
-```
+## Project goals
 
-### Delete Goal
 ```
+GET    /api/projects/v1/projects/{projectId}/goals
+POST   /api/projects/v1/projects/{projectId}/goals          body: {"title": "...", "description": "...", "assigneeId": "...", "stageId": "..."}
+PATCH  /api/projects/v1/projects/{projectId}/goals/{goalId} body: {"isComplete": true}
 DELETE /api/projects/v1/projects/{projectId}/goals/{goalId}
 ```
 
----
+`title` is required on create (`description`, `assigneeId`, `stageId` optional);
+`isComplete` is required on update. Responses are `{"goal": {...}, "metadata"}`. Link a job to a goal
+with `POST /api/jobs/v1/goals?jobId=...` ([API-JOBS.md](./API-JOBS.md#job-goals)).
 
-## Shared Datasets
-
-### List Shared Datasets
-```
-GET /api/projects/v1/projects/{projectId}/shared-datasets
-```
-
-Get datasets shared with this project.
-
-### Link Dataset
-```
-POST /api/projects/v1/projects/{projectId}/shared-datasets
-```
-
-**Request Body:**
-```json
-{
-  "datasetId": "dataset-id"
-}
-```
-
-### Unlink Dataset
-```
-DELETE /api/projects/v1/projects/{projectId}/shared-datasets/{datasetId}
-```
-
----
-
-## Run notification preferences (admin)
-
-Update how run notifications are delivered for a collaborator. Requires project admin (`ManageCollaborators` / change project settings). Regular members should use read-only `GET /v4/projects/{projectId}/settings` instead of guessing this route.
+## Shared datasets
 
 ```
-PATCH /v4/projects/{projectId}/notificationPreference
+GET    /api/projects/v1/projects/{projectId}/shared-datasets      -> {"dataset": {"projectId", "sharedDatasetIds": [...]}} (200 even when empty)
+POST   /api/projects/v1/projects/{projectId}/shared-datasets      body: {"datasetId": "<dataset-id>"}
+DELETE /api/projects/v1/projects/{projectId}/shared-datasets/{datasetId}   -> {"success": true}
 ```
 
-A 403 usually means the caller is not project admin; list roles via collaborators routes above before retrying.
+## Project files
 
----
-
-## Project Files
-
-### Get File Content
 ```
 GET /api/projects/v1/projects/{projectId}/files/{commitId}/{path}/content
+GET /api/projects/beta/projects/{projectId}/commits/latest
+POST /api/projects/beta/projects/{projectId}/commits/resolveGitRef
 ```
 
-Returns the contents of a file at a specific commit.
-
-**Example:**
 ```python
-response = requests.get(
-    f"{base_url}/api/projects/v1/projects/{project_id}/files/HEAD/train.py/content",
-    headers=headers
-)
-file_content = response.text
+commit_id = requests.get(f"{base_url}/api/projects/beta/projects/{project_id}/commits/latest",
+                         headers=headers).json()["commitId"]     # current DFS head
+content = requests.get(
+    f"{base_url}/api/projects/v1/projects/{project_id}/files/{commit_id}/train.py/content",
+    headers=headers).text
 ```
 
----
+## Results settings
 
-## Result Settings
-
-### Get Result Settings
 ```
 GET /api/projects/beta/projects/{projectId}/results-settings
+PUT /api/projects/beta/projects/{projectId}/results-settings      body: {"branch": "main"}
 ```
 
-### Update Result Settings
-```
-PUT /api/projects/beta/projects/{projectId}/results-settings
-```
+## Project settings and defaults
 
----
+The Public API has no route for project settings (default hardware tier, environment).
+On Domino Cloud, `POST /api/jobs/v1/projects/{projectId}/job-defaults` resolves the
+defaults a job would use ([API-JOBS.md](./API-JOBS.md#job-defaults-domino-cloud-only)).
+`GET /v4/projects/{projectId}/settings` returns them on both targets but is Domino Internal
+API, may change between Domino versions; confirm it in your deployment's
+`/docs/openapi/openapi-internal.json` before relying on it.
 
-## Python SDK Examples
+## python-domino
 
-```python
-from domino import Domino
-
-# Initialize client
-domino = Domino("owner/project-name")
-
-# Get project info
-info = domino.project_info()
-print(f"Project: {info['name']}")
-print(f"ID: {info['id']}")
-
-# Create project (v4 API)
-domino = Domino()
-project = domino.project_create(
-    project_name="new-project",
-    owner_name="username"
-)
-```
+`project_create(project_name, owner_username=None)`, `project_create_v4(...)`,
+`projects_list(relationship="Owned", show_completed=False)`, `project_archive(project_name)`,
+`fork_project(target_name)`, `collaborators_get()`, `collaborators_add(username_or_email)`,
+`collaborators_remove(username_or_email)` and the `project_id` property. Signatures and
+notes: [SDK-EXAMPLES.md](./SDK-EXAMPLES.md#projects-collaborators-project-tags). There is
+no `project_info`, `project_get` or `project_update`.

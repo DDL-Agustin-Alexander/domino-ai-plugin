@@ -1,353 +1,207 @@
 # Domino Environments API
 
-## Overview
-The Environments API allows you to create, manage, and version Domino Compute Environments programmatically.
+Create, revise and inspect Compute Environments. Routes and fields are from both
+published specs unless marked **Cloud**. Product docs:
+https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environments.
 
 ## Authentication
 
-https://docs.domino.ai/cloud/reference/api/domino-api-authentication
+Use the shared setup block (`base_url`, `headers`) from
+[domino-api-intro](../domino-api-intro/SKILL.md#authentication).
 
-See [SKILL.md](SKILL.md#authentication). Do not use API keys.
+## Which path applies
+
+Read `GET $DOMINO_API_HOST/version`.
+
+| Target | Create environments and revisions with |
+|--------|----------------------------------------|
+| Domino Cloud (`6.4.0` and later) | `POST /api/environments/v2/environments` and `POST /api/environments/v2/environments/{environmentId}/revisions`. The Cloud spec marks the beta create routes **deprecated**: "Use POST /api/environments/v2/environments instead. This endpoint does not support specifying a CPU architecture and will not gain new capabilities." |
+| Domino 6.3 | `POST /api/environments/beta/environments` and `.../beta/environments/{environmentId}/revisions` (v2 does not exist on 6.3) |
+
+List (`GET /api/environments/beta/environments`), get and archive
+(`/api/environments/v1/environments/{environmentId}`) and the revision `PATCH` are the same
+on both.
+
+## List environments
+
+```
+GET /api/environments/beta/environments?offset=0&limit=50
+```
+
+Only `offset` and `limit` (default 10). Response: `{"environments": [...], "metadata": {...}}`.
+Each environment has `id`, `name`, `visibility` (`global`, `private`, `organization`),
+`owner` (`id`, `username`, `ownerType`), `supportedClusters`, `archived`, `isCurated`,
+`rebuildOnBaseChanges` (`never`, `followActive`) and `latestRevision` (`id`, `number`,
+`status`, `availableTools`; `architectures` on **Cloud**).
 
 ```python
-import os
-import requests
-
-if os.environ.get("DOMINO_API_PROXY"):
-    base_url = os.environ["DOMINO_API_PROXY"].rstrip("/")
-    headers = {}
-else:
-    base_url = (os.environ.get("DOMINO_USER_HOST") or os.environ.get("DOMINO_API_HOST") or "").rstrip("/")
-    token = requests.get("http://localhost:8899/access-token").text.strip()
-    headers = {"Authorization": f"Bearer {token}"}
+envs = requests.get(f"{base_url}/api/environments/beta/environments", headers=headers,
+                    params={"limit": 100}).json()["environments"]
+for env in envs:
+    print(env["name"], env["id"], env["latestRevision"]["status"])
 ```
 
----
+## Create an environment
 
-## Endpoints
+The spec marks no field required, but the field descriptions say `name`, `visibility`
+(`global` or `private`), `image` and `addBaseDependencies` are "required for creating a new
+environment". `duplicateFromEnvironmentId` is an alternative: "when specifying this property,
+no other properties in the payload must be set." There is no `baseEnvironmentId`.
 
-### List Environments
-```
-GET /api/environments/beta/environments
-```
+Build fields (shared by create and revision bodies): `image` (base image URI),
+`dockerfileInstructions`, `preSetupScript`, `postSetupScript`, `preRunScript`,
+`postRunScript`, `environmentVariables` (`[{"key", "value"}]`), `workspaceTools`,
+`supportedClusters` (`dask`, `mpi`, `ray`, `slurm`, `spark`), `skipCache`, `summary`,
+`useVpn`. Environment-level fields: `name`, `description`, `visibility`, `addBaseDependencies`,
+`isRestricted` (needs the ClassifyEnvironments permission), `isCurated`, `orgOwnerId`
+(private environments owned by an organization), `rebuildOnBaseChanges`. `tags` is deprecated
+in favour of taxonomy tags.
 
-Get environments visible to the user.
+**Cloud** (`POST /api/environments/v2/environments`): the build fields sit under
+`initialRevision` (`image`, `buildConfiguration` with the Dockerfile and scripts,
+`environmentVariables`, `workspaceTools`, `supportedClusters`, `architectures`
+`amd64`/`arm64`, ...); environment-level fields stay at the top.
 
-**Query Parameters:**
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `offset` | int | Pagination offset |
-| `limit` | int | Results per page |
-| `name` | string | Filter by name |
-
-**Example:**
 ```python
-response = requests.get(
-    f"{base_url}/api/environments/beta/environments",
-    headers=headers,
-    params={"limit": 50}
-)
-environments = response.json()
-
-for env in environments['data']:
-    print(f"{env['name']}: {env['id']}")
+env = requests.post(f"{base_url}/api/environments/v2/environments", headers=headers, json={
+    "name": "pytorch-gpu-env",
+    "description": "PyTorch with GPU support",
+    "visibility": "private",
+    "addBaseDependencies": True,
+    "initialRevision": {
+        "image": "<base-image-uri>",                       # for example a Domino Standard Environment image
+        "architectures": ["amd64"],
+        "buildConfiguration": {
+            "dockerfileInstructions": "USER root\nRUN pip install --no-cache-dir torch==2.4.0\nUSER ubuntu",
+        },
+    },
+}).json()["environment"]
 ```
 
-**Response:**
-```json
-{
-  "data": [
-    {
-      "id": "env-123",
-      "name": "Domino Standard Environment",
-      "description": "Default environment with Python and R",
-      "visibility": "Global",
-      "latestRevisionId": "rev-456",
-      "createdAt": "2024-01-01T00:00:00Z"
-    }
-  ],
-  "offset": 0,
-  "limit": 50,
-  "totalCount": 10
-}
-```
+**6.3** (`POST /api/environments/beta/environments`): the same fields flat.
 
----
-
-### Create Environment
-```
-POST /api/environments/beta/environments
-```
-
-Create a new custom environment.
-
-**Request Body:**
-```json
-{
-  "name": "custom-ml-env",
-  "description": "Custom ML environment with TensorFlow",
-  "visibility": "Private",
-  "baseEnvironmentId": "env-123"
-}
-```
-
-**Example:**
 ```python
-response = requests.post(
-    f"{base_url}/api/environments/beta/environments",
-    headers=headers,
-    json={
-        "name": "pytorch-gpu-env",
-        "description": "PyTorch environment with GPU support",
-        "visibility": "Private",
-        "baseEnvironmentId": "base-env-id"
-    }
-)
-environment = response.json()
-print(f"Created environment: {environment['id']}")
+env = requests.post(f"{base_url}/api/environments/beta/environments", headers=headers, json={
+    "name": "pytorch-gpu-env",
+    "description": "PyTorch with GPU support",
+    "visibility": "private",
+    "addBaseDependencies": True,
+    "image": "<base-image-uri>",
+    "dockerfileInstructions": "USER root\nRUN pip install --no-cache-dir torch==2.4.0\nUSER ubuntu",
+}).json()["environment"]
 ```
 
----
+Duplicate an existing environment instead (either target; nothing else in the body):
 
-### Get Environment
+```python
+env = requests.post(f"{base_url}/api/environments/beta/environments", headers=headers,
+                    json={"duplicateFromEnvironmentId": "<environment-id>"}).json()["environment"]
+```
+
+**Cloud only:** `PUT /api/environments/v1/environments/{environmentId}/name` (`{"name"}`)
+and `.../description` (`{"description"}`).
+
+## Get an environment
+
 ```
 GET /api/environments/v1/environments/{environmentId}
 ```
 
-Get detailed information about an environment.
+Returns `{"environment": {...}, "metadata": {...}}` with the fields listed under List.
 
-**Example:**
-```python
-env_id = "env-123"
-response = requests.get(
-    f"{base_url}/api/environments/v1/environments/{env_id}",
-    headers=headers
-)
-environment = response.json()
-```
+## Archive an environment
 
-**Response:**
-```json
-{
-  "id": "env-123",
-  "name": "custom-ml-env",
-  "description": "Custom ML environment",
-  "visibility": "Private",
-  "latestRevision": {
-    "id": "rev-789",
-    "number": 3,
-    "status": "Succeeded",
-    "dockerImage": "docker.domino.tech/env-123:rev-789"
-  },
-  "dockerfileInstructions": "RUN pip install tensorflow==2.13.0"
-}
-```
-
----
-
-### Archive Environment
 ```
 DELETE /api/environments/v1/environments/{environmentId}
 ```
 
-Archive an environment (soft delete).
+## Revisions
 
-**Example:**
-```python
-response = requests.delete(
-    f"{base_url}/api/environments/v1/environments/{env_id}",
-    headers=headers
-)
+```
+POST  /api/environments/v2/environments/{environmentId}/revisions     Cloud: {"image", "buildConfiguration": {...}, "environmentVariables", "architectures", ...}
+POST  /api/environments/beta/environments/{environmentId}/revisions   6.3: the flat build fields (deprecated on Cloud)
+PATCH /api/environments/beta/environments/{environmentId}/revisions/{revisionId}   body: {"isRestricted": true}
 ```
 
----
-
-## Environment Revisions
-
-### Create Revision
-```
-POST /api/environments/beta/environments/{environmentId}/revisions
-```
-
-Create a new revision with updated Dockerfile instructions.
-
-**Request Body:**
-```json
-{
-  "dockerfileInstructions": "RUN pip install pandas==2.0.0 numpy scikit-learn"
-}
-```
-
-**Example:**
-```python
-response = requests.post(
-    f"{base_url}/api/environments/beta/environments/{env_id}/revisions",
-    headers=headers,
-    json={
-        "dockerfileInstructions": """
-RUN pip install --no-cache-dir \\
-    pandas==2.0.0 \\
-    numpy>=1.24.0 \\
-    scikit-learn==1.3.0 \\
-    tensorflow==2.13.0
-"""
-    }
-)
-revision = response.json()
-print(f"Created revision: {revision['id']}")
-```
-
----
-
-### Update Revision Restriction
-```
-PATCH /api/environments/beta/environments/{environmentId}/revisions/{revisionId}
-```
-
-Update revision settings (e.g., restrict usage).
-
-**Request Body:**
-```json
-{
-  "restricted": true
-}
-```
-
----
-
-## Python SDK Examples
-
-### List Environments
-```python
-from domino import Domino
-
-domino = Domino("owner/project-name")
-
-# List all environments
-environments = domino.environments_list()
-for env in environments:
-    print(f"{env['name']}: {env['id']}")
-```
-
-### Get Environment Details
-```python
-env = domino.environment_get("env-123")
-print(f"Name: {env['name']}")
-print(f"Latest Revision: {env['latestRevision']['number']}")
-```
-
----
-
-## Dockerfile Instructions
-
-When creating or updating environments, use proper Dockerfile syntax:
-
-### Install Python Packages
-```dockerfile
-RUN pip install --no-cache-dir \
-    pandas==2.0.0 \
-    numpy>=1.24.0 \
-    scikit-learn==1.3.0
-```
-
-### Install System Packages
-```dockerfile
-RUN apt-get update && apt-get install -y \
-    libpq-dev \
-    graphviz \
-    && rm -rf /var/lib/apt/lists/*
-```
-
-### Install R Packages
-```dockerfile
-RUN R -e "install.packages(c('tidyverse', 'caret'), repos='https://cloud.r-project.org')"
-```
-
-### Set Environment Variables
-```dockerfile
-ENV MODEL_PATH=/mnt/artifacts/model.pkl
-ENV PYTHONPATH=/opt/custom:$PYTHONPATH
-```
-
-### GPU Libraries
-```dockerfile
-RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-```
-
----
-
-## Environment Workflow
+Both create responses are `{"environmentRevision": {"id", "number", "status", "availableTools"}, "metadata"}`.
+`isRestricted` is required on `PATCH`.
 
 ```python
-# 1. Create new environment
-response = requests.post(
-    f"{base_url}/api/environments/beta/environments",
-    headers=headers,
-    json={
-        "name": "ml-training-env",
-        "description": "Environment for ML model training",
-        "visibility": "Private",
-        "baseEnvironmentId": "domino-standard-env-id"
-    }
-)
-env = response.json()
-env_id = env['id']
+rev = requests.post(f"{base_url}/api/environments/beta/environments/{env_id}/revisions",
+                    headers=headers, json={
+    "dockerfileInstructions": "USER root\nRUN pip install --no-cache-dir pandas==2.2.2 scikit-learn==1.5.1\nUSER ubuntu",
+    "summary": "pin pandas and scikit-learn",
+}).json()["environmentRevision"]
+```
 
-# 2. Add Dockerfile instructions via revision
-response = requests.post(
-    f"{base_url}/api/environments/beta/environments/{env_id}/revisions",
-    headers=headers,
-    json={
-        "dockerfileInstructions": """
-RUN pip install --no-cache-dir \\
-    xgboost==2.0.0 \\
-    lightgbm==4.1.0 \\
-    catboost==1.2.0 \\
-    optuna==3.4.0
-"""
-    }
-)
-revision = response.json()
+## Build status
 
-# 3. Wait for build to complete
-# Check revision status periodically
+Poll `GET /api/environments/v1/environments/{environmentId}` and read
+`environment.latestRevision.status`. The spec enum is lowercase (`queued`, `starting`,
+`pulling`, `building`, `pushing`, `succeeded`, `failed`, `killed`) but Domino Cloud 6.4.0
+returns capitalized values (`Succeeded`, `Failed`, `Killed`), so compare
+case-insensitively. `latestRevision` is the newest build; `selectedRevision` is the one
+executions use, and the two differ when the newest build failed or was killed.
+
+```python
 import time
-while True:
-    env_details = requests.get(
-        f"{base_url}/api/environments/v1/environments/{env_id}",
-        headers=headers
-    ).json()
-
-    status = env_details['latestRevision']['status']
-    if status == 'Succeeded':
-        print("Environment build complete!")
+deadline = time.time() + 3600
+while time.time() < deadline:
+    env = requests.get(f"{base_url}/api/environments/v1/environments/{env_id}",
+                       headers=headers).json()["environment"]
+    status = env["latestRevision"]["status"].lower()
+    if status in ("succeeded", "failed", "killed"):
         break
-    elif status == 'Failed':
-        print("Environment build failed!")
-        break
-    else:
-        print(f"Building... Status: {status}")
-        time.sleep(30)
-
-# 4. Use environment in job
-response = requests.post(
-    f"{base_url}/api/jobs/v1/jobs",
-    headers=headers,
-    json={
-        "projectId": project_id,
-        "commandToRun": "python train.py",
-        "environmentId": env_id,
-        "hardwareTierId": "medium"
-    }
-)
+    print("building...", status)
+    time.sleep(30)
 ```
 
----
+## Use the environment in a job
 
-## Best Practices
+```python
+requests.post(f"{base_url}/api/jobs/v1/jobs", headers=headers, json={
+    "projectId": project_id,
+    "runCommand": "python train.py",
+    "environmentId": env_id,
+    "hardwareTier": "small-k8s",
+})
+```
 
-1. **Base on Standard Environments**: Start from Domino Standard Environments
-2. **Pin Versions**: Always specify exact package versions
-3. **Combine RUN Commands**: Reduce layers by combining installations
-4. **Clean Up**: Remove cache files to reduce image size
-5. **Test Locally**: Verify Dockerfile syntax before creating revisions
+Body reference: [API-JOBS.md](./API-JOBS.md#start-a-job).
+
+## Dockerfile instructions
+
+`dockerfileInstructions` is a Dockerfile fragment appended to the base image. Domino
+images must run as the `ubuntu` user, and the docs recommend installing packages as
+`root`: add `USER root` before the install commands and `USER ubuntu` after them
+(https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environments/add-packages-to-environments/preload-environment-packages).
+
+```dockerfile
+USER root
+RUN pip install --no-cache-dir pandas==2.2.2 "numpy>=1.26" scikit-learn==1.5.1
+RUN apt-get update && apt-get install -y libpq-dev graphviz && rm -rf /var/lib/apt/lists/*
+RUN R -e "install.packages(c('tidyverse', 'caret'), repos='https://cloud.r-project.org')"
+ENV MODEL_PATH=/mnt/artifacts/model.pkl
+USER ubuntu
+```
+
+Quote version specifiers that contain `>` or `<`; unquoted, the shell treats them as
+redirections.
+
+## python-domino
+
+`environments_list()`, `get_environment(environment_id)`, `get_default_environment()`,
+`create_environment(name, visibility, ...)`, `create_environment_revision(environment_id, ...)`,
+`restrict_environment_revision(environment_id, revision_id)`, `archive_environment(environment_id)`.
+`create_environment` and `create_environment_revision` call the beta routes above (current on
+6.3, deprecated on Cloud, where they still work but cannot set `architectures`).
+Signatures: [SDK-EXAMPLES.md](./SDK-EXAMPLES.md#environments-and-hardware-tiers). There is
+no `environment_get` method.
+
+## Best practices
+
+1. Start from a Domino Standard Environment image or `duplicateFromEnvironmentId`.
+2. Pin package versions and wrap installs in `USER root` / `USER ubuntu`.
+3. Combine `RUN` lines to reduce layers and clean package caches.
+4. Create a revision rather than a new environment for dependency changes; Workspaces and
+   Jobs pick the active revision.

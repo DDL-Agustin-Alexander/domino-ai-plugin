@@ -1,0 +1,43 @@
+"""
+Domino Streamlit application template.
+
+Served by app.sh on 0.0.0.0:8888. Streamlit uses relative URLs, so no base path setting is
+needed behind Domino's proxy.
+"""
+
+import os
+
+import requests
+import streamlit as st
+
+st.set_page_config(page_title="Domino Streamlit App", layout="wide")
+st.title("Domino Streamlit App")
+st.caption(
+    f"Project: {os.environ.get('DOMINO_PROJECT_NAME', 'n/a')} | "
+    f"Started by: {os.environ.get('DOMINO_STARTING_USERNAME', 'n/a')}"
+)
+
+
+def predict(features: dict) -> dict:
+    """Call a Domino endpoint. MODEL_API_URL and MODEL_API_TOKEN come from the project
+    environment variables; the token is a Model Access Token created on the endpoint
+    (Settings > Invocation). Synchronous endpoints use HTTP Basic with the token as
+    username and password; asynchronous endpoints use Authorization: Bearer instead."""
+    url = os.environ.get("MODEL_API_URL")
+    token = os.environ.get("MODEL_API_TOKEN")
+    if not url or not token:
+        raise RuntimeError("Set MODEL_API_URL and MODEL_API_TOKEN in the project environment variables")
+    response = requests.post(url, auth=(token, token), json={"data": features}, timeout=60)
+    response.raise_for_status()
+    return response.json()
+
+
+st.header("Make a prediction")
+feature1 = st.number_input("Feature 1", value=0.0)
+feature2 = st.number_input("Feature 2", value=0.0)
+
+if st.button("Predict"):
+    try:
+        st.json(predict({"feature1": feature1, "feature2": feature2}))
+    except Exception as exc:  # show the cause; stdout/stderr also land in the App logs
+        st.error(f"Prediction failed: {exc}")
