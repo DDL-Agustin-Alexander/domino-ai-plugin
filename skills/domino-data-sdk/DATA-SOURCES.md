@@ -1,192 +1,137 @@
-# Domino Data Sources
+# Data Sources with DataSourceClient
 
-The `DataSourceClient` provides access to configured data sources in Domino, including SQL databases and object stores.
+Docs: https://docs.domino.ai/cloud/reference/api/data_api/datasource_usecases (query, object
+store, write to file, configuration override, custom authentication) and
+https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/data-source-connectors/use-data-sources.
+Source: `domino_data/data_sources.py` and `domino_data/configuration_gen.py` in
+https://github.com/dominodatalab/domino-data.
 
-## DataSourceClient
-
-### Initialization
+## Client and Datasource objects
 
 ```python
 from domino_data.data_sources import DataSourceClient
 
-# Auto-configured inside Domino
-client = DataSourceClient()
+client = DataSourceClient()          # kwargs api_key, token_file, token_url, token; all default from env
+ds = client.get_datasource("analytics-db")   # the name under Data > Data Sources; must be added to the Project
 ```
 
-### Get Data Source
+`get_datasource` returns a `TabularDatasource` or an `ObjectStoreDatasource` depending on the
+connector. Attributes on either:
+
+| Attribute | Meaning |
+|---|---|
+| `name`, `identifier` | Display name and ID |
+| `datasource_type` | Connector type, for example `SnowflakeConfig`, `RedshiftConfig`, `S3Config`, `GenericS3Config`, `ADLSConfig`, `BigQueryConfig`, `DatabricksConfig`, `PostgreSQLConfig`, `MySQLConfig`, `SQLServerConfig`, `OracleConfig`, `GCSConfig`, `AzureBlobStorageConfig`, `DatasetConfig` |
+| `auth_type` | How the Data Source authenticates, for example `Basic`, `AWSIAMRole`, `OAuth`, `NoAuth`, `GCPBasic`, `AzureBasic`, `PersonalToken`, `KeyPair` |
+| `owner` | Owner's username |
+| `config` | Connection settings as a dict (no secrets) |
+
+## Tabular (SQL) Data Sources
 
 ```python
-# Fetch by name (as configured in Domino)
-ds = client.get_datasource("my-data-source")
-
-# Properties
-print(ds.name)           # Data source name
-print(ds.datasource_type) # Type (e.g., 'redshift', 's3')
-print(ds.auth_type)      # Authentication type
-print(ds.owner)          # Owner username
-```
-
-## Tabular Data Sources (SQL)
-
-For SQL-queryable sources like Redshift, Snowflake, PostgreSQL:
-
-### Execute Queries
-
-```python
-# Get tabular data source
-ds = client.get_datasource("analytics-db")
-
-# Execute SQL query
-result = ds.query("""
+res = ds.query("""
     SELECT customer_id, revenue, region
     FROM sales
-    WHERE date >= '2024-01-01'
+    WHERE sale_date >= '2026-01-01'
     LIMIT 10000
 """)
-
-# Convert to pandas DataFrame
-df = result.to_pandas()
-print(df.head())
-
-# Save directly to parquet
-result.to_parquet("sales_data.parquet")
+df = res.to_pandas()              # pandas DataFrame
+res.to_parquet("sales.parquet")   # path or file-like object; the whole result is written once
 ```
 
-### Configuration Override
+The result travels as Arrow over the Data Source proxy's Flight endpoint. Write CSV through
+pandas (`res.to_pandas().to_csv(...)`) because CSV serialisation is lossy.
+
+Nested columns are not queryable; flatten in SQL, for example
+`SELECT account_id, t1 FROM sample.transactions CROSS JOIN UNNEST (transactions) AS t(t1, t2)`.
+
+## Object-store Data Sources (S3, Generic S3, GCS, ADLS, Azure Blob)
 
 ```python
-from domino_data.data_sources import DatasourceConfig
+s3 = client.get_datasource("s3-datalake")
 
-# Override configuration for this session
-config = DatasourceConfig(
-    schema="production",
-    warehouse="COMPUTE_WH"
-)
-ds.update(config)
+objects = s3.list_objects(prefix="raw/2026/", page_size=1000)   # list of _Object; obj.key
+content = s3.get("raw/2026/config.json")                        # bytes
+s3.download_file("raw/2026/events.parquet", "/tmp/events.parquet")
+s3.download("raw/2026/big.parquet", "/tmp/big.parquet", max_workers=8)   # ranged, parallel
+with open("/tmp/out.bin", "wb") as f:
+    s3.download_fileobj("raw/2026/blob.bin", f)
 
-# Query with new config
-result = ds.query("SELECT * FROM users")
+s3.put("outputs/summary.json", b'{"rows": 1000}')
+s3.upload_file("outputs/model.pkl", "/tmp/model.pkl")
+with open("/tmp/results.csv", "rb") as f:
+    s3.upload_fileobj("outputs/results.csv", f)
 
-# Reset to default
-ds.reset_config()
+url = s3.get_key_url("raw/2026/events.parquet", is_read_write=False)   # signed URL
 ```
 
-## Object Store Data Sources (S3, GCS, Azure Blob)
+The same operations exist on an object handle: `obj = s3.Object("raw/2026/events.parquet")`
+then `obj.get()`, `obj.download_file(path)`, `obj.download(path, max_workers=8)`,
+`obj.download_fileobj(f)`, `obj.put(bytes)`, `obj.upload_file(path)`, `obj.upload_fileobj(f)`.
 
-For object storage sources:
+## Configuration override
 
-### List Objects
+Change connection settings or credentials for this session only; Domino's stored configuration
+is untouched. Every connector has a `*Config` class in `domino_data.data_sources` (importable
+by name); the docs page "Configuration override" lists all of them with their fields.
 
 ```python
-ds = client.get_datasource("data-lake")
+from domino_data.data_sources import SnowflakeConfig, RedshiftConfig
 
-# List all objects
-objects = ds.list_objects()
-
-# List with prefix filter
-objects = ds.list_objects(prefix="raw/2024/", page_size=500)
-
-for obj in objects:
-    print(obj.key)
+sf = client.get_datasource("snowflake-prod")
+sf.update(SnowflakeConfig(warehouse="compute-xxl", database="dev"))
+res = sf.query("SELECT COUNT(*) FROM very_large_table")
+sf.reset_config()                                   # back to the stored settings
 ```
 
-### Download Files
+Common classes and fields (all optional keyword arguments):
+
+| Class | Configuration fields | Credential fields |
+|---|---|---|
+| `SnowflakeConfig` | `database`, `schema`, `warehouse`, `role`, `datetime_precision` | `username`, `password`, `private_key`, `passphrase` |
+| `RedshiftConfig` | `database`, `datetime_precision`, `region` | `username`, `password`, `aws_access_key_id`, `aws_secret_access_key`, `aws_session_token` |
+| `PostgreSQLConfig`, `MySQLConfig` | `database`, `datetime_precision`, `region` | `username`, `password`, AWS keys, (Postgres) `client_cert`, `client_key`, `ca_cert` |
+| `S3Config` | `bucket`, `subfolder`, `region` | `aws_access_key_id`, `aws_secret_access_key`, `aws_session_token` |
+| `GenericS3Config` | `bucket`, `subfolder`, `host`, `region` | `aws_access_key_id`, `aws_secret_access_key` |
+| `ADLSConfig`, `AzureBlobStorageConfig` | `container` | `access_key` |
+| `GCSConfig` | `bucket` | `private_key_json` |
+| `BigQueryConfig` | `gcp_project_id`, `datetime_precision` | `private_key_json` |
+| `DatabricksConfig` | `catalog`, `schema`, `datetime_precision` | `personal_access_token` |
+| `DatasetConfig` | `snapshot_id`, `subfolder` | none |
+
+`datetime_precision` (relational sources, Domino 6.3 and later) is `seconds`, `milliseconds`,
+`microseconds` or `nanoseconds` (default); lower it when extreme datetimes overflow.
+
+## Authentication override
 
 ```python
-# Download single file
-ds.download_file("data/input.csv", "local_input.csv")
-
-# Get object and download with parallelism
-obj = ds.Object("large-file.parquet")
-obj.download("local_file.parquet", max_workers=8)
-
-# Get content as bytes
-content = ds.get("config.json")
-data = json.loads(content)
+client = DataSourceClient(token="<personal-access-token>")        # explicit bearer
+client = DataSourceClient(token_file="/path/to/token")            # alternate token file
 ```
 
-### Upload Files
+`DataSourceClient(api_key=...)` and `DOMINO_USER_API_KEY` still exist but use the legacy user
+API key, which is deprecated; do not recommend them. Data Sources with Individual credentials
+need the current user to have entered theirs under **Data > Data Sources**.
+
+## Errors
 
 ```python
-# Upload bytes
-ds.put("output/results.json", json.dumps(data).encode())
-
-# Upload file
-obj = ds.Object("output/model.pkl")
-obj.upload_file("trained_model.pkl")
-```
-
-### Signed URLs
-
-```python
-# Get read-only signed URL
-read_url = ds.get_key_url("data/file.csv", is_read_write=False)
-
-# Get read-write signed URL
-write_url = ds.get_key_url("output/file.csv", is_read_write=True)
-```
-
-## Object Operations
-
-The `_Object` class represents individual objects:
-
-```python
-obj = ds.Object("path/to/file.csv")
-
-# Get content
-content = obj.get()
-
-# Download to file
-obj.download_file("local.csv")
-
-# Download with parallelism (for large files)
-obj.download("local.csv", max_workers=4)
-
-# Upload content
-obj.put(b"new content here")
-
-# Upload from file
-obj.upload_file("source.csv")
-
-# Get HTTP client for custom operations
-http_client = obj.http()
-```
-
-## Supported Data Source Types
-
-| Type | Class | Operations |
-|------|-------|------------|
-| Redshift | TabularDatasource | SQL queries |
-| Snowflake | TabularDatasource | SQL queries |
-| PostgreSQL | TabularDatasource | SQL queries |
-| MySQL | TabularDatasource | SQL queries |
-| S3 | ObjectStoreDatasource | Object CRUD |
-| GCS | ObjectStoreDatasource | Object CRUD |
-| Azure Blob | ObjectStoreDatasource | Object CRUD |
-| ADLS Gen2 | ObjectStoreDatasource | Object CRUD |
-
-## Error Handling
-
-```python
-from domino_data.data_sources import (
-    DominoError,
-    UnauthenticatedError
-)
+from domino_data.data_sources import DominoError, UnauthenticatedError
 
 try:
-    result = ds.query("SELECT * FROM table")
-    df = result.to_pandas()
+    df = ds.query("SELECT * FROM sales LIMIT 10").to_pandas()
 except UnauthenticatedError:
-    # Handle auth failure with exponential backoff
-    print("Authentication failed")
+    print("no valid Domino token for this execution")
 except DominoError as e:
-    print(f"Query failed: {e}")
+    print(f"query failed: {e}")     # message from the Data Source proxy, SQL errors included
 ```
 
-## Performance Tips
+`list_objects`, `get_key_url` and `query` retry `UnauthenticatedError` with exponential backoff
+for up to 60 seconds before raising.
 
-1. **Use pagination**: Set `page_size` when listing many objects
-2. **Parallel downloads**: Use `max_workers` for large files
-3. **Stream results**: Use `to_parquet()` for large query results
-4. **Reuse clients**: Keep `DataSourceClient` instance for multiple queries
-5. **Config override**: Use `update()` for session-specific settings
+## Performance
+
+1. One client per process; each `get_datasource` is an API call.
+2. `page_size` on `list_objects` (default 1000) and `max_workers` on `download` for large files.
+3. `to_parquet` for large results; filter and project in SQL rather than in pandas.
+4. Session overrides (`update`) instead of extra Data Sources for warehouse or schema switches.

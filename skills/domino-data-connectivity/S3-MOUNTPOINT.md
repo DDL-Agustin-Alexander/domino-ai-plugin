@@ -1,323 +1,182 @@
-# AWS S3 Mountpoint Integration for Domino
+# Mount an S3 bucket as a filesystem: Mountpoint for Amazon S3 as a Generic EDV (blueprint)
 
-This guide covers setting up AWS Mountpoint for Amazon S3 to provide file system access to S3 data within Domino workloads.
+Mountpoint for Amazon S3's CSI driver mounts a bucket on the compute node; Domino exposes it to
+Projects as a **Generic External Data Volume**, so Workspaces, Jobs and Apps browse the bucket
+at `/domino/edv/<name>` without FUSE privileges in the container.
 
-## Overview
+- Blueprint: https://domino.ai/resources/blueprints/transforming-s3-into-local-storage, code in
+  https://github.com/dominodatalab/domino-blueprints/tree/main/mountpoint-s3
+- Driver: https://github.com/awslabs/mountpoint-s3-csi-driver (v2.8.0 released 2026-09-02;
+  pin a reviewed version)
+- EDV registration (product docs): https://docs.domino.ai/cloud/admin/data-administration/external-data/external-data-volumes
+- Mountpoint semantics and limits: https://docs.aws.amazon.com/AmazonS3/latest/userguide/mountpoint.html
 
-AWS Mountpoint for Amazon S3 CSI driver enables mounting S3 buckets as local file systems in Kubernetes pods, including Domino workspaces, jobs, and apps.
+Self-managed Domino 6.3 on EKS. On Domino Cloud, ask Domino Support; an S3 **Data Source**
+(https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/data-source-connectors/connect-to-amazon-s3)
+gives the same bucket through the Data API without any cluster change and is the default
+choice on either target. Azure Blob and GCS equivalents are a separate blueprint
+(https://domino.ai/resources/blueprints/turn-cloud-object-storage-into-local-filesystems).
 
-### Benefits
+Use Mountpoint for large, read-mostly data that tools expect as files. Not for write-heavy or
+random-write workloads: Mountpoint supports sequential writes to new objects, no edits in place,
+and the AWS page lists the rest.
 
-- **Cost-effective storage**: Direct S3 access without EFS overhead
-- **Familiar interface**: File browsing just like local storage
-- **Scalability**: Access massive datasets without copying
-- **Security**: No privileged container access required
+## Setup (AWS, Kubernetes and Domino admins)
 
-### When to Use
+Prerequisites: AWS account rights for IAM, `kubectl` and `helm` against the Domino EKS cluster,
+and Domino admin rights.
 
-**Ideal for:**
-- Large datasets that would be expensive in EFS
-- Read-heavy workloads
-- Multi-region data access
-- Security-conscious environments
+### 1. IAM policy and role for the driver
 
-**Not recommended for:**
-- Write-heavy workloads
-- Small, frequently-accessed datasets
-- Workloads requiring low-latency access
-
-## Architecture
-
-```
-┌─────────────────────┐
-│   Domino Workload   │
-│   (Workspace/Job)   │
-├─────────────────────┤
-│  /mnt/s3-data/      │  ← Mounted S3 bucket
-└──────────┬──────────┘
-           │
-    ┌──────▼──────┐
-    │  CSI Driver  │
-    │  (Node-level)│
-    └──────┬──────┘
-           │
-    ┌──────▼──────┐
-    │  AWS S3      │
-    │  Bucket      │
-    └─────────────┘
-```
-
-## Setup Steps
-
-### Step 1: IAM Configuration
-
-Create IAM policy for S3 access:
+Policy scoped to the bucket (add more buckets as separate resources):
 
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "MountpointFullBucketAccess",
       "Effect": "Allow",
-      "Action": [
-        "s3:ListBucket"
-      ],
-      "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME"
+      "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+      "Resource": "arn:aws:s3:::my-bucket"
     },
     {
-      "Sid": "MountpointFullObjectAccess",
       "Effect": "Allow",
-      "Action": [
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:DeleteObject"
-      ],
-      "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME/*"
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::my-bucket/*"
     }
   ]
 }
 ```
 
-### Step 2: Create the IAM Role
-
-Using eksctl, create only the IAM role. The Helm chart creates and annotates the service account
-in Step 3, so no existing service account is modified:
+Drop `s3:PutObject` and `s3:DeleteObject` for a read-only mount. Create the role only; the Helm
+chart creates and annotates the service account in the namespace where you install the driver
+(the blueprint uses `domino-platform`, the upstream docs `kube-system`):
 
 ```bash
 eksctl create iamserviceaccount \
   --name s3-csi-driver-sa \
-  --namespace kube-system \
-  --cluster YOUR-CLUSTER-NAME \
-  --attach-policy-arn arn:aws:iam::ACCOUNT_ID:policy/S3CSIDriverPolicy \
-  --role-name S3CSIDriverRole \
+  --namespace domino-platform \
+  --cluster CLUSTER_NAME \
+  --attach-policy-arn arn:aws:iam::ACCOUNT_ID:policy/MountpointS3Policy \
+  --role-name MountpointS3Role \
+  --region REGION \
   --role-only \
   --approve
 ```
 
-### Step 3: Install CSI Driver
+### 2. Install the CSI driver
 
-Using Helm, pinned to a reviewed chart version (check the
-[chart releases](https://github.com/awslabs/mountpoint-s3-csi-driver/releases) before upgrading):
+Install from the Helm repository (installing from a GitHub branch is unsupported upstream) and
+pin the chart version you reviewed:
 
 ```bash
-helm repo add aws-mountpoint-s3-csi-driver \
-  https://awslabs.github.io/mountpoint-s3-csi-driver
-
-helm install aws-mountpoint-s3-csi-driver \
+helm repo add aws-mountpoint-s3-csi-driver https://awslabs.github.io/mountpoint-s3-csi-driver
+helm repo update
+helm upgrade --install aws-mountpoint-s3-csi-driver \
   aws-mountpoint-s3-csi-driver/aws-mountpoint-s3-csi-driver \
   --version 2.8.0 \
-  --namespace kube-system \
-  --set node.serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::ACCOUNT_ID:role/S3CSIDriverRole
+  --namespace domino-platform \
+  --set node.serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::ACCOUNT_ID:role/MountpointS3Role
 ```
 
-### Step 4: Create PersistentVolume
+### 3. PersistentVolume and labelled PersistentVolumeClaim
+
+The PVC must carry the EDV label with value `Generic` and live in the compute namespace
+(blueprint YAML; `volumeHandle` must be unique per bucket):
 
 ```yaml
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: s3-pv
+  name: mountpoints3-pv
 spec:
   capacity:
-    storage: 1Ti  # Arbitrary, S3 is unlimited
+    storage: 10Gi                 # ignored by the driver, required by Kubernetes
   accessModes:
-    - ReadWriteMany
+    - ReadWriteMany               # or ReadOnlyMany
+  storageClassName: ""            # static provisioning
+  claimRef:
+    namespace: domino-compute
+    name: mountpoints3-pvc
   mountOptions:
-    - allow-delete
-    - region us-east-1
-    - uid=12574
+    - uid=12574                   # Domino's container user
     - gid=12574
+    - allow-other
+    - allow-overwrite
+    - allow-delete
+    - region us-west-2
+    # - prefix datasets/sales/    # mount one prefix only
+    # - read-only
   csi:
     driver: s3.csi.aws.com
-    volumeHandle: s3-csi-driver-volume
+    volumeHandle: s3-csi-driver-my-bucket
     volumeAttributes:
-      bucketName: YOUR-BUCKET-NAME
-```
-
-### Step 5: Create PersistentVolumeClaim
-
-```yaml
+      bucketName: my-bucket
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: s3-pvc
+  name: mountpoints3-pvc
   namespace: domino-compute
+  labels:
+    dominodatalab.com/external-data-volume: Generic
 spec:
   accessModes:
     - ReadWriteMany
   storageClassName: ""
   resources:
     requests:
-      storage: 1Ti
-  volumeName: s3-pv
+      storage: 10Gi
+  volumeName: mountpoints3-pv
 ```
 
-### Step 6: Configure Domino EDV
+`mountOptions` are Mountpoint command-line flags
+(https://github.com/awslabs/mountpoint-s3/blob/main/doc/CONFIGURATION.md): `region`, `prefix`,
+`read-only`, `allow-delete`, `allow-overwrite`, `allow-other`, `uid`, `gid`, `cache <dir>`.
 
-Create an External Data Volume in Domino:
+### 4. Register the EDV in Domino
 
-1. Go to **Admin** → **External Data Volumes**
-2. Click **New External Data Volume**
-3. Configure:
-   - **Name**: s3-data
-   - **Mount Path**: /mnt/s3-data
-   - **PVC Name**: s3-pvc
-   - **Namespace**: domino-compute
+**Admin > Manage resources > External Data Volumes > Register External Volume**: type
+**Generic**, pick `mountpoints3-pvc`, set the **Name** and **Relative Mount Path** (the
+mount becomes `/domino/edv/<path>`), tick **Mount as read-only** unless writes are intended, and
+set **Volume Access**. Details in [EXTERNAL-DATA-VOLUMES.md](./EXTERNAL-DATA-VOLUMES.md).
 
-## Using S3 Mountpoint in Workloads
+## Using it
 
-### Reading Data
+Users add the EDV under **Data > External data volumes** in the Project and read it as files:
 
 ```python
+import os
 import pandas as pd
 
-# S3 bucket mounted at /mnt/s3-data
-df = pd.read_csv("/mnt/s3-data/datasets/sales.csv")
-
-# Read parquet
-df = pd.read_parquet("/mnt/s3-data/datasets/large_dataset.parquet")
-
-# List files
-import os
-files = os.listdir("/mnt/s3-data/datasets/")
+root = "/domino/edv/s3-data"
+print(os.listdir(f"{root}/datasets"))
+df = pd.read_parquet(f"{root}/datasets/large_dataset.parquet")
+df.to_parquet(f"{root}/outputs/results.parquet")     # new object; Mountpoint cannot edit in place
 ```
 
-### Writing Data
+Spark reads the mount like any local path (`spark.read.parquet("/domino/edv/s3-data/datasets/")`).
 
-```python
-# Write results back to S3
-df.to_parquet("/mnt/s3-data/outputs/results.parquet")
-
-# Save model artifacts
-import joblib
-joblib.dump(model, "/mnt/s3-data/models/model.joblib")
-```
-
-### With Spark
-
-```python
-from pyspark.sql import SparkSession
-
-spark = SparkSession.builder.getOrCreate()
-
-# Read from mounted S3
-df = spark.read.parquet("/mnt/s3-data/datasets/")
-
-# Process and write back
-df_processed = df.filter(...)
-df_processed.write.parquet("/mnt/s3-data/outputs/")
-```
-
-## Mount Options
-
-| Option | Description |
-|--------|-------------|
-| `region` | AWS region of the bucket |
-| `uid` | User ID for file ownership |
-| `gid` | Group ID for file ownership |
-| `allow-delete` | Enable file deletion |
-| `allow-other` | Allow access by other users |
-| `prefix` | Mount only a specific prefix |
-
-### Example with Prefix
-
-Mount only a specific folder:
-
-```yaml
-mountOptions:
-  - region us-east-1
-  - prefix=datasets/sales/
-```
-
-## Performance Considerations
-
-### Read Performance
-
-- First access may have higher latency
-- Subsequent reads benefit from caching
-- Sequential reads perform better than random
-
-### Write Performance
-
-- Writes are uploaded on close
-- Large files uploaded in parts
-- Consider buffering for small writes
-
-### Optimization Tips
-
-1. Use Parquet or other columnar formats
-2. Partition large datasets
-3. Avoid many small files
-4. Use appropriate file sizes (100MB-1GB)
+Performance: first access of an object is slower than later reads; sequential reads beat
+random reads; prefer Parquet and files of 100 MB to 1 GB over many small files; writes upload
+on close. Keep the bucket in the cluster's region.
 
 ## Troubleshooting
 
-### Mount Failures
-
 ```bash
-# Check CSI driver pods
-kubectl get pods -n kube-system | grep mountpoint
-
-# Check driver logs
-kubectl logs -n kube-system -l app=aws-mountpoint-s3-csi-driver
+kubectl get pods -n domino-platform -l app=s3-csi-node          # one per node, Running
+kubectl logs -n domino-platform -l app=s3-csi-node --tail=200
+kubectl logs -n domino-platform -l app=s3-csi-controller --tail=200
+kubectl get pv mountpoints3-pv; kubectl get pvc -n domino-compute mountpoints3-pvc   # both Bound
 ```
 
-### Permission Errors
+| Symptom | Check |
+|---|---|
+| PVC not offered at registration | Label `dominodatalab.com/external-data-volume: Generic`, namespace `domino-compute`, PVC `Bound` |
+| `Access Denied` in the mount | Policy actions and bucket ARN; `eks.amazonaws.com/role-arn` annotation on the node service account; bucket region matches `region` |
+| Files owned by another uid, writes fail | `uid=12574`, `gid=12574`, `allow-other`; `read-only` not set |
+| Execution stuck at start | Node driver pods not Running; multiple S3 volumes in one pod need distinct `volumeHandle` values |
+| Slow reads | Cross-region bucket; many small files; consider `cache <dir>` for repeated reads |
 
-```
-Error: Access Denied
-```
-
-**Solutions:**
-1. Verify IAM policy is correct
-2. Check service account annotation
-3. Verify bucket name is correct
-4. Check uid/gid mount options
-
-### Slow Performance
-
-1. Check network connectivity to S3
-2. Verify bucket is in same region
-3. Consider using S3 Transfer Acceleration
-4. Use larger files to reduce overhead
-
-## Security
-
-### Least Privilege
-
-Only grant necessary S3 permissions:
-
-```json
-{
-  "Action": [
-    "s3:GetObject",
-    "s3:ListBucket"
-  ]
-}
-```
-
-### Bucket Policies
-
-Combine with bucket policies for additional control:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "arn:aws:iam::ACCOUNT:role/S3CSIDriverRole"
-      },
-      "Action": ["s3:GetObject"],
-      "Resource": "arn:aws:s3:::bucket/*"
-    }
-  ]
-}
-```
-
-## Blueprint Reference
-
-Complete implementation available at:
-https://github.com/dominodatalab/domino-blueprints/tree/main/mountpoint-s3
+Security: keep the IAM policy bucket-scoped, add a bucket policy that allows only the driver
+role's ARN, and register the EDV read-only unless a workflow needs to write.

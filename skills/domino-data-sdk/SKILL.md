@@ -1,212 +1,137 @@
 ---
 name: domino-data-sdk
-description: Use the domino-data Python SDK (dominodatalab-data) for programmatic data access in Domino. Covers DataSourceClient for SQL queries and object storage, DatasetClient for dataset files, TrainingSets for ML data versioning, Feature Store, and VectorDB (Pinecone) integration. Use when querying data sources, downloading datasets, managing training sets, or working with vector databases in Domino.
+description: Use the domino-data Python library (PyPI dominodatalab-data, import domino_data) for programmatic data access inside Domino executions. Covers DataSourceClient for SQL queries and object-store reads and writes against Domino Data Sources, DatasetClient for reading Domino Dataset files and snapshots, TrainingSets for versioned training DataFrames, and the Pinecone helpers in domino_data.vectordb. Use when querying a Data Source from Python, downloading Dataset files by API, creating or loading TrainingSet versions, or connecting a Pinecone client through a Domino Data Source.
+compatibility: Domino 6.3 and Domino Cloud. Requires dominodatalab-data 6.7.4 or later (Python 3.10+). Inside a run the clients authenticate through DOMINO_API_PROXY automatically; outside a run pass token= a Personal Access Token.
 ---
 
-# Domino Data SDK Skill
+# Domino Data SDK (domino-data)
 
-This skill provides comprehensive knowledge for working with the `domino-data` Python SDK (`dominodatalab-data`) - the official library for Domino's Access Data features.
+Applies to Domino 6.3 and Domino Cloud.
 
-## Installation
+`dominodatalab-data` is the Python half of the Domino Data API. It talks to the Data Source
+proxy that Domino injects into every execution, so credentials stay in Domino's secret store and
+never appear in code. Docs: https://docs.domino.ai/cloud/reference/api/data_api (same path under
+`/6.3/`). Source: https://github.com/dominodatalab/domino-data. Both docs sets require
+`dominodatalab-data>=6.7.4`; 6.7.4 is the current PyPI release and needs Python 3.10 or later.
 
-```bash
-# Via pip
-pip install -U dominodatalab-data
+## Install
 
-# Via Poetry
-poetry add dominodatalab-data
+Pre-installed in Domino Standard Environments. In a custom environment Dockerfile:
 
-# In Domino environment (requirements.txt)
-dominodatalab-data>=6.0.0
+```dockerfile
+USER root
+RUN python -m pip install "dominodatalab[data]"
+# or pin the Data API alone: RUN python -m pip install dominodatalab-data==6.7.4
+USER ubuntu
 ```
 
-## Key Components
+Two import styles work: `from domino_data.data_sources import DataSourceClient` (the package)
+or `from domino.data_sources import DataSourceClient` (python-domino re-exports it when the
+`[data]` extra is installed; `domino.training_sets` exposes the client as `TrainingSetClient`).
+The docs use the second form; this skill uses the first.
 
-| Module | Purpose |
-|--------|---------|
-| `DataSourceClient` | Query SQL databases and access object stores |
-| `DatasetClient` | Read files from Domino Datasets |
-| `TrainingSets` | Version and manage ML training data |
-| `Feature Store` | Manage ML features with Git integration |
-| `VectorDB` | Pinecone vector database integration |
+## Modules
 
-## Related Documentation
+| Module | Purpose | Reference |
+|---|---|---|
+| `domino_data.data_sources` | `DataSourceClient`: SQL queries and object-store get/put on Domino Data Sources | [DATA-SOURCES.md](./DATA-SOURCES.md) |
+| `domino_data.datasets` | `DatasetClient`: read files from a Domino Dataset or one of its snapshots | [DATASETS.md](./DATASETS.md) |
+| `domino_data.training_sets.client` | TrainingSets: versioned DataFrames with key, target and monitoring columns | [TRAINING-SETS.md](./TRAINING-SETS.md) |
+| `domino_data.vectordb` | Parameters that route the `pinecone` client through a Domino Data Source | [VECTORDB.md](./VECTORDB.md) |
 
-- [DATA-SOURCES.md](./DATA-SOURCES.md) - SQL queries and object storage
-- [DATASETS.md](./DATASETS.md) - Dataset file operations
-- [TRAINING-SETS.md](./TRAINING-SETS.md) - Training data versioning
-- [VECTORDB.md](./VECTORDB.md) - Pinecone integration
+The package also ships `domino_data.netapp_volumes`; the netapp-volumes skill covers that
+storage type. Feature Store was removed from Domino in 6.0 and is not part of this library.
 
-## Quick Start
-
-### Query a Data Source
+## Quick start
 
 ```python
 from domino_data.data_sources import DataSourceClient
 
-# Initialize client (auto-configured in Domino)
-client = DataSourceClient()
+client = DataSourceClient()                        # auto-configured inside a Domino execution
+ds = client.get_datasource("analytics-redshift")   # name as shown under Data > Data Sources
+res = ds.query("SELECT customer_id, revenue FROM sales LIMIT 1000")
+df = res.to_pandas()                               # or res.to_parquet("sales.parquet")
 
-# Get a data source by name
-ds = client.get_datasource("my-redshift-db")
-
-# Execute SQL query
-result = ds.query("SELECT * FROM customers WHERE region = 'US'")
-
-# Convert to pandas DataFrame
-df = result.to_pandas()
-
-# Or save to parquet
-result.to_parquet("output.parquet")
+s3 = client.get_datasource("s3-datalake")          # object-store Data Source
+keys = [o.key for o in s3.list_objects(prefix="raw/2026/", page_size=500)]
+s3.download_file("raw/2026/events.parquet", "/tmp/events.parquet")
+s3.put("outputs/summary.json", b'{"rows": 1000}')
 ```
 
-### Access Object Storage
-
 ```python
-from domino_data.data_sources import DataSourceClient
+from domino_data.datasets import DatasetClient, DatasetConfig
 
-client = DataSourceClient()
-ds = client.get_datasource("my-s3-bucket")
-
-# List objects
-objects = ds.list_objects(prefix="data/", page_size=100)
-
-# Download a file
-ds.download_file("data/input.csv", "local_input.csv")
-
-# Upload a file
-ds.put("data/output.csv", open("results.csv", "rb").read())
-
-# Get signed URL
-url = ds.get_key_url("data/file.csv", is_read_write=False)
+dataset = DatasetClient().get_dataset("dataset-training-data-6503324fa1eb367359734bfd")
+files = dataset.list_files(prefix="images/", page_size=1000)   # objects with .name
+dataset.download("model.pkl", "/tmp/model.pkl", max_workers=8)
+dataset.update(DatasetConfig(snapshot_id="<snapshot-id>"))    # read a snapshot, not live data
 ```
 
-### Read from Datasets
-
 ```python
-from domino_data.datasets import DatasetClient
+from domino_data.training_sets import client as ts, model
 
-client = DatasetClient()
-
-# Get dataset by name
-dataset = client.get_dataset("training-data")
-
-# List files
-files = dataset.list_files(prefix="images/")
-
-# Download file
-dataset.download("model.pkl", "local_model.pkl", max_workers=4)
-
-# Get file content as bytes
-content = dataset.get("config.json")
-```
-
-### Training Sets
-
-```python
-from domino_data.training_sets import (
-    create_training_set_version,
-    get_training_set,
-    list_training_sets
-)
-import pandas as pd
-
-# Create training set version from DataFrame
-df = pd.DataFrame({
-    "id": [1, 2, 3],
-    "feature_a": [0.1, 0.2, 0.3],
-    "label": [1, 0, 1]
-})
-
-version = create_training_set_version(
-    training_set_name="customer-churn",
+version = ts.create_training_set_version(
+    training_set_name="customer-churn",            # letters, digits, - and _ only
     df=df,
-    key_columns=["id"],
-    description="Initial training data"
+    key_columns=["customer_id"],
+    target_columns=["churned"],
+    monitoring_meta=model.MonitoringMeta(categorical_columns=["churned", "plan"]),
+    description="Q3 features",
 )
-
-# Get training set
-ts = get_training_set("customer-churn")
-
-# List all training sets
-all_sets = list_training_sets()
+train_df = ts.get_training_set_version("customer-churn", version.number).load_training_pandas()
 ```
 
-### Vector Database (Pinecone)
-
-```python
-from domino_data.vectordb import (
-    domino_pinecone3x_init_params,
-    domino_pinecone3x_index_params
-)
-from pinecone import Pinecone
-
-# Initialize Pinecone client with Domino credentials
-init_params = domino_pinecone3x_init_params("my-pinecone-ds")
-pc = Pinecone(**init_params)
-
-# Get index parameters
-index_params = domino_pinecone3x_index_params("my-pinecone-ds", "embeddings")
-index = pc.Index(**index_params)
-
-# Query vectors
-results = index.query(
-    vector=[0.1, 0.2, 0.3, ...],
-    top_k=10,
-    include_metadata=True
-)
-```
+The UI generates copy-ready snippets for any Data Source or Dataset: **Data > Data Sources** (or
+**Datasets**) > the item > **Code snippet**.
 
 ## Authentication
 
-The library auto-configures authentication inside Domino workspaces and jobs using injected environment variables:
+Inside a Workspace, Job, scheduled Job, Launcher or App the clients authenticate on their own.
+`DataSourceClient()` and `DatasetClient()` try, in order: `token=` if you pass one;
+`DOMINO_API_PROXY` (a short-lived JWT fetched from `$DOMINO_API_PROXY/access-token` per
+request); `DOMINO_TOKEN_FILE` if that file exists; `DOMINO_USER_API_KEY` (legacy API key,
+deprecated, never rely on it). Hosts come from `DOMINO_API_PROXY`, else `DOMINO_API_HOST`, plus
+`DOMINO_DATASOURCE_PROXY_HOST` and `DOMINO_DATASOURCE_PROXY_FLIGHT_HOST` for the Data Source
+proxy; Domino injects all of them.
 
-```python
-# Environment variables used automatically inside Domino:
-# DOMINO_TOKEN_FILE - Token file location (preferred, short-lived)
-# DOMINO_API_PROXY - API proxy URL
-# DOMINO_DATA_API_GATEWAY - Data API gateway (default: http://127.0.0.1:8766)
-#
-# DOMINO_USER_API_KEY - Legacy API key (deprecated, will be removed)
-```
+- **Domino endpoints (model APIs)** get no automatic token. Store a service-account token as
+  an environment variable on the endpoint and pass it: `DataSourceClient(token=os.environ["DOMINO_SA_TOKEN"])`.
+- **Apps acting for the calling user**: use the bearer from the incoming request,
+  `DatasetClient(token=request.headers["Authorization"][7:])`.
+- **Outside Domino**: the Data Source proxy hosts are internal to the deployment, so run Data
+  API code inside a Domino execution. If your admin exposes them, set `DOMINO_API_HOST` to the
+  deployment URL, the two proxy host variables as the admin gives them, and pass `token=` a
+  Personal Access Token (https://docs.domino.ai/cloud/reference/api/domino-api-authentication).
 
-For external use (e.g., CI/CD outside a Domino execution):
+Docs: https://docs.domino.ai/cloud/reference/api/data_api/authentication.
 
-> **Note:** `DOMINO_USER_API_KEY` is deprecated and will be removed in a future Domino release. Prefer running data-SDK code from inside a Domino workspace or job where token-based auth is injected automatically.
+## Errors
 
-```python
-import os
-os.environ["DOMINO_USER_API_KEY"] = "your-api-key"  # deprecated
-os.environ["DOMINO_API_HOST"] = "https://your-domino.com"
-
-from domino_data.data_sources import DataSourceClient
-client = DataSourceClient()
-```
-
-## Error Handling
+`domino_data.data_sources` and `domino_data.datasets` raise `DominoError` (base) and
+`UnauthenticatedError`; listing, URL-signing and query calls retry authentication failures
+with exponential backoff for up to 60 seconds before raising. TrainingSets raise
+`ServerException` (message plus the server's `errors` list) and `SchemaMismatchException`
+(the DataFrame lacks a declared column). Query failures surface as `DominoError` carrying the
+proxy's message.
 
 ```python
 from domino_data.data_sources import DominoError, UnauthenticatedError
 
 try:
-    result = ds.query("SELECT * FROM table")
+    df = ds.query("SELECT 1").to_pandas()
 except UnauthenticatedError:
-    print("Authentication failed - check API key")
+    raise SystemExit("no Domino token: run inside an execution or pass token=")
 except DominoError as e:
-    print(f"Domino error: {e}")
+    print(f"query failed: {e}")
 ```
 
-## Best Practices
+## Practices
 
-1. **Use within Domino**: Auth is automatic in workspaces/jobs
-2. **Parallel downloads**: Use `max_workers` for large files
-3. **Pagination**: Use `page_size` when listing many objects
-4. **Training Sets**: Version your training data for reproducibility
-5. **Connection reuse**: Reuse client instances when possible
-
-## Package Info
-
-- **PyPI**: `dominodatalab-data`
-- **GitHub**: https://github.com/dominodatalab/domino-data
-- **License**: Apache 2.0
-- **Python**: 3.8+
+1. Reuse one client per process; every `get_datasource` call is an API round trip.
+2. Use `page_size` on listings and `max_workers` on `download` for large objects (default 10).
+3. `to_parquet` streams the Arrow result to disk; `to_pandas` loads it all into memory.
+4. Override connection settings per session with the `*Config` classes and `reset_config()`
+   instead of creating duplicate Data Sources.
+5. Data Sources do not query nested objects; `UNNEST` in SQL first.
+6. `DatasetClient` is read-only. Write to a Dataset through its mount path (domino-datasets
+   skill), the UI, the CLI or `POST /api/datasetrw` routes.

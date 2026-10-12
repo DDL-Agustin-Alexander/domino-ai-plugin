@@ -1,113 +1,98 @@
 ---
 name: domino-data-connectivity
-description: Connect Domino workloads to external data sources including AWS S3 (via Mountpoint CSI driver), credential propagation with AWS IRSA and Azure Entra ID, and External Data Volumes. Use when configuring S3 access, setting up credential propagation, or connecting to cloud data sources from Domino.
+description: Connect Domino executions to external data and cloud services. Covers the mechanisms Domino documents (Data Source connectors, External Data Volumes at /domino/edv/<name>, SAML-based AWS credential propagation, IAM-authenticated AWS Data Sources) and the Professional Services blueprints for AWS IRSA through Domsed, EKS Pod Identity, Azure Entra ID user-token propagation, and mounting S3 with the Mountpoint CSI driver as a Generic EDV. Use when a user asks how code in a Workspace or Job should reach S3, ADLS, Azure Blob, Snowflake or another external store, how to propagate a user's cloud identity into a workload, how to mount an NFS, EFS, SMB or S3 volume, or which of these options fits a requirement.
+compatibility: Domino 6.3 and Domino Cloud. Data Sources and EDVs apply to both. Cluster-level setup (CSI drivers, Domsed mutations, Keycloak, configuration records) is a self-managed Domino 6.3 procedure; on Domino Cloud request it through Domino Support.
 ---
 
-# Domino Data Connectivity Skill
+# Domino data connectivity
 
-This skill provides comprehensive knowledge for connecting Domino workloads to external data sources, including AWS S3, Azure storage, and credential propagation.
+Applies to Domino 6.3 and Domino Cloud.
 
-## Safety Rules
+## Safety rules
 
 The setup guides in this skill are platform-administrator procedures that change cloud IAM and
-Kubernetes cluster state. When using them:
+Kubernetes cluster state.
 
-- **Explain, don't execute.** Show `aws iam`, `eksctl`, `helm`, `kubectl`, `az` commands and
-  IAM/RBAC policies for the user to review and run. Do not run them yourself unless the user
-  explicitly asks you to run that specific command.
-- **Least privilege.** Scope every policy to named buckets, endpoints, or resources. Never
-  propose `"Resource": "*"` or wildcard actions such as `s3:*`.
-- **No secrets in output.** Never print, log, or echo access keys, tokens, or client secrets, and
+- **Explain, don't execute.** Show `aws`, `eksctl`, `helm`, `kubectl`, `az` commands and IAM
+  policies for the user to review and run. Run one only when the user explicitly asks for that
+  command.
+- **Least privilege.** Scope every policy to named buckets, roles or resources. Never propose
+  `"Resource": "*"` or wildcard actions such as `s3:*`.
+- **No secrets in output.** Never print, log or echo access keys, tokens or client secrets, and
   never ask the user to paste one into the chat.
-- **Read-only troubleshooting.** Prefer `get`/`describe` commands over `exec` into running pods.
+- **Read-only troubleshooting.** Prefer `get`/`describe` over `exec` into running pods.
 
-## Key Concepts
+## Which path applies
 
-### Data Access Options in Domino
+Read `GET $DOMINO_API_HOST/version` (no auth) and look at `version`:
 
-| Option | Use Case |
-|--------|----------|
-| **Datasets** | Project-level data storage |
-| **Data Sources** | External database connections |
-| **External Data Volumes (EDV)** | Mount external storage as volumes |
-| **S3 Mountpoint** | Direct S3 access as file system |
-| **Credential Propagation** | Pass user identity to cloud services |
+- `6.3.x`: self-managed Domino 6.3. Your platform team administers the Kubernetes cluster,
+  Keycloak and configuration records, so every mechanism below is available.
+- A Domino-hosted deployment (Domino Cloud reports a newer line, `6.4.0` on 2026-10-12): Domino
+  operates the cluster. Use Data Sources and External Data Volumes (EDVs need a remote Data
+  Plane on Cloud). IAM authentication, credential propagation, CSI drivers and Domsed mutations
+  are requested through Domino Support.
 
-### Credential Propagation Methods
+## Pick a mechanism
 
-| Method | Cloud | Description |
-|--------|-------|-------------|
-| **IRSA** | AWS | IAM Role for Service Accounts via OIDC |
-| **Azure Entra ID** | Azure | User-based credential propagation |
+| Need | Mechanism | Set up by | Source |
+|---|---|---|---|
+| Query a database or read/write an object store from code | **Data Source** connector (Snowflake, Redshift, S3, ADLS, Azure Blob, BigQuery, Databricks, Postgres, MySQL, MSSQL, Oracle, GCS, Pinecone, Qdrant and others). Credentials live in Domino's Vault-backed secret store as Individual or Service Account credentials | User, or admin pre-configures and shares | https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/data-source-connectors |
+| AWS stores without stored keys | **IAM authentication** for S3, Redshift, MySQL and PostgreSQL Data Sources; works in Workspaces and Jobs only (scheduled Jobs and endpoints need basic auth) | Admin, enabled by Domino Support | https://docs.domino.ai/cloud/admin/data-administration/external-data#iam-authentication-for-aws-data-sources |
+| Mount NFS, AWS EFS, SMB or any PVC-backed filesystem | **External Data Volume** at `/domino/edv/<name>` | Kubernetes admin labels a PVC; Domino admin registers it; users add it under **Data > External Data Volumes** | [EXTERNAL-DATA-VOLUMES.md](./EXTERNAL-DATA-VOLUMES.md) |
+| Each user's own AWS roles, from SSO | **AWS credential propagation** (SAML, `AssumeRoleWithSAML`): a refreshed credentials file at `/var/lib/domino/home/.aws/credentials`, named by `AWS_SHARED_CREDENTIALS_FILE` | Admin: identity-provider mappers plus configuration records on 6.3; Domino Support on Cloud | https://docs.domino.ai/6.3/admin/identity-and-access/authentication/sso/aws-credential-propagation |
+| IAM roles for every workload type, per user or service account, cross-account | **IRSA through Domsed** or **EKS Pod Identity** (blueprints) | Platform team with Domino Professional Services | [AWS-IRSA.md](./AWS-IRSA.md) |
+| An S3 bucket as a browsable local filesystem | **Mountpoint for Amazon S3 CSI driver** registered as a Generic EDV (blueprint) | Kubernetes and Domino admins | [S3-MOUNTPOINT.md](./S3-MOUNTPOINT.md) |
+| Each user's Entra ID identity against Blob, ADLS Gen2, Databricks or Azure SQL | **Azure Entra user-token propagation** through Keycloak token exchange (blueprint) | Keycloak admin with Domino Professional Services | [AZURE-CREDENTIALS.md](./AZURE-CREDENTIALS.md) |
+| Anything else | Install the client library, store credentials as Project or user environment variables, fetch in code; not officially supported | User | https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/access-external-data-directly |
 
-## Related Documentation
+Blueprints are Professional Services guides, indexed at
+https://docs.domino.ai/cloud/examples/blueprints with code in
+https://github.com/dominodatalab/domino-blueprints. They are not product documentation and change
+without release notes; confirm with your Domino contact before adopting one.
 
-- [S3-MOUNTPOINT.md](./S3-MOUNTPOINT.md) - AWS S3 as local file system
-- [AWS-IRSA.md](./AWS-IRSA.md) - AWS IAM Role for Service Accounts
-- [AZURE-CREDENTIALS.md](./AZURE-CREDENTIALS.md) - Azure Entra ID integration
+Decision rules: prefer a Data Source whenever the store has a connector (shareable, audited,
+no credentials in code). Use an EDV when code needs POSIX file semantics on a shared filesystem.
+Use credential propagation when access must be attributable to the user in the cloud provider's
+own audit log. Use Mountpoint only for S3 and only for read-heavy, large-file workloads.
 
-## Quick Start
+## Quick start
 
-### Accessing S3 Data
+Data Source from Python (the domino-data-sdk skill has the full API):
 
-With Mountpoint S3 configured, access S3 as a local file system:
+```python
+from domino_data.data_sources import DataSourceClient
+
+s3 = DataSourceClient().get_datasource("s3-datalake")
+s3.download_file("raw/sales.parquet", "/tmp/sales.parquet")
+```
+
+EDV: read it as a directory. The path is listed under **Data > External Data Volumes** in the
+Project.
 
 ```python
 import pandas as pd
 
-# S3 data appears as local files
-df = pd.read_parquet("/mnt/s3-data/datasets/sales.parquet")
+df = pd.read_parquet("/domino/edv/finance-share/datasets/sales.parquet")
 ```
 
-### Using IRSA for AWS Services
-
-With IRSA configured, AWS SDK uses automatic credentials:
+AWS SDK with a propagated identity (SAML credential propagation or IRSA): no keys in code.
 
 ```python
 import boto3
 
-# No explicit credentials needed - IRSA provides them
-s3 = boto3.client('s3')
-response = s3.list_objects_v2(Bucket='my-bucket')
+print(boto3.client("sts").get_caller_identity()["Arn"])   # confirm which identity you hold
+objects = boto3.client("s3").list_objects_v2(Bucket="my-bucket", Prefix="raw/")
 ```
 
-### Accessing External Data Volumes
+## Reference files
 
-EDVs are mounted at configured paths:
+| File | Contents |
+|---|---|
+| [EXTERNAL-DATA-VOLUMES.md](./EXTERNAL-DATA-VOLUMES.md) | PVC labels and types, registration wizard, mount path, access control, troubleshooting |
+| [AWS-IRSA.md](./AWS-IRSA.md) | Documented AWS options, then the IRSA and EKS Pod Identity blueprints with the Domsed mutation |
+| [S3-MOUNTPOINT.md](./S3-MOUNTPOINT.md) | Mountpoint CSI driver install, PV/PVC, EDV registration, usage, limits |
+| [AZURE-CREDENTIALS.md](./AZURE-CREDENTIALS.md) | Entra app, Keycloak OIDC provider and token exchange, `domino_aad` usage, RBAC |
 
-```python
-# Read from external volume
-with open("/mnt/external-data/config.json") as f:
-    config = json.load(f)
-```
-
-## When to Use Each Option
-
-### Use S3 Mountpoint When:
-- Working with large datasets stored in S3
-- Need file system interface to S3
-- Want to avoid EFS costs for large data
-- Require multi-region data access
-
-### Use IRSA When:
-- Need AWS service access from Domino workloads
-- Policy prohibits long-lived credentials
-- Require user-level audit trails
-- Need cross-account role assumption
-
-### Use Azure Entra When:
-- Working with Azure data services
-- Need OAuth-based authentication
-- Require user-level access control
-- Need centralized RBAC
-
-## Blueprint References
-
-- [S3 Mountpoint Blueprint](https://domino.ai/resources/blueprints/transforming-s3-into-local-storage)
-- [AWS IRSA Blueprint](https://domino.ai/resources/blueprints/aws-irsa)
-- [Azure Credential Propagation Blueprint](https://domino.ai/resources/blueprints/domino-azure-credential-propagation)
-
-## GitHub Repository
-
-Implementation templates available at:
-https://github.com/dominodatalab/domino-blueprints
+Related skills: domino-data-sdk (Data API code), domino-datasets (Domino-managed storage),
+netapp-volumes (ONTAP-backed volumes), domino-api-intro (authentication to the Domino API).

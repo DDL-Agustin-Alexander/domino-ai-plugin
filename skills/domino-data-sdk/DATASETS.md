@@ -1,215 +1,127 @@
-# Domino Datasets API
+# Dataset files with DatasetClient
 
-The `DatasetClient` provides programmatic access to Domino Datasets for reading files.
+`DatasetClient` reads files from a Domino Dataset through the Data Source proxy, with the
+caller's permissions. It is read-only: list, fetch, download and signed URLs. To write, use the
+Dataset's mount path inside an execution, the UI, `domino upload-dataset`, or the
+`/api/datasetrw` routes (domino-datasets skill).
 
-## DatasetClient
+Docs: https://docs.domino.ai/cloud/reference/api/data_api/datasource_usecases/access-datasets-via-proxy.
+Source: `domino_data/datasets.py`.
 
-### Initialization
+## When to use it instead of the mount
+
+- Code that runs where the Dataset is not mounted: an App serving many users, an endpoint, or
+  an execution in another Project.
+- Reading a specific snapshot by ID without relying on mount paths.
+- Otherwise read the mount (`/domino/datasets/local/<name>` or `/mnt/data/<name>`); it is
+  faster and simpler.
+
+## Client
 
 ```python
-from domino_data.datasets import DatasetClient
+from domino_data.datasets import DatasetClient, DatasetConfig
 
-# Auto-configured inside Domino
-client = DatasetClient()
+client = DatasetClient()     # kwargs api_key, token_file, token_url, token; defaults from env
+dataset = client.get_dataset("dataset-training-data-6503324fa1eb367359734bfd")
 ```
 
-### Environment Variables
+`get_dataset` takes the Dataset's unique identifier, which the UI prints in the code snippet
+on the Dataset's page (**Data > Datasets** > the Dataset > **Code snippet**); it is not simply
+the display name. Authentication follows the same order as `DataSourceClient` (see SKILL.md).
 
-The client uses these environment variables (auto-set in Domino):
-
-| Variable | Purpose |
-|----------|---------|
-| `DOMINO_TOKEN_FILE` | Token file location (preferred auth method) |
-| `DOMINO_API_PROXY` | API proxy URL |
-| `DOMINO_USER_API_KEY` | API key — deprecated, will be removed |
-
-## Get Dataset
+## Reading files
 
 ```python
-# Fetch dataset by name
-dataset = client.get_dataset("training-data")
-
-# Dataset is now ready for file operations
-```
-
-## List Files
-
-```python
-# List all files
-files = dataset.list_files()
-
-# List with prefix filter
-files = dataset.list_files(prefix="images/train/", page_size=500)
-
-# Iterate through files
+files = dataset.list_files(prefix="images/train/", page_size=500)   # list of _File
 for f in files:
     print(f.name)
-```
 
-## Download Files
+content = dataset.get("config.json")                     # bytes
+dataset.download_file("model.pkl", "/tmp/model.pkl")     # streamed to disk
+dataset.download("huge.parquet", "/tmp/huge.parquet", max_workers=16)   # ranged, parallel
 
-### Simple Download
-
-```python
-# Download file to local path
-dataset.download_file("model.pkl", "local_model.pkl")
-```
-
-### Parallel Download (Large Files)
-
-```python
-# Download with multiple workers for speed
-dataset.download(
-    dataset_file_name="large_dataset.parquet",
-    local_file_name="local_data.parquet",
-    max_workers=8
-)
-```
-
-### Download to File Object
-
-```python
-# Download to file-like object
-with open("output.bin", "wb") as f:
-    dataset.download_fileobj("binary_file.bin", f)
-
-# Useful for streaming or in-memory processing
 import io
-buffer = io.BytesIO()
-dataset.download_fileobj("data.json", buffer)
-buffer.seek(0)
-data = json.load(buffer)
+buf = io.BytesIO()
+dataset.download_fileobj("data.json", buf)               # any object with write(bytes)
+buf.seek(0)
+
+url = dataset.get_file_url("large_file.zip")             # signed, read-only URL
 ```
 
-## Get File Content
+Per-file handles carry the same operations:
 
 ```python
-# Get file content as bytes
-content = dataset.get("config.json")
+f = dataset.File("path/to/file.csv")
+f.get(); f.download_file("local.csv"); f.download("local.csv", max_workers=4)
+with open("out.csv", "wb") as out:
+    f.download_fileobj(out)
+```
 
-# Parse JSON
-import json
-config = json.loads(content)
+Lower-level calls on the client take the unique name directly:
+`client.list_files(dataset_unique_name, prefix, page_size)` returns a list of path strings and
+`client.get_file_url(dataset_unique_name, file_name)` returns the signed URL.
 
-# Read CSV
+## Read a snapshot or a subfolder
+
+`DatasetConfig` has two fields, `snapshot_id` and `subfolder`. Without an override the
+read-write (live) snapshot is used.
+
+```python
+dataset.update(DatasetConfig(snapshot_id="649cb4dedeb75c31b6e7dafb"))
+baseline = dataset.get("features.parquet")
+dataset.reset_config()                                     # back to live data
+```
+
+Snapshot IDs come from `GET /api/datasetrw/v1/datasets/{datasetId}/snapshots` or the Dataset's
+snapshot list in the UI.
+
+## Patterns
+
+Parquet without touching disk:
+
+```python
+import io
 import pandas as pd
-import io
-csv_content = dataset.get("data.csv")
-df = pd.read_csv(io.BytesIO(csv_content))
+
+df = pd.read_parquet(io.BytesIO(dataset.get("data/features.parquet")))
 ```
 
-## Get Signed URLs
+Concatenate CSVs under a prefix:
 
 ```python
-# Get signed URL for direct access
-url = dataset.get_file_url("large_file.zip")
-
-# Use with requests or other HTTP clients
-import requests
-response = requests.get(url)
+parts = [pd.read_csv(io.BytesIO(dataset.get(f.name)))
+         for f in dataset.list_files(prefix="data/", page_size=1000) if f.name.endswith(".csv")]
+df = pd.concat(parts, ignore_index=True)
 ```
 
-## File Object Operations
-
-The `_File` class represents individual files:
+App reading on behalf of the signed-in user (Domino passes the user's bearer token on each
+request to the App):
 
 ```python
-# Get file object
-file = dataset.File("path/to/file.csv")
-
-# Get content as bytes
-content = file.get()
-
-# Download to local file
-file.download_file("local.csv")
-
-# Download with parallelism
-file.download("local.csv", max_workers=4)
-
-# Download to file-like object
-with open("output.csv", "wb") as f:
-    file.download_fileobj(f)
+token = request.headers.get("Authorization", "")[7:]
+dataset = DatasetClient(token=token).get_dataset("dataset-training-data-6503324fa1eb367359734bfd")
 ```
 
-## Configuration Override
-
-```python
-from domino_data.datasets import DatasetConfig
-
-# Override configuration for this session
-config = DatasetConfig(
-    # Configuration options
-)
-dataset.update(config)
-
-# Reset to default
-dataset.reset_config()
-```
-
-## Error Handling
+## Errors
 
 ```python
 from domino_data.datasets import DominoError, UnauthenticatedError
+import httpx
 
 try:
-    content = dataset.get("file.txt")
+    content = dataset.get("missing.txt")
 except UnauthenticatedError:
-    print("Authentication failed - check credentials")
+    print("no valid Domino token")
+except httpx.HTTPStatusError as e:
+    print(f"HTTP {e.response.status_code} fetching the file")   # 404 for a missing path
 except DominoError as e:
-    print(f"Dataset error: {e}")
-except FileNotFoundError:
-    print("File not found in dataset")
+    print(f"dataset error: {e}")
 ```
 
-## Common Patterns
+## Practices
 
-### Load Parquet Dataset
-
-```python
-import pandas as pd
-import pyarrow.parquet as pq
-import io
-
-content = dataset.get("data.parquet")
-df = pd.read_parquet(io.BytesIO(content))
-```
-
-### Load Multiple Files
-
-```python
-import pandas as pd
-
-# List CSV files
-files = dataset.list_files(prefix="data/", page_size=1000)
-csv_files = [f for f in files if f.name.endswith('.csv')]
-
-# Load and concatenate
-dfs = []
-for f in csv_files:
-    content = dataset.get(f.name)
-    dfs.append(pd.read_csv(io.BytesIO(content)))
-
-combined_df = pd.concat(dfs, ignore_index=True)
-```
-
-### Stream Large Files
-
-```python
-# For very large files, use parallel download
-dataset.download(
-    "huge_file.parquet",
-    "/tmp/huge_file.parquet",
-    max_workers=16
-)
-
-# Then read with memory mapping
-df = pd.read_parquet("/tmp/huge_file.parquet")
-```
-
-## Best Practices
-
-1. **Use parallel downloads**: Set `max_workers` for large files
-2. **Pagination**: Use `page_size` when listing many files
-3. **Stream when possible**: Use `download_fileobj` for processing
-4. **Cache locally**: Download frequently-used files once
-5. **Handle errors**: Wrap operations in try/except
+1. Prefer the mount path when the Dataset is mounted; use the client for Apps, endpoints and
+   cross-Project reads.
+2. `max_workers` on `download` for files over a few hundred MB; `page_size` on `list_files`.
+3. Pin `snapshot_id` in anything that must be reproducible.
+4. Cache downloads under `/tmp` within an execution instead of fetching twice.
