@@ -2,5 +2,5 @@
 type: regex
 target: last_message
 match: not_contains
-pattern: 'minReplicas|HorizontalPodAutoscaler|autoscaling/v2'
+pattern: 'minReplicas\s*:|kind:\s*HorizontalPodAutoscaler|apiVersion:\s*autoscaling/v2'
 ---
