@@ -23,7 +23,7 @@ The plugin helps AI assistants with all aspects of Domino Data Lab, including:
 
 | Component | Claude Code | ChatGPT / Codex | Cursor |
 | --- | --- | --- | --- |
-| `skills/` (30 skills) | ✅ | ✅ | ✅ |
+| `skills/` (31 skills) | ✅ | ✅ | ✅ |
 | Domino MCP server (`mcp-servers/`) | ✅ via `.mcp.json` (stdio) | Codex local install: ✅ via `mcp.json` (stdio). Public directory: needs a hosted HTTPS endpoint (see [OpenAI build](#openai-build)) | ✅ via `.cursor-plugin/mcp.json` (stdio; Cursor asks for `DOMINO_HOST` and `DOMINO_API_KEY` at install) |
 | Domino docs MCP server (`https://docs.domino.ai/mcp`) | ✅ via `.mcp.json` | Codex local install: ✅ via `mcp.json`. Not in the public directory package | ✅ via `.cursor-plugin/mcp.json` |
 | Always-on Domino guidance (`rules/domino.md`) | ✅ loaded at every session start by a `SessionStart` hook | Codex local install: the lead section, as the bundled MCP server's instructions. Not available to skills-only directory plugins | ✅ always-applied plugin rule (`alwaysApply: true`) |
@@ -319,7 +319,7 @@ DFS-based projects.
 
 Requires `uv`.
 
-### Skills (30 total)
+### Skills (31 total)
 
 | Skill | Description |
 | --- | --- |
@@ -345,7 +345,8 @@ Requires `uv`.
 | `domino-governance` | Policies, bundles, and evidence for model risk governance |
 | `domino-flows` | Flyte-based workflow orchestration |
 | `domino-distributed-computing` | Spark, Ray, Dask cluster management |
-| `domino-llm-access` | Call LLMs from Domino: provider SDKs, Domino-hosted vLLM endpoints, LLM Gateway 2.0, legacy AI Gateway (6.3) |
+| `domino-llm-access` | Which LLM path to use: provider SDKs, Domino-hosted vLLM endpoints, legacy AI Gateway (6.3) |
+| `domino-llm-gateway` | Call models through LLM Gateway 2.0: aliases, in-run token, OpenAI and Anthropic SDKs, coding assistants, admin overview |
 | `domino-launchers` | Parameterized web forms for self-service |
 | `domino-modeling-assistant` | MCP server for AI-assisted model development |
 | `domino-data-connectivity` | S3 Mountpoint, AWS IRSA, Azure credentials |
@@ -386,7 +387,7 @@ domino-ai-plugin/
 ├── .mcp.json                    # Claude MCP config (stdio)
 ├── mcp.json                     # Portable MCP config (stdio) for Codex local installs
 ├── assets/logo.svg              # OpenAI listing icon (square)
-├── skills/                      # Shared, provider-neutral skills (30)
+├── skills/                      # Shared, provider-neutral skills (31)
 ├── mcp-servers/domino_mcp_server/
 ├── evals/                       # claude plugin eval cases (not shipped to OpenAI)
 ├── agents/                      # Claude-only subagents
