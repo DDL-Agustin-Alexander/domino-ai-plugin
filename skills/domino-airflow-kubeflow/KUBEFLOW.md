@@ -1,9 +1,10 @@
 # Kubeflow Pipelines and Domino Jobs
 
 Sources: https://docs.domino.ai/cloud/platform-capabilities/features/integrations (Kubeflow tab),
-KFP v2 component and `kfp-kubernetes` documentation. Domino ships no Kubeflow-specific package;
-the integration is "install `dominodatalab` (or just `requests`) in the component and call the
-Domino API", which is what the product page describes.
+KFP v2 component documentation on kubeflow.org, the `kfp-kubernetes` README. Domino ships no
+Kubeflow-specific package; the integration is "install a client in the component and call the
+Domino API", which is what the product page describes (it names `dominodatalab`; `requests`
+alone is enough for the Public API and is what the examples below use).
 
 ## Architecture
 
@@ -14,11 +15,12 @@ needs. The real work is the Domino Job, versioned in the Domino project.
 
 ## Credentials
 
-Create a Kubernetes Secret in the KFP namespace holding a Personal Access Token or a
-service-account token (not a legacy API key, which the product page still mentions):
+Create a Kubernetes Secret in the namespace where the pipeline's pods run (in multi-user KFP
+that is the user's profile namespace, not `kubeflow`) holding a Personal Access Token or a
+service-account token, not a legacy API key (the product page still mentions one):
 
 ```bash
-kubectl -n kubeflow create secret generic domino-token --from-literal=token='<PAT or service-account token>'
+kubectl -n <pipeline namespace> create secret generic domino-token --from-literal=token='<PAT or service-account token>'
 ```
 
 Expose it to the task as an environment variable with `kfp-kubernetes`:
@@ -32,7 +34,7 @@ from kfp import kubernetes
 kubernetes.use_secret_as_env(task, secret_name="domino-token", secret_key_to_env={"token": "DOMINO_TOKEN"})
 ```
 
-## Component with the Public API
+## Components on the Public API
 
 ```python
 from kfp import dsl, kubernetes
@@ -40,7 +42,7 @@ from kfp import dsl, kubernetes
 @dsl.component(base_image="python:3.11", packages_to_install=["requests"])
 def run_domino_job(domino_url: str, project_id: str, run_command: str,
                    environment_id: str = "", hardware_tier: str = "") -> str:
-    """Start a Domino Job, wait for it, return the output commit id."""
+    """Start a Domino Job, wait for it, return the output commit id. Fails on Failed, Error, Stopped."""
     import os, time, requests
     headers = {"Authorization": f"Bearer {os.environ['DOMINO_TOKEN']}"}
     body = {"projectId": project_id, "runCommand": run_command, "title": "kubeflow"}
@@ -51,13 +53,19 @@ def run_domino_job(domino_url: str, project_id: str, run_command: str,
     r = requests.post(f"{domino_url}/api/jobs/v1/jobs", headers=headers, json=body, timeout=60)
     r.raise_for_status()
     job_id = r.json()["job"]["id"]
+    print(f"Domino job {job_id} started")           # visible in the KFP UI; open it in Domino from there
     while True:
         job = requests.get(f"{domino_url}/api/jobs/beta/jobs/{job_id}", headers=headers, timeout=60).json()["job"]
         if job["status"]["isCompleted"]:
             break
         time.sleep(30)
-    if job["status"]["executionStatus"] != "Succeeded":
-        raise RuntimeError(f"Domino job {job_id} ended {job['status']['executionStatus']}")
+    state = job["status"]["executionStatus"]
+    if state != "Succeeded":
+        logs = requests.get(f"{domino_url}/api/jobs/beta/jobs/{job_id}/logs", headers=headers,
+                            params={"logType": "stdErr", "limit": 200}, timeout=60).json()
+        for line in logs["logs"]["logContent"][-50:]:
+            print(line["log"])
+        raise RuntimeError(f"Domino job {job_id} ended {state}")
     return job["commitDetails"]["outputCommitId"]
 
 
@@ -98,22 +106,9 @@ Chaining Jobs that must run on the previous step's results **inside Domino** (sa
 pass `train.output` as the next Job's `commitId` on a DFS project, or let the next Job read from
 the Dataset the first one wrote to.
 
-## Component with python-domino
-
-```python
-@dsl.component(base_image="python:3.11", packages_to_install=["dominodatalab"])
-def run_with_sdk(domino_url: str, project: str, run_command: str) -> str:
-    import os
-    from domino import Domino
-    d = Domino(project, host=domino_url, auth_token=os.environ["DOMINO_TOKEN"])   # project = "owner/name"
-    status = d.job_start_blocking(command=run_command, poll_freq=30, max_poll_time=4 * 3600)
-    return status["id"]
-```
-
-`job_start_blocking` raises `RunFailedException` on failure and returns the Job object from the
-v4 Jobs API (`id`, `statuses.executionStatus`, `commitDetails`, ...; **internal API, may change
-between Domino versions**; python-domino owns that dependency). The `Domino(...)` constructor contacts the deployment's `/version` endpoint, so a
-pod without network access fails there. Never pass `api_key=`.
+Prefer this over a python-domino client inside the component: `job_start_blocking` raises only
+on `Failed` (not on `Error` or `Stopped`) and depends on the v4 Jobs API, which is internal. If
+you still want the client, see [domino-python-sdk](../domino-python-sdk/SKILL.md).
 
 ## Operational notes
 
@@ -121,7 +116,6 @@ pod without network access fails there. Never pass `api_key=`.
   many parallel steps otherwise turns into a steady stream of status calls.
 - A KFP retry re-submits the Job; make Jobs idempotent (overwrite the day's partition) or guard
   with a check on the latest completed Job (`GET /api/jobs/beta/jobs?projectId=...&statusFilter=completed`).
-- Logs stay in Domino; print the Job id in the component so operators can open it from the KFP
-  UI. Pull `stdErr` on failure as the example does.
+- Logs stay in Domino; the component prints the Job id and, on failure, the tail of `stdErr`.
 - `hardwareTier` in the Public body is the tier **id** (the spec example is `small-k8s`), not the
   display name python-domino's `hardware_tier_name` takes.

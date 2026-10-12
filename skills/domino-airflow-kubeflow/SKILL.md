@@ -1,6 +1,6 @@
 ---
 name: domino-airflow-kubeflow
-description: Run Domino Jobs from an external orchestrator. Covers Apache Airflow (python-domino's DominoOperator and DominoSparkOperator, or a PythonOperator that calls the Jobs API), Kubeflow Pipelines (a KFP component that starts a Job over REST or python-domino and polls it), installing python-domino on workers, credentials outside Domino (Personal Access Token or service-account token, never an API key), network reachability, mapping DAG tasks to Jobs, polling status, fetching logs and results. Use when the user mentions Airflow, a DAG, DominoOperator, Kubeflow, KFP, an external scheduler or orchestrator, or wants a pipeline that lives outside Domino to trigger and wait for Domino Jobs. For pipelines inside Domino use domino-flows; for a recurring single Job use a scheduled Job (domino-jobs).
+description: Run Domino Jobs from an external orchestrator. Covers Apache Airflow (a PythonOperator task on the Public Jobs API, or python-domino's DominoOperator and DominoSparkOperator), Kubeflow Pipelines (a KFP component that starts a Job over REST and polls it), installing python-domino on workers, credentials outside Domino (Personal Access Token or service-account token, never an API key), network reachability, mapping DAG tasks to Jobs, polling status, fetching logs and results. Use when the user mentions Airflow, a DAG, DominoOperator, Kubeflow, KFP, an external scheduler or orchestrator, or wants a pipeline that lives outside Domino to trigger and wait for Domino Jobs. For pipelines inside Domino use domino-flows; for a recurring single Job use a scheduled Job (domino-jobs).
 compatibility: Domino 6.3 and Domino Cloud. The orchestrator runs outside Domino, so it needs the deployment URL and a Personal Access Token or service-account token; DOMINO_API_PROXY and the localhost:8899 access-token endpoint exist only inside Domino runs. python-domino 2.x (the Airflow operators ship with it).
 ---
 
@@ -24,8 +24,8 @@ lives in the Domino project. Domino keeps reproducibility, the orchestrator keep
 ## What the orchestrator needs
 
 1. **Network path** from its workers to the Domino deployment URL (the one users open in a
-   browser). Nothing from inside a run (`DOMINO_API_PROXY`, `localhost:8899`,
-   `http://127.0.0.1:8763`) exists on an Airflow worker or a KFP pod.
+   browser), exported as `DOMINO_API_HOST` on the worker. Nothing from inside a run
+   (`DOMINO_API_PROXY`, `localhost:8899`, `127.0.0.1:8763`) exists on an Airflow worker or a KFP pod.
 2. **A token**: a Personal Access Token for a pipeline that acts as you, or a service-account
    token for unattended automation, kept in the orchestrator's secret store. Legacy user API
    keys are deprecated; the product page and python-domino's example still show
@@ -33,97 +33,80 @@ lives in the Domino project. Domino keeps reproducibility, the orchestrator keep
    https://docs.domino.ai/cloud/reference/api/domino-api-authentication
 3. **Project id and command** per step, plus optional environment id and hardware tier id.
 
-## Airflow in one screen
+## Airflow: recommended pattern (Public Jobs API, `requests` only)
 
-```bash
-pip install dominodatalab     # on every Airflow worker; the [airflow] extra pins apache-airflow==2.2.4, so skip it on an existing Airflow
-```
+Works on Airflow 2 and 3, installs under Airflow's constraints, and fails the task on every
+non-success outcome:
 
 ```python
+from datetime import datetime
 from airflow import DAG
-from airflow.models import Variable
-from domino.airflow import DominoOperator
+from airflow.decorators import task
 
-with DAG("domino_pipeline", schedule="@daily", catchup=False) as dag:
-    train = DominoOperator(
-        task_id="train",
-        project="acme/churn",
-        host=Variable.get("DOMINO_API_HOST"),            # deployment URL
-        domino_token_file="/var/run/secrets/domino/token",  # file whose first line is the PAT or SA token
-        command=["train.py", "--epochs", "20"],          # list: file first, then arguments
-        tier="Medium",                                   # hardware tier NAME, validated before start
-        max_poll_time=2 * 60 * 60,
-    )
-```
-
-`DominoOperator` starts the Job through python-domino's `runs_start_blocking` (legacy v1 Runs
-API), polls until it finishes, replays the Job log into the task log and fails the task if the
-Job did not succeed. `DominoSparkOperator` does the same through `job_start_blocking` (v4 Jobs
-API, internal) and adds `environment_id`, `hardware_tier_name` and `compute_cluster_properties`
-for a Spark, Ray, Dask or MPI cluster. Neither accepts `auth_token`, so a token goes in through
-`domino_token_file` (or the `DOMINO_TOKEN_FILE` environment variable on the worker). Parameter
-tables, a PythonOperator alternative on the Public API, XCom: [AIRFLOW.md](./AIRFLOW.md).
-
-## Kubeflow in one screen
-
-No Domino-specific KFP component exists; the product page says to install `dominodatalab` on the
-cluster and call the API. A lightweight component that starts a Job and waits:
-
-```python
-from kfp import dsl, kubernetes
-
-@dsl.component(base_image="python:3.11", packages_to_install=["requests"])
-def run_domino_job(domino_url: str, project_id: str, run_command: str) -> str:
+@task
+def run_domino_job(run_command: str) -> str:
     import os, time, requests
-    h = {"Authorization": f"Bearer {os.environ['DOMINO_TOKEN']}"}
-    job = requests.post(f"{domino_url}/api/jobs/v1/jobs", headers=h,
-                        json={"projectId": project_id, "runCommand": run_command}).json()["job"]
-    while True:
-        job = requests.get(f"{domino_url}/api/jobs/beta/jobs/{job['id']}", headers=h).json()["job"]
-        if job["status"]["isCompleted"]:
-            break
+    base = os.environ["DOMINO_API_HOST"].rstrip("/")          # deployment URL, set on the worker
+    headers = {"Authorization": "Bearer " + open(os.environ["DOMINO_TOKEN_FILE"]).readline().strip()}
+    job = requests.post(f"{base}/api/jobs/v1/jobs", headers=headers, timeout=60,
+                        json={"projectId": os.environ["DOMINO_PROJECT_ID"], "runCommand": run_command}).json()["job"]
+    while not job["status"]["isCompleted"]:
         time.sleep(30)
-    if job["status"]["executionStatus"] != "Succeeded":
+        job = requests.get(f"{base}/api/jobs/beta/jobs/{job['id']}", headers=headers, timeout=60).json()["job"]
+    if job["status"]["executionStatus"] != "Succeeded":         # Stopped, Failed or Error
         raise RuntimeError(f"Domino job {job['id']} ended {job['status']['executionStatus']}")
     return job["commitDetails"]["outputCommitId"]
 
-@dsl.pipeline(name="domino-train")
-def pipeline(domino_url: str, project_id: str):
-    t = run_domino_job(domino_url=domino_url, project_id=project_id, run_command="python train.py")
-    kubernetes.use_secret_as_env(t, secret_name="domino-token", secret_key_to_env={"token": "DOMINO_TOKEN"})
+with DAG("domino_pipeline", start_date=datetime(2026, 1, 1), schedule="@daily", catchup=False):
+    run_domino_job("python train.py 20")
 ```
 
-`pip install kfp[kubernetes]` supplies `kfp.kubernetes`. Chaining steps, passing the output
-commit on, and a python-domino variant: [KUBEFLOW.md](./KUBEFLOW.md).
+The output commit id becomes the task's XCom value; a downstream task reads result files from
+it. Request fields, logs, result hand-off and failure handling: [JOBS-API-PATTERN.md](./JOBS-API-PATTERN.md).
 
-## The Jobs API calls both integrations rely on
+## Airflow: python-domino operators (what the product page documents)
 
-Public API, in both published specs:
+`pip install dominodatalab` ships `domino.airflow.DominoOperator` and `DominoSparkOperator`.
+Read these before choosing them; details and a DAG in [AIRFLOW.md](./AIRFLOW.md):
 
-```text
-POST /api/jobs/v1/jobs                      {projectId, runCommand, title?, environmentId?, hardwareTier?, commitId?, mainRepoGitRef?, computeCluster?}
-GET  /api/jobs/beta/jobs/{jobId}            -> job.status.{isCompleted, executionStatus}, job.commitDetails.outputCommitId
-GET  /api/jobs/beta/jobs/{jobId}/logs       ?logType=stdOut|stdErr|prepareOutput|complete
-GET  /api/projects/v1/projects/{projectId}/files/{commitId}/{path}/content   (read a result file)
-```
+- `DominoOperator` starts Jobs with python-domino's `runs_start_blocking` on the **legacy v1
+  Runs API** (`/v1/projects/{owner}/{project}/runs`; not in the Public API, may change between
+  Domino versions). python-domino's README: use `job_start` for all new development.
+- `DominoSparkOperator` uses `job_start_blocking` on the v4 Jobs API (**internal API, may change
+  between Domino versions**) and takes `environment_id`, `hardware_tier_name` and a Spark, Ray,
+  Dask or MPI `compute_cluster_properties`. It raises only when the Job ends `Failed`; a Job that
+  ends `Error` or `Stopped` returns normally and the task goes green. AIRFLOW.md has a subclass
+  that checks `executionStatus == "Succeeded"`. `DominoOperator` fails on any non-success.
+- `dominodatalab` 2.2.0 pins `packaging==23.2`, `python-dateutil~=2.8.2` and
+  `typing-extensions~=4.13`; Airflow's constraint files pin others (2.10.5: `packaging==24.2`,
+  `python-dateutil==2.9.0.post0`, `typing_extensions==4.12.2`), so a constraints-based install
+  fails to resolve and a plain install downgrades Airflow's dependencies. Give the worker a
+  dedicated virtual environment where those pins are acceptable, or use the pattern above.
+  The `[airflow]` extra pins `apache-airflow==2.2.4`; do not use it on an existing Airflow.
+- Both operators import `airflow.utils.decorators.apply_defaults`, removed in Airflow 3.0.
+- Neither accepts `auth_token`: pass a token file as `domino_token_file` or set `DOMINO_TOKEN_FILE`.
 
-Full polling helper, result hand-off between steps and failure handling:
-[JOBS-API-PATTERN.md](./JOBS-API-PATTERN.md).
+## Kubeflow in one screen
+
+No Domino-specific KFP component exists; the product page says to install a client on the
+cluster and call the API. The same `requests` function as the Airflow task above, wrapped in
+`@dsl.component(base_image="python:3.11", packages_to_install=["requests"])`, with the token
+mounted from a Kubernetes Secret by `kfp.kubernetes.use_secret_as_env(task, secret_name=...,
+secret_key_to_env={"token": "DOMINO_TOKEN"})` (`pip install kfp[kubernetes]`). The component
+returns the output commit id so the next component can read a result file from it. Full
+components, pipeline, secret creation and logs on failure: [KUBEFLOW.md](./KUBEFLOW.md).
 
 ## Pitfalls
 
 - `DominoOperator.command` is a **list**; with `isDirect=True` pass the whole shell command as
   its single element (`command=["python -V"]`).
-- `tier` on `DominoOperator` is validated against hardware tier **names** visible to the project;
-  a wrong name raises before anything starts.
+- `tier` on `DominoOperator` is validated against hardware tier **names** visible to the project.
 - Constructing `Domino(...)` calls the deployment's `/version` endpoint, so a worker with no
   network path to Domino fails at client creation, not at Job start.
 - Default `max_poll_time` is 6000 s (100 min); longer Jobs need a larger value or the task fails
   while the Job keeps running.
-- python-domino reads `DOMINO_API_HOST` (host) and `DOMINO_TOKEN_FILE` from the environment; the
+- python-domino reads `DOMINO_API_HOST` and `DOMINO_TOKEN_FILE` from the environment; the
   product page's `DOMINO_API_KEY` is an Airflow Variable name, not something the SDK reads.
-- The operators import `airflow.utils.decorators.apply_defaults`, a deprecated no-op in Airflow 2
-  that Airflow 3.0 removed. On Airflow 3 use the PythonOperator pattern in AIRFLOW.md.
 - Each step is a separate Job with its own input commit; hand data between steps through
   Datasets, Data Sources or the output commit, not the local filesystem.
 

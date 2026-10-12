@@ -7,15 +7,17 @@ auth and load-balancing layer) and pushes it to a registry you own.
 
 **Every `/v4/...` route in this file is Domino Internal API, may change between Domino versions.**
 They are not in the Public API spec; each cluster documents them under
-`https://<domino-domain>/docs` (`openapi-internal.json`). Field lists below come from that
-reference on a Domino Cloud cluster and from the product page.
+`https://<domino-domain>/docs` (`openapi-internal.json`). The routes come from the product page
+(Cloud and 6.3 are identical); the field lists and required flags below come from one Domino
+Cloud cluster's reference (reporting version 6.4.0). Before relying on them on Domino 6.3, read
+that deployment's own `/docs/openapi/openapi-internal.json`.
 
 ## Authentication for a pipeline
 
 A CI/CD runner is outside Domino, so use the deployment URL and a Bearer token:
 
 ```bash
-BASE="https://<deployment URL users open in a browser>"
+BASE="$DOMINO_API_HOST"                      # outside Domino: export DOMINO_API_HOST=<deployment URL users open in a browser>
 AUTH="Authorization: Bearer $DOMINO_TOKEN"   # Personal Access Token or service-account token from the CI secret store
 ```
 
@@ -41,11 +43,11 @@ curl -sS -X POST "$BASE/v4/models/buildModelImage" -H "$AUTH" -H "Content-Type: 
 | Field | Required | Meaning |
 |---|---|---|
 | `projectId` | yes | project whose files and environment are packaged |
-| `modelName` | yes | name of the model in Domino; reuse it to add a version to an existing model |
+| `modelName` | yes | name of the model in Domino |
 | `inferenceFunctionFile`, `inferenceFunctionToCall` | yes | file and function Domino calls per request |
 | `logHttpRequestResponse` | yes (cluster reference) | log request and response payloads for the model |
 | `environmentId` | no | defaults to the project default environment |
-| `modelId` | no | build a new version of an existing model instead of a new model |
+| `modelId` | no | build a new version of this existing model instead of creating a model |
 | `description` | no | free text |
 
 Response: `202 Accepted` with `modelId` and `modelVersionId` (the build continues in the
@@ -77,8 +79,9 @@ curl -sS -X POST "$BASE/v4/models/$MODEL_ID/$MODEL_VERSION_ID/exportImageToRegis
 ```
 
 `registryUrl` and `repository` are required; `tag`, `username`, `password` are optional on the
-cluster reference but a private registry needs the credentials. The export fails when the tag
-already exists in the repository, so derive the tag from the version or the pipeline run.
+cluster reference but a private registry needs the credentials. Derive the tag from the model
+version or the pipeline run so re-runs never collide (the product page documents a collision
+failure for the NVIDIA export; do not count on other registries overwriting silently either).
 
 ### 4. Poll the export, then read its logs
 
@@ -102,8 +105,9 @@ GET /api/modelServing/v1/modelApis/{modelApiId}/versions/{modelApiVersionId}/exp
 
 ```bash
 #!/usr/bin/env bash
-# Needs: BASE, DOMINO_TOKEN, PROJECT_ID, ENVIRONMENT_ID, REGISTRY_USER, REGISTRY_PASSWORD, TAG
+# scripts/export-model.sh. Needs: DOMINO_API_HOST, DOMINO_TOKEN, PROJECT_ID, ENVIRONMENT_ID, REGISTRY_USER, REGISTRY_PASSWORD, TAG
 set -euo pipefail
+BASE="$DOMINO_API_HOST"
 AUTH="Authorization: Bearer $DOMINO_TOKEN"
 # field <key>: print one key from a JSON object (or from the first element if the server wraps it in an array)
 field() { python3 -c 'import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; print(d[sys.argv[1]])' "$1"; }
@@ -127,39 +131,52 @@ curl -sS "$BASE/v4/models/$export_id/getExportLogs" -H "$AUTH"
 echo "quay.io/acme/credit-risk:$TAG"
 ```
 
-Store `DOMINO_TOKEN` and the registry credentials as CI secrets (GitHub Actions `secrets.*`,
-Jenkins credentials). The same calls from a GitHub Actions workflow for a Domino **App** are in
-[domino-apps REACT-CICD.md](../domino-apps/REACT-CICD.md).
+### GitHub Actions job that runs it
 
-## python-domino equivalents
+Secrets hold the Domino token (a Personal Access Token, or a service-account token for a
+pipeline that acts as nobody in particular) and the registry credentials; repository variables
+hold the ids. No API key anywhere.
 
-`python-domino` (`pip install dominodatalab`) wraps the export calls; there is no wrapper for
-`buildModelImage`. Methods, verified in `domino/domino.py` on `master`:
-
-| Method | Calls |
-|---|---|
-| `models_list()` | `GET /v4/models` for the client's project |
-| `model_versions_get(model_id)` | versions of a model; each has `_id` and `metadata.number` |
-| `model_version_export(model_id, model_version_id, registry_host, registry_username, registry_password, repository_name, image_tag)` | `exportImageToRegistry` |
-| `model_version_sagemaker_export(...)` (same arguments) | `exportImageForSagemaker` |
-| `model_version_export_status(model_export_id)` | `getExportImageStatus` |
-| `model_version_export_logs(model_export_id)` | `getExportLogs` |
-
-```python
-import os, time
-from domino import Domino
-
-d = Domino("owner/project", host=os.environ["DOMINO_API_HOST"], auth_token=os.environ["DOMINO_TOKEN"])  # PAT outside a run
-export = d.model_version_export(model_id, model_version_id, "quay.io", os.environ["REGISTRY_USER"],
-                                os.environ["REGISTRY_PASSWORD"], "acme/credit-risk", "1.4.0")
-while export.get("status", "").lower() not in ("complete", "failed"):
-    time.sleep(10)
-    export = d.model_version_export_status(export["exportId"])
-print(d.model_version_export_logs(export["exportId"]))
+```yaml
+name: export-model
+on:
+  workflow_dispatch:
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    env:
+      DOMINO_API_HOST: ${{ vars.DOMINO_API_HOST }}        # https://<deployment URL>
+      DOMINO_TOKEN: ${{ secrets.DOMINO_TOKEN }}           # PAT or service-account token, sent as Bearer
+      PROJECT_ID: ${{ vars.DOMINO_PROJECT_ID }}
+      ENVIRONMENT_ID: ${{ vars.DOMINO_ENVIRONMENT_ID }}
+      REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+      REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+      TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/export-model.sh
 ```
 
-Inside a run leave `host` and `auth_token` out: the client picks up `DOMINO_API_PROXY`.
-Never pass `api_key=`.
+Jenkins: the same script with `withCredentials` binding `DOMINO_TOKEN`, `REGISTRY_USER` and
+`REGISTRY_PASSWORD`.
+
+## python-domino methods (reference only)
+
+python-domino wraps the export calls but not the build call. Use the REST calls above in
+examples; the mapping is here so you can read existing code. Usage of the client itself:
+[domino-python-sdk](../domino-python-sdk/SKILL.md). Routes from `domino/routes.py`:
+
+| Method | Calls | API |
+|---|---|---|
+| `models_list()` | `GET /v1/projects/{owner}/{project}/models` | legacy v1, not in the Public API, may change between Domino versions |
+| `model_versions_get(model_id)` | `GET /v1/models/{modelId}/versions` (versions carry `_id`, `metadata.number`) | legacy v1, as above |
+| `model_version_export(model_id, model_version_id, registry_host, registry_username, registry_password, repository_name, image_tag)` | `POST /v4/models/{modelId}/{modelVersionId}/exportImageToRegistry` | internal API |
+| `model_version_sagemaker_export(...)` (same arguments) | `POST /v4/models/{modelId}/{modelVersionId}/exportImageForSagemaker` | internal API |
+| `model_version_export_status(model_export_id)` | `GET /v4/models/{exportId}/getExportImageStatus` | internal API |
+| `model_version_export_logs(model_export_id)` | `GET /v4/models/{exportId}/getExportLogs` | internal API |
+
+Public API replacements for the two listing calls: `GET /api/modelServing/v1/modelApis?projectId=...`
+and `GET /api/modelServing/v1/modelApis/{modelApiId}/versions`.
 
 ## Run the exported image in staging
 

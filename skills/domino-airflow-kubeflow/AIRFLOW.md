@@ -1,45 +1,112 @@
 # Apache Airflow and Domino Jobs
 
 Sources: https://docs.domino.ai/cloud/platform-capabilities/features/integrations (Airflow tab),
-python-domino `domino/airflow/_operator.py`, `domino/authentication.py` and `examples/example_airflow_dag.py`
-on `master` (https://github.com/dominodatalab/python-domino). Everything below was checked
-against that source; parameter names are exact.
-
-## Install on the workers
-
-```bash
-pip install dominodatalab            # on a worker that already runs Airflow
-```
-
-`domino.airflow` only needs `airflow` importable, which an Airflow worker already has. The
-`dominodatalab[airflow]` extra that python-domino's README advertises pins `apache-airflow==2.2.4`
-(`setup.py` on `master`), so on a modern Airflow it would try to replace your Airflow; use the
-extra only in a fresh virtual environment where that version is acceptable. Tasks that call
-Domino need `LocalExecutor` or another executor that runs them on workers with network access to
-the Domino deployment URL.
+python-domino `domino/airflow/_operator.py`, `domino/authentication.py`, `domino/routes.py`,
+`setup.py`, `README.md` and `examples/example_airflow_dag.py` at `Release-2.2.0` / `master`
+(https://github.com/dominodatalab/python-domino), Airflow constraint files 2.10.5 and 2.11.0.
+Parameter names below are exact.
 
 ## Credentials on a worker
 
-python-domino's auth precedence (`domino/authentication.py`): `api_proxy` > `auth_token` >
-`domino_token_file` > `api_key` > env `DOMINO_API_PROXY` > env `DOMINO_TOKEN_FILE` > env
-`DOMINO_USER_API_KEY`. The host comes from the `host` argument or env `DOMINO_API_HOST`.
+Outside Domino there is no API proxy and no access-token sidecar. The worker needs:
 
-The two operators expose `host`, `api_key` and `domino_token_file` only. To stay off API keys:
-
-| Option | How |
+| Variable | Value |
 |---|---|
-| Token file (operator argument) | Write the PAT or service-account token as the first line of a file the worker can read (a mounted Kubernetes Secret, a file deployed by your secrets manager) and pass `domino_token_file="/path/to/token"`. The client re-reads the file on every request, so rotating the token in place needs no restart. |
-| Token file (environment) | Set `DOMINO_TOKEN_FILE=/path/to/token` and `DOMINO_API_HOST=https://<deployment>` in the worker environment and omit `host` and `domino_token_file`. |
-| Token string | Only possible with your own `PythonOperator` (below): `Domino(project, host=..., auth_token=...)`. |
+| `DOMINO_API_HOST` | the deployment URL users open in a browser (python-domino reads the same variable) |
+| `DOMINO_TOKEN_FILE` | path to a file whose first line is a Personal Access Token or service-account token, mounted from the secret store |
 
 Airflow Variables are fine for the host; keep the token out of Variables unless the Variable is
-backed by a secrets backend.
+backed by a secrets backend. Legacy API keys (`DOMINO_USER_API_KEY`, `X-Domino-Api-Key`) are
+deprecated even though python-domino's `example_airflow_dag.py` still uses one.
 
-## `DominoOperator`
+## Recommended: a task on the Public Jobs API
+
+Needs only `requests` (already an Airflow dependency), honours Airflow's constraints, runs on
+Airflow 2 and 3, and fails the task on every outcome other than `Succeeded`.
+
+```python
+from datetime import datetime
+from airflow import DAG
+from airflow.decorators import task
+
+@task
+def run_domino_job(run_command: str, project_id: str, title: str = "airflow") -> str:
+    import os, time, requests
+    base = os.environ["DOMINO_API_HOST"].rstrip("/")
+    headers = {"Authorization": "Bearer " + open(os.environ["DOMINO_TOKEN_FILE"]).readline().strip()}
+    body = {"projectId": project_id, "runCommand": run_command, "title": title}
+    # optional: "environmentId", "hardwareTier" (tier id, e.g. small-k8s), "mainRepoGitRef", "computeCluster"
+    r = requests.post(f"{base}/api/jobs/v1/jobs", headers=headers, json=body, timeout=60)
+    r.raise_for_status()
+    job = r.json()["job"]
+    while not job["status"]["isCompleted"]:
+        time.sleep(30)
+        job = requests.get(f"{base}/api/jobs/beta/jobs/{job['id']}", headers=headers, timeout=60).json()["job"]
+    state = job["status"]["executionStatus"]                     # Succeeded | Failed | Error | Stopped
+    if state != "Succeeded":
+        logs = requests.get(f"{base}/api/jobs/beta/jobs/{job['id']}/logs", headers=headers,
+                            params={"logType": "stdErr", "limit": 200}, timeout=60).json()
+        raise RuntimeError(f"Domino job {job['id']} ended {state}: {logs['logs']['logContent'][-20:]}")
+    return job["commitDetails"]["outputCommitId"]
+
+with DAG("churn_pipeline", start_date=datetime(2026, 1, 1), schedule="0 2 * * *", catchup=False):
+    prepared = run_domino_job.override(task_id="prepare_data")("python prepare.py {{ ds }}", "<project id>")
+    trained = run_domino_job.override(task_id="train")("python train.py {{ ds }}", "<project id>")
+    prepared >> trained
+```
+
+The return value (the Job's output commit id) is the task's XCom; a downstream task can pass it
+as `commitId` on a DFS project or read a result file with
+`GET /api/projects/v1/projects/{projectId}/files/{commitId}/{path}/content`. `{{ ds }}` is
+rendered because `op_args` of a `@task` are templated. Polling, logs and result hand-off:
+[JOBS-API-PATTERN.md](./JOBS-API-PATTERN.md).
+
+## python-domino operators
+
+The product page documents both integrations through python-domino, so the operators are the
+documented route; they come with the constraints below.
+
+### Install
+
+`dominodatalab` 2.2.0 (`setup.py`) pins `packaging==23.2`, `python-dateutil~=2.8.2`,
+`typing-extensions~=4.13`, `beautifulsoup4~=4.11`, `polling2~=0.5.0`, `frozendict~=2.3`,
+`retry==0.9.2`. Airflow's constraint files pin `packaging==24.2`, `python-dateutil==2.9.0.post0`,
+`typing_extensions==4.12.2` (2.10.5) and `packaging==25.0` (2.11.0). Consequences:
+
+- `pip install -c constraints-<version>.txt dominodatalab`, the install method Airflow documents
+  and managed Airflow services enforce, does not resolve.
+- `pip install dominodatalab` without constraints downgrades `packaging` and `python-dateutil`
+  under a running Airflow.
+
+Options, in order of preference: the Public API task above (no python-domino); a worker image
+with its own virtual environment where Airflow was installed without constraints and these
+pins are accepted; `PythonVirtualenvOperator` with `requirements=["dominodatalab"]` to call the
+python-domino client in an isolated environment per task (client usage:
+[domino-python-sdk](../domino-python-sdk/SKILL.md)). Never use the `dominodatalab[airflow]`
+extra on an existing Airflow: it pins `apache-airflow==2.2.4`.
+
+Both operators import `airflow.utils.decorators.apply_defaults`, a deprecated no-op in Airflow 2
+that Airflow 3.0 removed, so `from domino.airflow import DominoOperator` raises `ImportError`
+on Airflow 3.
+
+### Auth precedence (`domino/authentication.py`)
+
+`api_proxy` > `auth_token` > `domino_token_file` > `api_key` > env `DOMINO_API_PROXY` > env
+`DOMINO_TOKEN_FILE` > env `DOMINO_USER_API_KEY`. The host comes from `host` or env
+`DOMINO_API_HOST`. The operators expose `host`, `api_key` and `domino_token_file` only, so a
+token goes in through `domino_token_file` (the client re-reads the file on every request, so
+rotating the token in place needs no restart) or the `DOMINO_TOKEN_FILE` environment variable.
+
+### `DominoOperator`
 
 ```python
 from domino.airflow import DominoOperator
 ```
+
+Runs through `runs_start_blocking` on the **legacy v1 Runs API** (`/v1/projects/{owner}/{project}/runs`,
+`/v1/projects/{owner}/{project}/run/{id}/stdout`; not in the Public API, absent from the
+cluster's internal reference too, may change between Domino versions). python-domino's README:
+"Use `job_start` for all new development. `runs_start` is retained for backwards compatibility."
 
 | Parameter | Type / default | Meaning |
 |---|---|---|
@@ -51,25 +118,29 @@ from domino.airflow import DominoOperator
 | `isDirect` | `bool`, `None` | run `command[0]` as a shell command; must then be a single element |
 | `commitId` | `str`, `None` | DFS commit to run from (not a git SHA on a Git-based project) |
 | `title` | `str`, `None` | Job title; templated |
-| `tier` | `str`, `None` | hardware tier **name**; checked against `hardware_tiers_list()` before start |
+| `tier` | `str`, `None` | hardware tier **name**; checked against `hardware_tiers_list()` (`/v4/projects/{id}/hardwareTiers`, internal API) before start |
 | `publishApiEndpoint` | `bool`, `None` | republish the project's endpoint after the Job |
 | `poll_freq` | `int`, `5` | seconds between status polls |
 | `max_poll_time` | `int`, `6000` | seconds before the task fails (the Job keeps running) |
 | `startup_delay` | `int`, `10` | seconds to sleep before starting |
 | `include_setup_log` | `bool`, `True` | prefix the replayed log with the Job's setup log |
 
-Behaviour (`execute`): builds `Domino(project, api_key, host, domino_token_file)`, validates
-`tier`, sleeps `startup_delay`, calls `runs_start_blocking(...)` (legacy v1 Runs API: `command`,
-`isDirect`, `commitId`, `title`, `tier`, `publishApiEndpoint`), then `get_run_log(run_id,
-include_setup_log)` and `process_log(log)` into the task log. Returns the start response (a dict
-with `runId`), which Airflow stores as the task's XCom return value. A Job that ends in any
-state other than `Succeeded` raises `RunFailedException`; exceeding `max_poll_time` raises too.
+Behaviour (`execute`): builds `Domino(project, api_key, host, domino_token_file)` (which calls
+`/version`), validates `tier`, sleeps `startup_delay`, calls `runs_start_blocking(...)`, then
+`get_run_log(run_id, include_setup_log)` and `process_log(log)` into the task log. Returns the
+start response (a dict with `runId`) as the XCom value. `runs_start_blocking` waits for an
+output commit and then raises `RunFailedException` unless the run `status` is `Succeeded`;
+exceeding `max_poll_time` raises too. So this operator fails on any non-success.
 
-## `DominoSparkOperator`
+### `DominoSparkOperator`
 
 ```python
 from domino.airflow import DominoSparkOperator
 ```
+
+Runs through `job_start_blocking` on the v4 Jobs API (`/v4/jobs/start`, `/v4/jobs/{id}`;
+**internal API, may change between Domino versions**). Despite the name it is the operator for
+**any** Job that needs an explicit environment or a compute cluster.
 
 Same `project`, `host`, `api_key`, `domino_token_file`, `poll_freq`, `max_poll_time`,
 `startup_delay`, plus:
@@ -83,22 +154,33 @@ Same `project`, `host`, `api_key`, `domino_token_file`, `poll_freq`, `max_poll_t
 | `compute_cluster_properties` | `dict`, `None` | `{"clusterType": "Spark" \| "Ray" \| "Dask" \| "MPI", "computeEnvironmentId", "computeEnvironmentRevisionSpec"?, "masterHardwareTierId" (not for MPI), "workerCount", "workerHardwareTierId", "workerStorage"?: {"value", "unit": "GiB" \| "MB"}, "maxWorkerCount"?}` |
 | `on_demand_spark_cluster_properties` | `dict`, `None` | deprecated; ignored when `compute_cluster_properties` is set |
 
-Behaviour: `job_start_blocking(command=..., commit_id=..., hardware_tier_name=..., environment_id=...,
-poll_freq=..., max_poll_time=..., on_demand_spark_cluster_properties=..., compute_cluster_properties=...)`
-over the v4 Jobs API (**internal API, may change between Domino versions**; python-domino owns
-that dependency). Returns the final job status dict (`statuses.executionStatus`,
-`statuses.isCompleted`); raises `RunFailedException` on `Failed`.
+Behaviour: returns the final Job object (`id`, `statuses.executionStatus`, `statuses.isCompleted`,
+`commitDetails`, ...). **It raises `RunFailedException` only when `executionStatus` is `Failed`**
+(`domino.py`, `job_start_blocking`). The completed-status values are `Succeeded`, `Failed`,
+`Error` and `Stopped`, so a Job that ended `Error` (a setup failure, for example) or was stopped
+returns normally and the Airflow task succeeds. Subclass it:
 
-Despite the name it is the operator to use for **any** Job that needs an explicit environment or
-a compute cluster, Spark or not.
+```python
+from airflow.exceptions import AirflowException
+from domino.airflow import DominoSparkOperator
 
-## DAG example
+class StrictDominoSparkOperator(DominoSparkOperator):
+    """Fail on Error and Stopped too; DominoSparkOperator raises only on Failed."""
+    def execute(self, context):
+        job = super().execute(context)
+        state = job["statuses"]["executionStatus"]
+        if state != "Succeeded":
+            raise AirflowException(f"Domino job {job['id']} ended {state}")
+        return job
+```
+
+### DAG with the operators
 
 ```python
 from datetime import datetime
 from airflow import DAG
 from airflow.models import Variable
-from domino.airflow import DominoOperator, DominoSparkOperator
+from domino.airflow import DominoOperator
 
 HOST = Variable.get("DOMINO_API_HOST")           # https://<deployment>
 TOKEN_FILE = "/var/run/secrets/domino/token"     # mounted secret, first line = PAT or SA token
@@ -108,15 +190,15 @@ with DAG("churn_pipeline", start_date=datetime(2026, 1, 1), schedule="0 2 * * *"
         task_id="prepare_data",
         project="acme/churn",
         host=HOST, domino_token_file=TOKEN_FILE,
-        command=["prepare.py", "--as-of", "{{ ds }}"],
+        command=["prepare.py", "{{ ds }}"],
         tier="Small",
         max_poll_time=3600,
     )
-    train = DominoSparkOperator(
+    train = StrictDominoSparkOperator(            # the subclass above
         task_id="train_on_spark",
         project="acme/churn",
         host=HOST, domino_token_file=TOKEN_FILE,
-        command="train.py --as-of {{ ds }}",
+        command="train.py {{ ds }}",
         environment_id="<spark-enabled environment id>",
         hardware_tier_name="Medium",
         compute_cluster_properties={
@@ -131,48 +213,13 @@ with DAG("churn_pipeline", start_date=datetime(2026, 1, 1), schedule="0 2 * * *"
     prepare >> train
 ```
 
-`{{ ds }}` works because `command` and `title` are template fields. `prepare` finishes before
-`train` starts; the data hand-off happens through the Domino project (results committed by the
-first Job are the input commit of the second) or through a Dataset.
-
-## PythonOperator with the Public API (no operator import)
-
-python-domino 2.2.0's operators import `airflow.utils.decorators.apply_defaults`, which Airflow 2
-keeps as a deprecated no-op and which is absent from Airflow 3.0's `airflow/utils/decorators.py`,
-so on Airflow 3 `from domino.airflow import DominoOperator` raises `ImportError`. Use this
-pattern there, and whenever you want the Public `/api/jobs/v1/jobs` route with `environmentId`,
-`hardwareTier` (tier **id**), `mainRepoGitRef` or `netAppVolumeIds`, or the output commit id as
-an XCom value.
-
-```python
-from airflow.decorators import task
-
-@task
-def run_domino_job(run_command: str, project_id: str) -> str:
-    import os, time, requests
-    base = os.environ["DOMINO_API_HOST"].rstrip("/")
-    headers = {"Authorization": "Bearer " + open(os.environ["DOMINO_TOKEN_FILE"]).readline().strip()}
-    job = requests.post(f"{base}/api/jobs/v1/jobs", headers=headers, timeout=60,
-                        json={"projectId": project_id, "runCommand": run_command, "title": "airflow"}).json()["job"]
-    while True:
-        job = requests.get(f"{base}/api/jobs/beta/jobs/{job['id']}", headers=headers, timeout=60).json()["job"]
-        if job["status"]["isCompleted"]:
-            break
-        time.sleep(30)
-    if job["status"]["executionStatus"] != "Succeeded":
-        logs = requests.get(f"{base}/api/jobs/beta/jobs/{job['id']}/logs", headers=headers,
-                            params={"logType": "stdErr"}, timeout=60).json()
-        raise RuntimeError(f"Domino job {job['id']} {job['status']['executionStatus']}: {logs}")
-    return job["commitDetails"]["outputCommitId"]
-```
-
-The returned commit id is the XCom value a downstream task can pass as `commitId` (DFS
-projects) or use with `GET /api/projects/v1/projects/{projectId}/files/{commitId}/{path}/content`
-to read a result file. Polling details: [JOBS-API-PATTERN.md](./JOBS-API-PATTERN.md).
+`{{ ds }}` renders because `command` and `title` are template fields. Data moves between the
+two Jobs through the Domino project (results committed by the first Job are the input commit of
+the second) or through a Dataset.
 
 ## Result delivery
 
 Airflow can also run **after** a Domino scheduled Job finished elsewhere: a sensor-style task
-that lists Jobs (`GET /api/jobs/beta/jobs?projectId=...&statusFilter=completed`) and downloads the
-newest result file with the files route above, then delivers it (email, S3, a warehouse load).
-The batch-scoring page on docs.domino.ai names this as the way to automate result delivery.
+lists Jobs (`GET /api/jobs/beta/jobs?projectId=...&statusFilter=completed`), downloads the newest
+result file with the files route above, then delivers it (email, S3, a warehouse load). The
+batch-scoring page on docs.domino.ai names this as the way to automate result delivery.

@@ -17,7 +17,7 @@ content under `/6.3/`.
 
 | Tool | Use it for | Not for |
 |---|---|---|
-| **Domino CLI** (`domino`) | a laptop or server working on a **Domino File System project**: pull and push files, start a Job, download results, bulk-upload to a Dataset | REST automation (use the API with a token), Git-based project files (use git) |
+| **Domino CLI** (`domino`) | a laptop or server working on a **Domino File System project**: pull and push files, start a Job, download results, bulk-upload to a Dataset; on a Git-based project, the DFS-backed **Artifacts** | REST automation (use the API with a token), Git-based project code (use git) |
 | **R package** (`library(domino)`) | the same CLI commands from an R console | calling the Domino API from R (write `httr` calls against the API instead) |
 | `dom` tool kit | SSH into a running Workspace for local IDE development | project file sync |
 | python-domino, REST | automation and integrations | interactive file sync |
@@ -39,15 +39,15 @@ The CLI is a Java application (the headless install needs a JRE); it keeps its p
 
 A CLI older than 6.2.3 uses a retired authentication client and cannot log in; reinstall from
 **Download CLI**. After `domino login` the CLI keeps its own session; the product pages document
-no token-based or API-key login for it, and it does not read `DOMINO_API_PROXY`. Full install
-notes, OS support and proxies: [CLI-INSTALL.md](./CLI-INSTALL.md).
+no token-based or API-key login for it. Full install notes, OS support and proxies:
+[CLI-INSTALL.md](./CLI-INSTALL.md).
 
 ## Everyday workflow (DFS project)
 
 ```bash
 domino get owner/project          # first copy of an existing project; creates ./project
 cd project
-domino run train.py --epochs 20   # upload changed files, start a Job, return at once
+domino run train.py 20            # upload changed files, start a Job with arguments, return at once
 domino run --wait train.py        # block until the Job ends
 domino run --direct "pip freeze | grep pandas"   # shell command instead of a file
 domino run --tier "Large" train.py               # hardware tier by name
@@ -57,7 +57,8 @@ domino upload -m "add data"       # push without starting a Job
 domino download-results --filter 'results/*' 42  # files from run number or id 42 into results/run-42
 ```
 
-Commands only work inside a project folder (one that holds `.domino/`). `domino init [name]`
+File and run commands act on the project folder you run them in (the CLI keeps the link in
+`.domino/config.json`); `domino get` and `domino create` make that folder. `domino init [name]`
 turns the current folder into a new project without uploading; `domino create [name]` makes a
 new folder and project; `domino restore` reconnects a folder (for example a `git clone`) to its
 project. `--owner <org>` on `create` and `init` assigns the project to an organisation. `--no-sync`
@@ -89,14 +90,15 @@ domino.sync(); domino.init("name"); domino.upload("message")
 
 CRAN `domino` 0.3.1 (2017) runs the installed CLI with `system()`, so install and log in with the
 CLI first (the browser or device flow above). Its `domino.login(username, password, host)` feeds
-a username and password to the CLI's old interactive prompt; whether that still works against a
-deployment that uses the browser sign-in is not documented, so treat it as unverified and prefer a
-terminal `domino login`. Exported functions, signatures and limits: [R-PACKAGE.md](./R-PACKAGE.md).
+a username and password to the CLI's old interactive prompt; whether that still works with the
+browser sign-in is undocumented, so prefer a terminal `domino login`. Exported functions,
+signatures and limits: [R-PACKAGE.md](./R-PACKAGE.md).
 
 ## Pitfalls
 
-- The CLI syncs the **Domino File System**; on a Git-based project it has nothing to sync. Use
-  git for code and the Jobs API or UI to run it ([domino-jobs](../domino-jobs/SKILL.md)).
+- The CLI syncs the **Domino File System**. On a Git-based project that is the **Artifacts**
+  section (the docs call the CLI faster than the UI when there are many artifacts); code goes
+  through git and Jobs through the UI or API ([domino-jobs](../domino-jobs/SKILL.md)).
 - "blob file not found" on `domino run`: run `domino sync` first.
 - More than about 1,000 files in one `upload` can time out; upload in batches.
 - "too many open files" during `sync`: add an empty `.noLock` file at the project root.
@@ -105,8 +107,6 @@ terminal `domino login`. Exported functions, signatures and limits: [R-PACKAGE.m
   server that are missing locally come down, local changes go up on the next `sync`.
 - Moving a project to another deployment copies only the latest files, never history or
   collaborator settings.
-- `domino run` records a Job like any other; `--local` runs still upload a snapshot and commit
-  results back.
 
 ## Related skills
 

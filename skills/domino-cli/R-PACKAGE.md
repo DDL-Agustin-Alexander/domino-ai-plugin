@@ -57,8 +57,8 @@ more, so whether `domino.login()` still succeeds is unverified. Prefer the termi
 2017 package and may no longer exist in the CLI. If one errors, use `domino help` to see what the
 installed CLI offers.
 
-All commands require the working directory to be inside a project folder (`.domino/` present);
-`domino.get()` and `domino.create()` move you there.
+The product page: "In general, these Domino commands only work if your working directory is set
+to be inside your project folder." `domino.get()` and `domino.create()` move you there.
 
 ## Typical session
 
@@ -88,13 +88,14 @@ from R with `httr` and the same authentication rules as every other client
 ```r
 library(httr); library(jsonlite)
 
-if (nzchar(Sys.getenv("DOMINO_API_PROXY"))) {                     # inside a Domino run
-  base <- Sys.getenv("DOMINO_API_PROXY"); auth <- NULL
-} else if (nzchar(Sys.getenv("DOMINO_API_HOST"))) {                # inside a run, no proxy
+in_run <- nzchar(Sys.getenv("DOMINO_RUN_ID"))                      # set inside Workspaces, Jobs and Apps
+if (in_run && nzchar(Sys.getenv("DOMINO_API_PROXY"))) {
+  base <- Sys.getenv("DOMINO_API_PROXY"); auth <- NULL               # the proxy adds the token
+} else if (in_run) {
   tok  <- content(GET("http://localhost:8899/access-token"), as = "text")
   base <- Sys.getenv("DOMINO_API_HOST"); auth <- add_headers(Authorization = paste("Bearer", tok))
-} else {                                                           # laptop: deployment URL and a Personal Access Token
-  base <- "https://<deployment URL>"; auth <- add_headers(Authorization = paste("Bearer", Sys.getenv("DOMINO_PAT")))
+} else {                                                           # laptop: export DOMINO_API_HOST=<deployment URL> and a Personal Access Token
+  base <- Sys.getenv("DOMINO_API_HOST"); auth <- add_headers(Authorization = paste("Bearer", Sys.getenv("DOMINO_PAT")))
 }
 
 r <- POST(paste0(base, "/api/jobs/v1/jobs"), auth, encode = "json",

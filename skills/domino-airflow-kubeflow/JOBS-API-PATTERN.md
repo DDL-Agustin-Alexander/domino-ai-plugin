@@ -8,7 +8,7 @@ in both published specs (`https://docs.domino.ai/api-specs/6.3/public-api.json`,
 ## Base URL and token outside Domino
 
 ```bash
-BASE="https://<deployment URL users open in a browser>"
+BASE="$DOMINO_API_HOST"                        # export DOMINO_API_HOST=<the deployment URL users open in a browser>
 AUTH="Authorization: Bearer $DOMINO_TOKEN"     # Personal Access Token or service-account token
 ```
 
@@ -96,6 +96,8 @@ curl -sS -o metrics.json "$BASE/api/projects/v1/projects/$PROJECT_ID/files/$COMM
 - `executionStatus` not `Succeeded`: pull `stdErr` and `prepareOutput`, attach them to the
   orchestrator task log, and fail the task; do not retry blindly, since a retry starts a new Job.
 - Orchestrator timeout while the Job runs: the Job continues in Domino. Record the Job id so a
-  manual stop is possible (`job_stop` in python-domino; the UI **Stop** button).
+  manual stop is possible from the UI **Stop** button. Neither Public spec has a Job stop
+  route; python-domino's `job_stop` posts to `/v4/jobs/stop` (internal API, may change between
+  Domino versions).
 - Rate limits and 5xx: back off and retry the poll, never the start.
   [ERRORS.md](../domino-api-intro/ERRORS.md).

@@ -60,7 +60,7 @@ UI: **Jobs > Run**, file `score.py` with arguments, hardware tier, environment, 
 API (Public, both specs):
 
 ```bash
-# In a run: BASE=$DOMINO_API_PROXY and no AUTH header. Outside: BASE=<deployment URL>, AUTH="Authorization: Bearer <PAT>".
+# In a run: BASE=$DOMINO_API_PROXY and no AUTH header. Outside: export DOMINO_API_HOST=<deployment URL>, BASE=$DOMINO_API_HOST, AUTH="Authorization: Bearer <PAT>".
 curl -sS -X POST "$BASE/api/jobs/v1/jobs" -H "$AUTH" -H "Content-Type: application/json" -d '{
   "projectId": "'"$DOMINO_PROJECT_ID"'",
   "runCommand": "python score.py --input /mnt/data/scoring/today.csv --output results/scored.csv",
@@ -82,7 +82,7 @@ default to the project settings. Add `computeCluster` for Spark, Ray or Dask. Th
 |---|---|
 | File Name | `score.py --as-of ...`; arguments go in the same box |
 | Data Plane & Hardware | tier, plus the Datasets and NetApp Volumes the Job mounts (pin a snapshot per asset if the input must be reproducible) |
-| Environment | revision defaults to the active one |
+| Environment | revision defaults to the latest; the UI recommends the project owner's active revision |
 | Schedule | Quartz CronTrigger, six fields, seconds first: `0 0 2 * * ?` is 02:00 daily |
 | Run sequentially | on, if run N+1 must not start before run N finishes |
 | Notify emails | who gets the completion mail |

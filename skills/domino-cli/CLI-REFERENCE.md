@@ -4,8 +4,9 @@ Source: https://docs.domino.ai/cloud/reference/cli/cli-reference and
 https://docs.domino.ai/cloud/reference/cli/download-files-with-the-cli (6.3 pages identical).
 `domino help` prints the same list; `domino help run` prints one command.
 
-Every command except `login`, `create`, `get`, `init`, `help` and `version` must run inside a
-project folder, which the CLI recognises by `.domino/config.json`.
+The file and run commands act on the project folder you run them in; the CLI records the link in
+`.domino/config.json`. `create` and `get` make that folder, `init` and `restore` link the current
+one, and the Dataset commands name their target as `owner/project/dataset`.
 
 ## Run
 
