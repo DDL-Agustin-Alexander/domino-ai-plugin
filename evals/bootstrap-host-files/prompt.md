@@ -1,6 +1,6 @@
 ---
 description: The provider-neutral ui-bootstrap skill still chooses the Claude Code files under Claude Code.
-tags: [neutral-wording, apps]
+tags: [trigger, neutral-wording, apps, domino-ui-bootstrap]
 max_turns: 10
 allowed_tools: [Read, Glob, Grep, Skill]
 ---

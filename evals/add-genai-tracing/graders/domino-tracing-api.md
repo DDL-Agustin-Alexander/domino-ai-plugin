@@ -1,5 +1,5 @@
 ---
 type: regex
-target: trace
-pattern: 'add_tracing[\s\S]*DominoRun|DominoRun[\s\S]*add_tracing'
+target: { source: file, path: agent.py }
+pattern: 'add_tracing'
 ---
