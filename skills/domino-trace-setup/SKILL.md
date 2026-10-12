@@ -20,6 +20,11 @@ reference, use the `domino-genai-tracing` skill.
 3. **Evaluator**: whether to add quality scoring, and whether to use an LLM-as-judge.
 4. **Aggregated metrics**: which evaluator metrics to summarize per run, and with which statistic.
 
+Model access is not an input. Tracing instruments whichever client the agent already uses (a
+provider SDK, a Domino-hosted endpoint, or LLM Gateway 2.0 where it is installed: `domino-llm-access`,
+`domino-llm-gateway`); do not change it. Pass that client to `create_llm_judge_evaluator(client=...)`
+so the judge shares it; through the gateway, model names are aliases.
+
 ## Steps
 
 1. **Check requirements.** The Domino Standard Environment on 6.3 and Cloud ships the agents SDK,
@@ -57,7 +62,7 @@ from domino.agents.logging import DominoAgentContext
 from openai import OpenAI
 
 mlflow.openai.autolog()
-client = OpenAI()
+client = OpenAI()     # the agent's existing client; a gateway or Domino-hosted-endpoint client traces the same way
 
 def quality_evaluator(span):
     """Span evaluator: span.inputs is a dict of the call's arguments, span.outputs its return value."""

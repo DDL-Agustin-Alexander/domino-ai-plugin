@@ -199,7 +199,7 @@ The JSON body carries the function's return value under `result`.
 
 ## Call an asynchronous endpoint
 
-Async endpoints queue the request and you poll for the result. Limits: request and response bodies up to 10 KB (pass large inputs and outputs by reference, for example an object-store path), a request stays alive for 30 minutes after pickup, a prediction may execute more than once (make the function idempotent) and ordering is not guaranteed. Auth is Bearer with the endpoint access token.
+Async endpoints queue the request and you poll for the result. Limits: request and response bodies up to 10 KB (pass large inputs and outputs by reference, for example a table name or object key the function reads through a Data Source with the domino-data SDK; see `domino-data-sdk` for the endpoint's token), a request stays alive for 30 minutes after pickup, a prediction may execute more than once (make the function idempotent) and ordering is not guaranteed. Auth is Bearer with the endpoint access token.
 
 ```python
 import time
@@ -208,7 +208,7 @@ import requests
 base = f"{DOMINO_URL}/api/modelApis/async/v1/{MODEL_ID}"
 headers = {"Authorization": f"Bearer {TOKEN}"}
 
-created = requests.post(base, headers=headers, json={"parameters": {"input_file": "s3://bucket/batch.parquet"}})
+created = requests.post(base, headers=headers, json={"parameters": {"input_key": "batch/2026-10.parquet"}})   # an object key the function reads through a Data Source
 created.raise_for_status()
 prediction_id = created.json()["asyncPredictionId"]
 

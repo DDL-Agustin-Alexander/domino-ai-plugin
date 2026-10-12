@@ -6,7 +6,7 @@ compatibility: Domino 6.3 and Domino Cloud, only where an administrator has depl
 
 # Domino LLM Gateway 2.0
 
-Applies to Domino 6.3 and Domino Cloud, where an administrator has deployed LLM Gateway 2.0. It is in early access and not part of every deployment: Domino distributes it as a Domino App through the Domino field representative. If nobody has deployed it, say so and use the `domino-llm-access` skill (provider SDK or a Domino-hosted endpoint); do not try to install it.
+Applies to Domino 6.3 and Domino Cloud, where an administrator has deployed LLM Gateway 2.0. It is in early access and not part of every deployment: Domino distributes it as a Domino App through the Domino field representative. If nobody has deployed it, say so and use the `domino-llm-access` skill (a Domino-hosted endpoint or a provider SDK); do not try to install it.
 
 ## What the gateway is
 
@@ -21,7 +21,7 @@ The gateway is a Domino App, so its base is the App's URL as shown on its page i
 | OpenAI-compatible | `<base>/v1` (`/models`, `/chat/completions`, `/embeddings`, `/responses`) | OpenAI SDK, Pydantic AI, LangChain, any OpenAI-style client |
 | Anthropic-compatible | `<base>/anthropic` (`/v1/messages`) | Anthropic SDK, Claude Code |
 
-Ask the user for the gateway URL if it is not in a Project environment variable such as `DOMINO_LLM_GATEWAY_URL`. An HTML error page at the base means the App is not deployed, not running, or the URL is wrong; say so instead of retrying.
+Ask the user for the gateway URL if it is not in a Project environment variable such as `LLM_GATEWAY_URL` (not a `DOMINO_`-prefixed name: Domino reserves that prefix for its own variables, https://docs.domino.ai/cloud/platform-capabilities/core-concepts/compute-environments/manage-compute-environments/manage-environment-variables#reserved-variable-names-in-domino). An HTML error page at the base means the App is not deployed, not running, or the URL is wrong; say so instead of retrying.
 
 ## Authentication
 
@@ -36,13 +36,13 @@ import os
 import requests
 from openai import OpenAI
 
-GATEWAY = os.environ["DOMINO_LLM_GATEWAY_URL"].rstrip("/")
+GATEWAY = os.environ["LLM_GATEWAY_URL"].rstrip("/")
 
 def token() -> str:
     proxy = os.environ.get("DOMINO_API_PROXY")
     if proxy:                                         # inside Domino: fresh per call
         return requests.get(f"{proxy}/access-token", timeout=5).text.strip()
-    return os.environ["DOMINO_GATEWAY_TOKEN"]        # outside: PAT or dgw_ token
+    return os.environ["LLM_GATEWAY_TOKEN"]        # outside: PAT or dgw_ token
 
 def chat(messages, model="my-gateway-alias", **kwargs) -> str:
     client = OpenAI(base_url=f"{GATEWAY}/v1", api_key=token())

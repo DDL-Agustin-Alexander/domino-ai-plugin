@@ -137,7 +137,10 @@ def _openai_autolog_paused():
 
 def create_llm_judge_evaluator(judge_model: str = None, client=None):
     """
-    Return an LLM-as-judge span evaluator that scores the output 0-1 with an OpenAI model.
+    Return an LLM-as-judge span evaluator that scores the output 0-1 with an OpenAI-style model.
+
+    client is the OpenAI-compatible client the agent already uses (a provider SDK, a Domino-hosted
+    endpoint or LLM Gateway 2.0, where judge_model is a gateway alias); defaults to OpenAI().
 
     judge_model defaults to the JUDGE_MODEL environment variable, then DEFAULT_JUDGE_MODEL;
     pass the value from config.yaml (models.judge) so the run's parameters and the judge agree.
