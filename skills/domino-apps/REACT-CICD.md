@@ -194,6 +194,7 @@ def main():
         })
         # currentVersion is the newly created version here (6.3 and Cloud); latestVersion is Cloud-only
         version_id = (app.get("latestVersion") or app["currentVersion"])["id"]
+        # json={} matters: the v1 start route returns 415 on an empty body
         call("POST", f"/api/apps/v1/apps/{app['id']}/versions/{version_id}/start", json={})
     else:
         print(f"creating and starting a new version of {APP_NAME} ({app['id']})")
@@ -214,6 +215,6 @@ Pin a version to the exact pushed commit instead of the branch head with `{"type
 
 - GitHub: the workflow log prints the status transitions and the App URL.
 - Domino: the App details page shows per-instance logs and resource use; the API equivalent is in [API-APPS.md](./API-APPS.md) (Logs).
-- Rollback: any published version can be deployed. In the UI select the earlier version on the App details page and **Deploy**; over the API, `POST /api/apps/v1/apps/{appId}/versions/{oldVersionId}/start` with `{}`. A `git revert` pushed to the branch also produces a new version through the workflow.
+- Rollback: any published version can be deployed. In the UI select the earlier version on the App details page and **Deploy**; over the API, `POST /api/apps/v1/apps/{appId}/versions/{oldVersionId}/start` with `{}`, which stops the running version and restarts the old one on its original commit (verified live on Cloud 6.4.0). A `git revert` pushed to the branch also produces a new version through the workflow.
 
 Public example repository (older API usage, for layout reference only): https://github.com/dominodatalab/domino-blueprints/tree/main/React-app-deployment-with-CICD

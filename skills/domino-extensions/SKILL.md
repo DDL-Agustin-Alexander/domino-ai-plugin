@@ -1,7 +1,7 @@
 ---
 name: domino-extensions
 description: Build and operate Domino UI Extensions (mount a published Domino App at a Domino UI mount point with page context). Covers extension_manifest.json, the official installer versus the manual Extensions API, App publish and identity requirements, auth and host rules for Extension backends, and the /api/extensions/beta routes. Use when creating an Extension, wiring mount points, publishing an Extension App from a project, pointing an Extension at a new App version, or automating the Extension install lifecycle. Not for generic App deployment alone (see domino-apps) or SPA scaffolding (see domino-ui-bootstrap).
-compatibility: Domino 6.3 and Domino Cloud. Requires DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token or service account token. Creating an Extension needs an Admin; publishing its App with extended identity propagation needs a SysAdmin or CloudAdmin.
+compatibility: Domino 6.3 and Domino Cloud. Requires DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token or service account token. Creating an Extension needs admin permissions; publishing its App with extended identity propagation needs a SysAdmin or CloudAdmin.
 ---
 
 # Domino Extensions
@@ -23,7 +23,7 @@ Docs: https://docs.domino.ai/cloud/platform-capabilities/features/extensions (ov
 
 ## Requirements on the App
 
-1. **Extended identity propagation enabled** ("Allow App to act for viewers in Domino" on the Access & sharing step). Only a SysAdmin or CloudAdmin can publish an App with it on; without it the App cannot back an Extension. The deployment needs `SecureIdentityPropagationToAppsEnabled` and `com.cerebro.domino.apps.extendedIdentityPropagationToAppsEnabled`, both on by default on Cloud and 6.3. Once enabled on an App it cannot be disabled.
+1. **Extended identity propagation enabled** ("Allow App to act for viewers in Domino" on the Access & sharing step; `content.extendedIdentityPropagationToAppsEnabled: true` on the App version over the API). Only a SysAdmin or CloudAdmin can publish an App with it on; without it the App cannot back an Extension (`POST /api/extensions/beta/extensions` returns 400). The deployment needs `SecureIdentityPropagationToAppsEnabled` and `com.cerebro.domino.apps.extendedIdentityPropagationToAppsEnabled`, both on by default on Cloud and 6.3. Once enabled on an App it cannot be disabled.
 2. **A framework that reads proxied HTTP headers**: Flask and Dash do by default; Shiny needs Shiny Server Pro. The per-request viewer token arrives in the `Authorization` header after the viewer consents.
 3. **Published and viewable**: an Extension inherits the App's access controls; users without view access see it listed and are prompted to request access.
 4. Domino's App guidelines: call Domino APIs from backend code only (never from frontend JavaScript), authenticate with the per-request bearer from `Authorization` (never an API key), keep the App stateless or protect cached data like its source, declare dependencies in the Compute Environment's Dockerfile.
@@ -44,7 +44,7 @@ Docs: https://docs.domino.ai/cloud/platform-capabilities/features/extensions (ov
 ## Create an Extension (custom App)
 
 1. **Build and preview** the App in a workspace (App Preview), then **Publish App** as a SysAdmin or CloudAdmin with extended identity propagation on. Over the API: [domino-apps/API-APPS.md](../domino-apps/API-APPS.md).
-2. **Create the Extension** from the App's three-dot menu (**Create Extension**) or **Admin panel > Extensions > Create Extension**: pick the App version and add one or more mount points. Over the API: `POST /api/extensions/beta/extensions` with `name`, `enabled`, `appId`, **`appVersionId`** and `uiMountPointTypeConfigs`; all five are required in both specs. Verified body and the other routes: [API-EXTENSIONS.md](./API-EXTENSIONS.md).
+2. **Create the Extension** from the App's three-dot menu (**Create Extension**) or **Admin panel > Extensions > Create Extension**: pick the App version and add one or more mount points. Needs admin permissions (a 403 means they are missing; see API-EXTENSIONS.md). Over the API: `POST /api/extensions/beta/extensions` with `name`, `enabled`, `appId`, **`appVersionId`** (a version with extended identity propagation on) and `uiMountPointTypeConfigs`; all five are required in both specs, `description` is optional. Verified body and the other routes: [API-EXTENSIONS.md](./API-EXTENSIONS.md).
 3. **Manage** from Admin panel > Extensions: toggle enabled, **Manage Extension > Edit** to change mount points or the App version, **Delete** to soft-delete. Publishing a new App version does not move the Extension; edit it in the UI or `PATCH` `appVersionId` over the API.
 
 ## Official Extensions (manifest-driven)
