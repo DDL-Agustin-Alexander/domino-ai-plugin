@@ -48,6 +48,8 @@ streamlit run app.py --server.port 8888 --server.address 0.0.0.0
 
 The equivalent one-liner without a config file: `streamlit run app.py --server.port 8888 --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false`.
 
+To smoke-test in a Workspace terminal before publishing, run the same command on another port, because 8888 is the IDE's port there (code-server or Jupyter): `streamlit run app.py --server.port 8501 --server.address 0.0.0.0 &`, `curl -s -o /dev/null -w "%{http_code}" http://localhost:8501/`, then `kill $!`. Do not `pkill -f "streamlit run"`: the pattern matches the calling shell and kills it. Keep 8888 in `app.sh`; the App gets that port in its own container. The same applies to every framework below (`python app.py` with the port taken from an environment variable, `uvicorn --port 8501`, and so on).
+
 ```python
 # app.py
 import os
