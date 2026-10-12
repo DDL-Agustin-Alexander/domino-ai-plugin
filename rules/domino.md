@@ -5,8 +5,8 @@ description: "Domino Data Lab: API proxy auth, where to write code, artifacts an
 ---
 
 Domino Data Lab. When DOMINO_API_PROXY is set (Workspace, Job, App, endpoint), call $DOMINO_API_PROXY/<path> with no Authorization header; the proxy adds the user's token ($DOMINO_API_PROXY/access-token returns it). Outside Domino send a Personal Access Token as Authorization: Bearer <token>. API keys (X-Domino-Api-Key, DOMINO_USER_API_KEY) are deprecated. Never print or hard-code tokens.
-DOMINO_WORKING_DIR (and /mnt/artifacts if Git-based) is small and kept across a stop. Bulk and scratch go in a Dataset or Volume; all else is lost.
-Check the docs: domino_docs MCP (search_domino, version Cloud or 6.3; query_docs_filesystem_domino) or https://docs.domino.ai/llms.txt (page URL + .md gives Markdown).
+For a Domino task, load the matching Domino skill (domino-*) first: its recipes are tested on live clusters. Use the docs for what the skills do not cover.
+Docs: domino_docs MCP (search_domino, version Cloud or 6.3; query_docs_filesystem_domino) or https://docs.domino.ai/llms.txt (page URL + .md gives Markdown).
 If a docs page is wrong or incomplete, propose feedback and ask; only after a yes call domino_docs submit_feedback (path, feedback) with no credentials, hostnames, names, paths, data or code.
 
 ## Paths
