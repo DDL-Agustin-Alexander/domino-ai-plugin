@@ -111,7 +111,7 @@ There is no `datasets_snapshot` or `datasets_tag` method. Snapshot and tag route
 | `models_list()` | Model APIs in the project. |
 | `model_publish(file, function, environment_id, name, description, files_to_exclude=None)` | All five leading arguments required. Returns the created Model API JSON. |
 | `model_versions_get(model_id)`, `model_version_publish(model_id, file, function, environment_id, description, files_to_exclude=None)` | |
-| `model_version_export(...)`, `model_version_sagemaker_export(...)`, `model_version_export_status(model_export_id)`, `model_version_export_logs(model_export_id)` | Image export to a registry (`/v4/models`, internal API). Build-then-export sequence and a CI/CD pipeline: [domino-model-delivery](../domino-model-delivery/EXPORT-API.md). |
+| `model_version_export(...)`, `model_version_sagemaker_export(...)`, `model_version_export_status(model_export_id)`, `model_version_export_logs(model_export_id)` | Image export to a registry (`/v4/models`, internal API, may change between Domino versions). Build-then-export sequence and a CI/CD pipeline: [domino-model-delivery](../domino-model-delivery/EXPORT-API.md). |
 | `app_publish(unpublish_running_apps=True, hardware_tier_id=None, environment_id=None, external_volume_mount_ids=None, commit_id=None, branch=None, app_id=None)`, `app_unpublish(app_id=None)`, `app_get_status(app_id)`, `app_id` (property) | Legacy app start/stop; new automation uses the Public API in [domino-apps](../domino-apps/API-APPS.md). |
 
 Budgets and billing tags (`budget_*`, `billing_tag*`, `project_billing_tag*`,

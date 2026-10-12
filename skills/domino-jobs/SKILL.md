@@ -79,5 +79,5 @@ Every file created or modified under the Project files during the run is a resul
 
 ## Reference files and docs
 
-- [SCRIPT-PATTERNS.md](./SCRIPT-PATTERNS.md): commands, environment variables, output locations, logs, best practices.
+- [SCRIPT-PATTERNS.md](./SCRIPT-PATTERNS.md): commands, env vars, outputs, logs, script practices, Quartz cron, troubleshooting.
 - https://docs.domino.ai/cloud/platform-capabilities/core-concepts/jobs/create-and-run-jobs, `.../schedule-a-job`, `.../monitor-jobs`, `.../job-states` (same paths under `/6.3/`).

@@ -1,6 +1,6 @@
 # Job script patterns
 
-Applies to Domino 6.3 and Domino Cloud. What a script sees inside a Domino Job, where to write outputs, how logs and results are captured, and script-side practices. Starting, scheduling and monitoring Jobs: [SKILL.md](./SKILL.md).
+Applies to Domino 6.3 and Domino Cloud. What a script sees inside a Domino Job, where to write outputs, how logs and results are captured, script-side practices, Quartz cron syntax for scheduled Jobs, and troubleshooting. Starting, scheduling and monitoring Jobs: [SKILL.md](./SKILL.md).
 
 ## Job commands
 

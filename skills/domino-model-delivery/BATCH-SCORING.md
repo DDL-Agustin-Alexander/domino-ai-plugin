@@ -3,8 +3,8 @@
 Product page: https://docs.domino.ai/cloud/platform-capabilities/features/models/batch-scoring
 (the 6.3 page has the same content). A batch scoring Job is an ordinary Domino Job whose command
 is a scoring script. Everything about Jobs in general (hardware tiers, environments, logs, script
-patterns, cron syntax) is in [domino-jobs](../domino-jobs/SKILL.md); this file covers only what
-is specific to scoring.
+patterns, Quartz cron syntax) is in [domino-jobs](../domino-jobs/SKILL.md) and its
+SCRIPT-PATTERNS.md; this file covers only what is specific to scoring.
 
 ## When to choose a Job over an endpoint
 
@@ -74,8 +74,8 @@ curl -sS -X POST "$BASE/api/jobs/v1/jobs" -H "$AUTH" -H "Content-Type: applicati
 default to the project settings. Add `computeCluster` for Spark, Ray or Dask. The response's
 `job.id` is the Job id for polling.
 
-Other ways to start the same Job: `domino run --wait score.py --input ... --output ...` from a
-laptop with the Domino CLI ([domino-cli](../domino-cli/SKILL.md)); a Launcher, when business
+Other ways to start the same Job: `domino run --wait score.py <arguments>` from a laptop with
+the Domino CLI (DFS projects; [domino-cli](../domino-cli/SKILL.md)); a Launcher, when business
 users should pick the input file or date in a web form
 ([domino-launchers](../domino-launchers/SKILL.md)).
 

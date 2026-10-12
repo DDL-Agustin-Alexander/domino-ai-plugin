@@ -24,7 +24,7 @@ A project holds the code, data links, artifacts and people for one piece of work
 
 Git LFS is not supported; files over 2 GB in a repository can break Workspace setup. Keep bulk data in Datasets, not in code or artifacts (projects hold at most 10,000 files by default).
 
-From a laptop, the Domino CLI (`domino get`, `sync`, `download`, `upload`, `run`) works on a DFS project's files and on a Git-based project's Artifacts; code in a Git-based project goes through git: [domino-cli](../domino-cli/SKILL.md).
+From a laptop, the Domino CLI syncs a DFS project's files (`domino get`, `sync`, `download`, `upload`) and starts its Jobs (`domino run`); on a Git-based project it syncs only the Artifacts, while code goes through git and Jobs through the UI or API: [domino-cli](../domino-cli/SKILL.md).
 
 ## Create a project
 

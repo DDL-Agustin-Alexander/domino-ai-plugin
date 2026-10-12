@@ -48,7 +48,7 @@ Management calls go to the base above under `/api/...`. Predictions go to the de
 
 Logs: `GET .../versions/{modelApiVersionId}/buildLogs`, `exportLogs`, `instanceLogs`.
 
-`/api/modelServing/v1/modelDeployments` (with `start`, `stop`, `credentials`, `logs`, `versions`) is a separate entity: a registered model deployed onto a deployment target with a resource configuration. It is not a Model API; confirm it on your cluster's `/docs` reference before automating it.
+`/api/modelServing/v1/modelDeployments` (with `start`, `stop`, `credentials`, `logs`, `versions`) is a separate entity: a registered model deployed onto an admin-defined external deployment target, SageMaker only today. It is not a Model API; see [domino-model-delivery](../domino-model-delivery/EXPORT-TARGETS.md#amazon-sagemaker).
 
 ## Registered models
 
@@ -73,6 +73,6 @@ Domino Cloud adds `/api/modelServing/beta/modelApis/{modelApiId}/visibility` (`P
 - [LIFECYCLE.md](./LIFECYCLE.md): request and response examples for each step
 - [API-MODEL-SERVING.md](../domino-python-sdk/API-MODEL-SERVING.md), [API-MODELS.md](../domino-python-sdk/API-MODELS.md)
 - [domino-model-endpoints](../domino-model-endpoints/SKILL.md): UI, predict code, scaling, health, logs
-- [domino-model-delivery](../domino-model-delivery/SKILL.md): Model Export API, Fleet Command, Snowflake, SageMaker, batch scoring Jobs
+- [domino-model-delivery](../domino-model-delivery/SKILL.md): model export, SageMaker, batch scoring
 - Route discovery: [API-SPECS.md](../domino-api-intro/API-SPECS.md)
 - Model registry: https://docs.domino.ai/cloud/platform-capabilities/features/models/register-and-govern/model-registry

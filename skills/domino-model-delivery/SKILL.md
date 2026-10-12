@@ -1,6 +1,6 @@
 ---
 name: domino-model-delivery
-description: Deliver a Domino model outside a Domino endpoint. Covers batch scoring Jobs (a scoring script run once or on a schedule, results, notifications, the async endpoint alternative), the Model Export API (buildModelImage, exportImageToRegistry, build and export status and logs, .modelignore, running the exported image on your own Kubernetes), and the export targets NVIDIA Fleet Command (exportImageForNvidia) and Snowflake (Snowpark UDF), plus where SageMaker fits. Use when the user wants to batch-score a dataset or table with a trained model, run scoring on a schedule, export a model image out of Domino to a container registry from GitHub Actions, Jenkins or another CI/CD pipeline, push a model to NVIDIA Fleet Command or Snowflake, or asks about the Exports page. Not for deploying or updating a Domino-hosted endpoint, from CI/CD or otherwise; that belongs to domino-model-serving (REST) and domino-model-endpoints (UI).
+description: Deliver a Domino model outside a Domino endpoint. Covers batch scoring Jobs (a scoring script run once or on a schedule, results, notifications, the async endpoint alternative), the Model Export API (buildModelImage, exportImageToRegistry, build and export status and logs, .modelignore, running the exported image on your own Kubernetes), and the export targets NVIDIA Fleet Command (exportImageForNvidia) and Snowflake (Snowpark UDF), and SageMaker. Use when the user wants to batch-score a dataset or table with a trained model, run scoring on a schedule, export a model image out of Domino to a container registry from GitHub Actions, Jenkins or another CI/CD pipeline, push a model to NVIDIA Fleet Command or Snowflake, deploy a registered model to a SageMaker external endpoint, or asks about the Exports page. Not for deploying or updating a Domino-hosted endpoint, from CI/CD or otherwise; that belongs to domino-model-serving (REST) and domino-model-endpoints (UI).
 compatibility: Domino 6.3 and Domino Cloud. Requires DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token. The Model Export routes are Domino Internal API (/v4/models), documented but not in the Public API spec.
 ---
 
@@ -56,8 +56,7 @@ predictions that need request/response semantics: an **asynchronous endpoint**
 Every `/v4/models/...` call in this skill, the five below and the NVIDIA and Snowflake exports,
 is **Domino Internal API, may change between Domino versions**. They are documented at
 https://docs.domino.ai/cloud/platform-capabilities/features/models/integrate-ci-cd-workflows
-and in every cluster's own reference under `https://<domino-domain>/docs`, but they are not in
-the Public API spec.
+and in every cluster's own reference under `https://<domino-domain>/docs`.
 
 ```text
 POST /v4/models/buildModelImage                                   -> {modelId, modelVersionId}
