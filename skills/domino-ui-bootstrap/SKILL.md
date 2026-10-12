@@ -1,9 +1,12 @@
 ---
 name: domino-ui-bootstrap
 description: Bootstrap or retrofit a Vite + React 18 + TypeScript project so it uses the Domino design system (`@dominodatalab/extensions-tools`). Scoped to a **fully standalone SPA frontend for a Domino application or extension**, not snippets, library additions, or work inside an existing Domino monorepo package. Use whenever the user wants to create, scaffold, refactor, retrofit, or set up such an SPA (a React app, web app, frontend, UI, or extension) that should "look like Domino", use Domino components, follow the Domino design system, or integrate with the Domino platform, including when they mention DominoThemeProviderDecorator, extensions-tools, or base-components without saying "Domino". Also use to make an existing standalone React/Vite project "Domino-styled" or add Domino theming. Handles React 18 / react-router 5 pinning, Storybook MCP registration, theme provider wiring, and build verification.
+compatibility: Domino 6.3 and Domino Cloud. Needs Node that satisfies the Vite scaffold's engines range (^20.19.0 or >=22.12.0) or the Vite 5 fallback in SETUP-STEPS.md, and access to the npm registry that hosts @dominodatalab/extensions-tools. No Domino API calls.
 ---
 
 # Domino UI Bootstrap
+
+Applies to Domino 6.3 and Domino Cloud.
 
 This skill makes a project use the Domino design system correctly. It works in three contexts:
 
@@ -19,7 +22,7 @@ A handful of choices look arbitrary but aren't — they match the rest of the Do
 
 - **React 18, not 19.** `@dominodatalab/extensions-tools` peer-depends on React 18. React 19 fails at install.
 - **react-router 5, not 6.** The library uses v5 APIs (`HashRouter` from `react-router-dom@5`).
-- **HashRouter, not BrowserRouter.** This is what the library expects internally. It also gives cleaner isolation between the app's frontend and backend — client-side routes live entirely after the `#`, so they never collide with backend paths or the Domino proxy prefix, and inner navigation/linking works without server-side rewrite rules.
+- **HashRouter, not BrowserRouter.** This is what the library expects internally, and what the `domino-apps` skill recommends for every React app on Domino. Client-side routes live entirely after the `#`, so they never collide with backend paths or the Domino proxy prefix, relative asset URLs resolve from the app root on every route, and inner navigation works without server-side rewrite rules.
 - **The npm package name is `@dominodatalab/extensions-tools`.** Storybook code snippets show imports from `@domino/base-components` — that's a Storybook-internal alias. Rewrite every such import to `@dominodatalab/extensions-tools` before pasting into a Domino project. This is the single most common mistake.
 - **`DominoThemeProviderDecorator` wraps the whole React tree.** Without it, Domino components render unstyled or crash.
 - **URLs must survive the proxy path.** Domino serves the app under a prefix (e.g. `/preview/<appId>/`), so asset and API URLs must be document-relative — not root-absolute. Vite's default `base: '/'` emits `/assets/…` and bypasses the proxy; user-written `fetch('/api/…')` does the same. Set `base: './'` and build API URLs against `document.baseURI`. See Step 8. Invisible in local dev (`pathname` is `/`), surfaces only after deployment.

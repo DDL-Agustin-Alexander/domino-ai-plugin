@@ -1,78 +1,100 @@
 # Apps REST API (automation)
 
-Agent reference for Domino Apps **management** APIs. Container layout, `app.sh`, and proxy UI behavior stay in [SKILL.md](./SKILL.md).
+Management routes for Domino Apps, verified against the 6.3 and Cloud public API specs (`https://docs.domino.ai/api-specs/6.3/public-api.json`, `https://docs.domino.ai/api-specs/cloud/public-api.json`). Runtime configuration (`app.sh`, ports, prefixes) is in [SKILL.md](./SKILL.md).
 
-Authentication: https://docs.domino.ai/cloud/reference/api/domino-api-authentication . **Do not use API keys.**
-
-## Configuration
-
-Platform apps management routes live under `/api/apps/v1` and `/api/apps/beta`. Base URL resolution matches other platform APIs:
+## Base URL and authentication
 
 | Context | Base | Authorization |
-|---------|------|----------------|
-| In-run, `DOMINO_API_PROXY` set | `{DOMINO_API_PROXY}` | None (proxy adds JWT) |
-| In-run, no proxy | `{DOMINO_USER_HOST or DOMINO_API_HOST}` | Bearer from `GET http://localhost:8899/access-token` |
-| Outside run or unreachable sidecar | `{public deployment URL}` | Bearer PAT or SA |
+|---|---|---|
+| In a run, `DOMINO_API_PROXY` set | `$DOMINO_API_PROXY` | none; the proxy adds the token |
+| In a run, no proxy | `$DOMINO_API_HOST` | `Bearer` from `GET http://localhost:8899/access-token` |
+| Outside Domino (laptop, CI) | the deployment's public URL | `Bearer` Personal Access Token (you) or service account token (automation) |
 
-Prefix paths onto that base, e.g. `{base}/api/apps/v1/apps`. Confirm with `GET {base}/api/apps/v1/apps?limit=1` returning HTTP 200 before longer workflows.
+Legacy API keys are deprecated; never send `X-Domino-Api-Key`. Details: https://docs.domino.ai/cloud/reference/api/domino-api-authentication and the `domino-api-intro` skill.
+
+Smoke test before a longer workflow:
 
 ```bash
-curl ${TOKEN:+-H "Authorization: Bearer $TOKEN"} "$BASE/api/apps/v1/apps?limit=1"
+TOKEN=$(curl -s http://localhost:8899/access-token)
+curl -s -H "Authorization: Bearer $TOKEN" "$DOMINO_API_HOST/api/apps/v1/apps?limit=1"
 ```
 
 ## v1 vs beta
 
-| Use | Path prefix | Notes |
-|-----|-------------|--------|
-| **Prefer for automation** | `/api/apps/v1` | Create app, publish, versions, `start` / `stop`, delete app |
-| **Legacy / read-only runtime** | `/api/apps/beta` | List/filter in older examples; **instance logs**, `realTimeLogs`, **views**, list running instances, instance DELETE |
+| Use | Prefix | Routes |
+|---|---|---|
+| Writes and lifecycle | `/api/apps/v1` | `GET/POST /apps`, `POST /apps/drafts`, `GET/PATCH/DELETE /apps/{appId}`, `POST /apps/{appId}/publish`, `GET/POST /apps/{appId}/versions`, `POST .../versions/createAndStart`, `GET/PATCH .../versions/{versionId}`, `POST .../versions/{versionId}/start`, `.../stop`, `.../liveSync` |
+| Instance reads only | `/api/apps/beta` | `GET /apps/{appId}/versions/{versionId}/instances`, `GET .../instances/{instanceId}/logs`, `GET .../realTimeLogs`, `POST .../instances/{instanceId}/views`, `DELETE .../instances/{instanceId}` |
 
-Do not build new write flows on beta when a v1 equivalent exists. Beta list responses may omit fields needed for publish/version chains.
+Beta remains the only surface for instance reads, thumbnails (`/apps/{appId}/thumbnail`), access requests (`/apps/{appId}/access/requests`), vanity URL lookup (`/apps/vanityUrls/{vanityUrl}`), the project and publisher filter options, and (Cloud only) `/apps/{appId}/roles`. For create, versions, start and stop use v1; the beta write routes still work but gain nothing. The `python-domino` SDK's `app_publish`, `app_unpublish` and `app_get_status` wrap the Domino Internal API (`/v4/modelProducts/{appId}/start`, `.../stop`, `GET /v4/modelProducts/{appId}`, which may change between Domino versions); prefer the v1 routes below.
 
-**Rule:** v1 for create, publish, start, stop. Beta for streaming logs, views, and instance telemetry only.
+## Publish chain (App created directly, no workspace)
 
-## Publish chain (v1)
+1. **Create the App with its first version**: `POST /api/apps/v1/apps`. Required: `name`, `projectId`, `visibility`. A version is always created; nothing is started.
 
-Typical automation sequence:
+```json
+{
+  "projectId": "<projectId>",
+  "name": "sales-dashboard",
+  "description": "Sales dashboard",
+  "entryPoint": "app.sh",
+  "visibility": "AUTHENTICATED",
+  "discoverable": true,
+  "initialVersion": {
+    "content": {
+      "environmentId": "<environmentId>",
+      "gitRef": { "type": "branches", "value": "main" }
+    },
+    "deployment": { "hardwareTierId": "small-k8s" }
+  }
+}
+```
 
-1. `POST /v4/jobs/{projectId}/resolveJobDefaults` with `commandToRun` matching the app entry (yields `environmentId`, `hardwareTierId`).
-2. `POST /api/apps/v1/apps` with `projectId`, `name`, `entryPoint`, `initialVersion` (environment + hardware tier from defaults).
-3. Optional: `POST /api/apps/v1/apps/{appId}/publish` when promoting drafts (draft-to-published flows).
-4. `POST /api/apps/v1/apps/{appId}/versions/{versionId}/start` to run.
-5. `POST /api/apps/v1/apps/{appId}/versions/{versionId}/stop` to stop.
+   - `visibility` enum: `AUTHENTICATED`, `GRANT_BASED`, `GRANT_BASED_STRICT`, `PUBLIC`. The spec carries no descriptions; the docs name two sharing modes, "Anyone in Domino" (any Domino account) and "Restricted" (listed users plus project collaborators), which the live records show as `AUTHENTICATED` and `GRANT_BASED`. `GRANT_BASED_STRICT` is undocumented; `PUBLIC` (anonymous viewers) also needs the admin setting described on the app-configuration-settings page. `discoverable` is the "Make globally discoverable" switch.
+   - `gitRef.type`: `head`, `commitId`, `branches`, `tags`, `custom`. DFS projects use `content.dfsCommitId` instead.
+   - `content` also accepts `environmentRevisionId`, `dataPlaneId` (must match the hardware tier's data plane or the call returns 422), `externalVolumeMountIds`, `netAppVolumeIds`, `mountDatasets`, `extendedIdentityPropagationToAppsEnabled`. `deployment` also accepts `autoscalingSpecification`, `vanityUrl`, `renderIFrame`.
+   - IDs: `GET /api/environments/beta/environments` and `GET /api/hardwaretiers/v1/hardwaretiers` (both paginated with `limit`/`offset`).
+   - The response (`AppResponseV1`) carries `id`, `url` and `currentVersion` (the most recently started version; right after creation it is the new version), so `currentVersion.id` is the version to start. The Cloud spec also returns `latestVersion` (most recently created version, started or not); the 6.3 spec does not, so code that must find the newest version on both targets lists `GET /api/apps/v1/apps/{appId}/versions` (`items[]` newest first, each with `id`, `versionNumber`, `createdAt`) and takes the highest `versionNumber`. Verified on Cloud 6.4.0: `environmentRevisionId` and the commit may be omitted (the server resolves the environment's selected revision and the DFS head), and a DFS App's `url` looks like `https://apps.<domain>/u/<owner>/<project>/app/?appId=<id>` until a vanity URL is set.
 
-Alternate one-shot: `POST /api/apps/v1/apps/{appId}/versions/createAndStart`.
+2. **Start it**: `POST /api/apps/v1/apps/{appId}/versions/{versionId}/start` with the JSON body `{}` (`Content-Type: application/json`), or `{"deployment": {"hardwareTierId": "..."}}` to override the tier or autoscaling for this launch. The v1 route returns `415 Expecting text/json or application/json body` when the body is empty, so always send `{}`; only the beta `start` route accepts no body. Starting a version while another version of the same App runs stops the running one (verified live), so this is also the rollback call.
+3. **Ship a new build later**: `POST /api/apps/v1/apps/{appId}/versions/createAndStart` with the same `content` and `deployment` shape creates a version and starts it, stopping the running version first. The response has `version` and `instance`; a `warnings` array appears only when the version was saved but the start failed, in which case retry with the `start` route.
+4. **Stop**: `POST /api/apps/v1/apps/{appId}/versions/{versionId}/stop` (no body; empty 200 response). `DELETE /api/apps/v1/apps/{appId}` removes a stopped App (empty 200, then `GET` returns 404).
+5. **Find the App again**: `GET /api/apps/v1/apps?projectId=<id>&name=<name>`. `name` is a substring match, so compare `items[].name` exactly. Other filters: `ownerId`, `status`, `publisherId`, `tagIds`, `entryPoint`, `draftsOnly`, `includeTemplateApps`; sort with `sortField` (`name`, `lastUpdated`, `status`, `views`, `lastViewed`) and `sortOrder`.
 
-Product docs: https://docs.domino.ai/cloud/platform-capabilities/features/apps
+Deploy status: `GET /api/apps/v1/apps/{appId}/versions/{versionId}` and read `currentInstance.status` (spec values include `Queued`, `Pending`, `Preparing`, `Building`, `Pulling`, `Running`, `Stopping`, `Stopped`, `Succeeded`, `Failed`, `Error`; a live start went `Queued`, `Pending`, `Preparing`, `Running` in about 25 seconds; `Running` is the serving state, `Succeeded` means the entry point exited). `GET /api/apps/v1/apps/{appId}` gives the viewer `url`.
 
-## Management API vs user-facing app URL
+## Draft Apps (workspace flow)
 
-- **Management** (list, start, stop, versions): `{platform base}/api/apps/v1/...` through the platform API gateway or proxy.
-- **User opens the app** in a browser: URL on the deployment or data-plane ingress (often in the app resource `url` field), not the same path as `/api/apps/...`.
+Drafts, App Preview and versioning depend on the `EnableAppsSDLC` feature flag (on by default; an admin who disables it gets the legacy one-step Publish flow). `POST /api/apps/v1/apps/drafts` (`workspaceId` required) creates or returns the Draft App bound to a workspace; App Preview instances run from it. `POST /api/apps/v1/apps/{draftAppId}/publish` promotes the draft's last-run version: omit `targetAppId` to publish as a new App (`appOverrides` sets name, visibility, vanity URL and so on), or set `targetAppId` to add a version to an existing App (entry point and configuration type must match or the call returns 422). `start: true` deploys in the same call; `startOverrides.deployment` carries hardware tier, autoscaling, vanity URL and iframe overrides. `publish` applies to drafts only; Apps created with step 1 get new versions through `versions` or `createAndStart`.
 
-Do not call management routes on the public app hostname or vice versa.
+## Logs
 
-## GenAI / inference vanity URLs (related)
+Instance logs are beta-only:
 
-Model and GenAI **inference** is not on the platform gateway. Management may be `/api/gen-ai/beta/endpoints` (or similar) while invoke uses `https://{data-plane or apps host}/endpoints/{vanity}` from the endpoint record.
+```bash
+# instances of a version (newest first is not guaranteed; read createdAt)
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$DOMINO_API_HOST/api/apps/beta/apps/$APP_ID/versions/$VERSION_ID/instances"
+# logs for one instance; logType: complete (default) | prepareoutput | stdout | stderr
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$DOMINO_API_HOST/api/apps/beta/apps/$APP_ID/versions/$VERSION_ID/instances/$INSTANCE_ID/logs?logType=stdout&limit=200"
+```
 
-`DOMINO_API_HOST` alone does not construct a working inference URL. Read `url` / vanity from the management API response and call that host for predictions.
+The response is `{"logContent": [{"timestamp", "logType", "log", "size"}], "isComplete", "pagination"}`; `realTimeLogs` streams the same data. The App details page shows the same logs with an instance selector and offers a support bundle download.
 
-See [model-endpoints/SKILL.md](../domino-model-endpoints/SKILL.md) and confirm routes in [API-SPECS.md](../domino-api-intro/API-SPECS.md) (public routes section).
+## Management URL vs App URL
 
-## When deploy or start is blocked
+Management calls go to the platform API base above. Viewers open the `url` field of the App record (an `apps` hostname or a `/apps/<vanity>/` path, depending on the deployment). Do not call `/api/apps/...` on the App's own hostname, and do not build the viewer URL by hand.
 
-Separate causes (do not conflate):
+## When a call fails
 
-| Symptom | Likely layer |
-|---------|----------------|
-| HTTP 403 on apps API | Project **RBAC** or token scope |
-| Admin-only setting | **Central config** / feature flags (admin APIs) |
-| Hardware tier, quota, spot/GPU policy | Platform **policy** or tier gates (UI often shows more detail than API) |
-| Model governance bundle not approved | **Governance** gates (`GET /api/governance/v1/bundles/{id}` and bundle gates), not apps RBAC |
+| Response | Likely cause |
+|---|---|
+| 401 | Missing or expired token, or an in-run call that bypassed the proxy and sent no bearer |
+| 403 | No edit permission on the project |
+| 415 on v1 `start` | Empty request body; send `{}` as JSON |
+| 422 on create | `visibility`, `name` or `projectId` missing; unknown environment or hardware tier; `dataPlaneId` not matching the tier |
+| 422 on publish or start | Entry point or configuration type differs from `targetAppId`; `vanityUrl` or `renderIFrame` override on a draft start |
+| Deploy blocked | A governance policy gates **Deploy** until approvals are complete; see the `domino-governance` skill |
 
-Governance gate coarse-graining on `GET /bundles/{id}/gates` is a **governance** concern, not an apps beta/v1 route issue.
-
-## Discovery
-
-OpenAPI and route discovery: [API-SPECS.md](../domino-api-intro/API-SPECS.md) (public routes section). Common routes include `/api/apps/v1/apps`, `.../publish`, `.../versions/{versionId}/start`, `.../stop`, and beta instance/log routes under `/api/apps/beta/...`.
+Docs: https://docs.domino.ai/cloud/platform-capabilities/features/apps/publish-and-deploy-app-versions (same content under `/6.3/`).
