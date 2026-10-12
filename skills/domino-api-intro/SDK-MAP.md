@@ -35,6 +35,8 @@ Cloud has removed them, so nothing under `/api/aigateway` is callable there.
 GenAI endpoint management (`/api/gen-ai/beta/endpoints`) is in both specs; see
 [domino-model-endpoints](../domino-model-endpoints/SKILL.md).
 
+Calling LLMs from code (provider SDKs, LLM Gateway 2.0, Domino-hosted models, and the legacy AI Gateway on 6.3): [domino-llm-access](../domino-llm-access/SKILL.md).
+
 ## Discovery for agents
 
 | Resource | Purpose |

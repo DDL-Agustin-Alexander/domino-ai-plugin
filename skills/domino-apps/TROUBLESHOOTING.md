@@ -1,356 +1,134 @@
-# Troubleshooting Domino App Deployment
+# Troubleshooting Domino App deployments
 
-This guide covers common issues and solutions when deploying web applications to Domino Data Lab.
+Start with the App logs: App details page, instance selector, or the beta logs route in [API-APPS.md](./API-APPS.md). Then match the symptom below. The `domino-debug-proxy` skill runs these checks against the project files.
 
-## Common Issues
+## 1. App never reaches Running, or shows Error / Failed
 
-### 1. 404 Errors on Asset Loading
+**Cause:** nothing is listening on `0.0.0.0:8888`. Domino requires that address and port; an App that binds `localhost`, `127.0.0.1` or another port fails to start.
 
-**Symptoms:**
-- Page loads but CSS/JS files return 404
-- Console shows requests to wrong paths
-- Styles missing, JavaScript not executing
+```javascript
+// vite.config.js (Vite serving in preview); the published App listens in server.js or serve
+server: { host: '0.0.0.0', port: 8888, strictPort: true }
+```
 
-**Cause:** React/Vite building with absolute paths instead of relative.
+```bash
+npx serve -s dist -l 8888            # React static
+streamlit run app.py --server.port 8888 --server.address 0.0.0.0
+python -m flask run --host=0.0.0.0 --port=8888
+```
 
-**Solution:**
+Other causes, visible in the logs: `app.sh` not executable (`git update-index --chmod=+x app.sh`), wrong working directory (start `app.sh` with `cd "$(dirname "$0")"` so it runs next to `package.json` or `app.py`), a dependency missing from the Compute Environment, `npm ci` without a `package-lock.json`.
+
+## 2. 404 on CSS and JS files
+
+**Cause:** absolute asset paths. The browser asks for `/assets/index.js` at the deployment root instead of under the App's prefix.
 
 ```javascript
 // vite.config.js
-export default defineConfig({
-  base: './',  // CRITICAL - use relative paths
-  // ...
-})
+export default defineConfig({ base: './' })
 ```
 
-**Verification:**
-```bash
-# After build, check index.html
-cat dist/index.html | grep -o 'src="[^"]*"'
-# Should show: src="./assets/..." NOT src="/assets/..."
-```
+Verify after `npm run build`: `grep -o 'src="[^"]*"' dist/index.html` must show `./assets/...`, never `/assets/...`. For Flask, FastAPI and hand-written HTML use `href="static/style.css"`, not `/static/style.css`.
 
-### 2. Blank Page After Deployment
+## 3. Blank page
 
-**Symptoms:**
-- App loads in development but shows blank page in production
-- No errors in browser console
-- Network tab shows successful requests
+1. Browser console: a JavaScript error, or assets loaded from the wrong path (see 2).
+2. `app.sh` serves a stale or missing build: it must run `npm run build` before serving, and `dist/` must exist.
+3. The App was not republished after the code change: publishing pins a commit, so edit, commit, publish a new version, deploy it.
 
-**Possible Causes:**
+## 4. Deep links or page refresh return 404 (React Router)
 
-1. **JavaScript errors** - Check browser console
-2. **Wrong entry point** - Verify app.sh path
-3. **Missing build step** - Ensure `npm run build` runs
+**Cause:** routes in the URL path reach the server, which has no file for them.
 
-**Debug Steps:**
+- Preferred: `HashRouter`. Routes live after `#`, the server only ever sees `/`, and relative assets resolve correctly on every route.
+- If `BrowserRouter` must stay: serve with SPA fallback (`npx serve -s dist` or the Express fallback in [REACT-VITE-GUIDE.md](./REACT-VITE-GUIDE.md)) and expect relative asset URLs to break on nested routes.
 
-```bash
-# Check app.sh is executable
-ls -la app.sh
+## 5. Dash or another Python app worked before and fails after a restart
 
-# Verify build output exists
-ls -la dist/
+**Cause:** the app builds its URL prefix from `DOMINO_PROJECT_OWNER`, `DOMINO_PROJECT_NAME` and `DOMINO_RUN_ID`. That layout no longer matches once `SecureIdentityPropagationToAppsEnabled` is on (the default on 6.3 and Cloud). Symptoms: blank page, 404 or 502 after restart; Dash cannot load assets or callbacks.
 
-# Check index.html content
-head -20 dist/index.html
-```
-
-### 3. App Not Accessible (Connection Refused)
-
-**Symptoms:**
-- App status shows "Running" in Domino
-- Clicking app URL shows connection error
-- Logs show app started successfully
-
-**Cause:** App not binding to correct host/port.
-
-**Solution:**
-
-```javascript
-// vite.config.js - Development
-server: {
-  host: '0.0.0.0',  // NOT 'localhost' or '127.0.0.1'
-  port: 8888,       // Must be 8888
-  strictPort: true
-}
-```
-
-```bash
-# app.sh - Production
-npx serve -s dist -l 8888  # Port 8888
-```
-
-**For other frameworks:**
 ```python
-# Flask
-app.run(host='0.0.0.0', port=8888)
-
-# Streamlit
-# streamlit run app.py --server.port 8888 --server.address 0.0.0.0
+app = Dash(__name__, routes_pathname_prefix="/",
+           requests_pathname_prefix=os.environ.get("DOMINO_RUN_HOST_PATH"))
 ```
 
-### 4. Client-Side Routing Broken (React Router)
+Publish a new version with the change and deploy it. Reference: https://docs.domino.ai/cloud/platform-capabilities/features/apps/app-logs-and-versioning/app-configuration-settings
 
-**Symptoms:**
-- Homepage works
-- Direct navigation to routes (e.g., `/dashboard`) returns 404
-- Refresh on non-root routes fails
+## 6. Model endpoint calls fail (401, 403, CORS)
 
-**Cause:** Server doesn't know about client-side routes.
+- **401 from a synchronous endpoint:** the call used `Authorization: Bearer`. Synchronous endpoints need HTTP Basic with the Model Access Token as both username and password; only asynchronous endpoints take Bearer. Tokens are created per endpoint under **Settings > Invocation**, not in account settings.
+- **CORS error in the browser:** the frontend calls the endpoint directly. Route the call through the App's backend (`server.js`, Flask, FastAPI); this also keeps the token out of the bundle.
+- **`MODEL_API_URL` / `MODEL_API_TOKEN` undefined:** set them as project environment variables in Domino and restart the App; variables added after a start are not visible until the next start.
+- **Token visible in the bundle:** a `VITE_MODEL_API_TOKEN` variable is inlined at build time. Remove it, rotate the token, and read it server-side.
 
-**Solution 1: Use serve with SPA mode**
+## 7. `import.meta.env.VITE_*` is undefined
+
+Vite exposes only variables prefixed `VITE_`, and only those present at **build** time (`npm run build` in `app.sh` sees the App's environment variables). Use the prefix for non-secret values only. Runtime values belong in the backend or in a small `GET /api/config` route.
+
+## 8. Slow start
+
+- `npm ci` with a committed `package-lock.json`, not `npm install`.
+- Add `serve` (or `express`) to `package.json` so `npx` fetches nothing at start.
+- Put Python packages in the Compute Environment, not in `app.sh`.
+- `npm ci` itself needs egress to the npm registry (or a private mirror configured in `.npmrc`). On an air-gapped site, or if the build is the bottleneck, build in CI, commit `dist/` on a deploy branch, point the App's version at that branch, and reduce `app.sh` to the serve step.
+
+## 9. Streamlit websocket or "connection error"
 
 ```bash
-# app.sh
-npx serve -s dist -l 8888  # -s flag enables SPA fallback
+streamlit run app.py --server.port 8888 --server.address 0.0.0.0 \
+    --server.enableCORS false --server.enableXsrfProtection false
 ```
 
-**Solution 2: Use HashRouter**
+Domino's Streamlit example sets the same two options in `~/.streamlit/config.toml`.
 
-```javascript
-// main.jsx
-import { HashRouter } from 'react-router-dom';
+## 10. 401 or 403 from Domino platform APIs inside the App
 
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <HashRouter>
-    <App />
-  </HashRouter>
-);
-```
+- In-run calls go through `$DOMINO_API_PROXY` with no `Authorization` header, or carry a bearer from `http://localhost:8899/access-token` (fetch it per request; it expires).
+- Calling as the viewer requires extended identity propagation (enabled by a SysAdmin or CloudAdmin at publish time) and the viewer's consent; otherwise the forwarded JWT has limited scope.
+- `X-Domino-Api-Key` and `DOMINO_USER_API_KEY` are deprecated; do not fall back to them.
 
-**Solution 3: Configure basename**
+## Diagnostics
 
-```javascript
-// main.jsx
-const basename = window.location.pathname.replace(/\/[^/]*$/, '');
-
-<BrowserRouter basename={basename}>
-  <App />
-</BrowserRouter>
-```
-
-### 5. API Calls Failing (CORS or Auth)
-
-**Symptoms:**
-- App loads but API calls fail
-- Console shows CORS errors
-- 401/403 responses from API
-
-**Debugging:**
-
-```javascript
-// Add detailed error logging
-const callAPI = async (data) => {
-  console.log('API URL:', import.meta.env.VITE_MODEL_API_URL);
-  console.log('Token exists:', !!import.meta.env.VITE_MODEL_API_TOKEN);
-
-  try {
-    const response = await fetch(import.meta.env.VITE_MODEL_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${import.meta.env.VITE_MODEL_API_TOKEN}`,
-      },
-      body: JSON.stringify(data),
-    });
-
-    console.log('Response status:', response.status);
-    console.log('Response headers:', [...response.headers.entries()]);
-
-    return response.json();
-  } catch (error) {
-    console.error('API Error:', error);
-    throw error;
-  }
-};
-```
-
-**Common Fixes:**
-
-1. **Missing environment variables** - Check `.env` file and Domino app settings
-2. **Wrong token format** - Ensure `Bearer ` prefix
-3. **CORS** - Model endpoint must allow cross-origin requests
-
-### 6. Environment Variables Not Available
-
-**Symptoms:**
-- `import.meta.env.VITE_*` returns `undefined`
-- App works locally but not in Domino
-
-**Cause:** Vite environment variables must be prefixed with `VITE_`.
-
-**Solution:**
+Logs over the API (instance reads are beta-only):
 
 ```bash
-# .env or Domino app environment
-VITE_MODEL_API_URL=https://...  # VITE_ prefix required
-VITE_MODEL_API_TOKEN=token123
-```
-
-**For runtime variables (not baked into build):**
-
-```javascript
-// Use window.ENV for runtime config
-// Create a config endpoint or inject at runtime
-```
-
-### 7. App Crashes on Startup
-
-**Symptoms:**
-- App status shows "Error" or keeps restarting
-- Logs show immediate crash
-
-**Debug Steps:**
-
-```bash
-# Check app.sh syntax
-bash -n app.sh
-
-# Test locally
-chmod +x app.sh
-./app.sh
-```
-
-**Common Issues:**
-
-1. **Missing dependencies**
-```bash
-# app.sh - ensure npm ci runs
-npm ci  # Not npm install
-```
-
-2. **Wrong working directory**
-```bash
-# app.sh - verify path
-cd /mnt/code  # Standard Domino path
-ls -la        # Verify files exist
-```
-
-3. **Permission errors**
-```bash
-# Make app.sh executable in repo
-git update-index --chmod=+x app.sh
-```
-
-### 8. Slow App Startup
-
-**Symptoms:**
-- App takes minutes to become available
-- Timeout errors during deployment
-
-**Causes and Solutions:**
-
-1. **Large npm install**
-```bash
-# Use npm ci for faster, deterministic installs
-npm ci  # NOT npm install
-```
-
-2. **Build included in startup**
-```bash
-# Pre-build in CI/CD instead of app.sh
-# Or use Domino Docker build
-```
-
-3. **Downloading models at startup**
-```python
-# Cache models in environment or artifacts
-# Don't download on every app start
-```
-
-### 9. WebSocket Connection Issues
-
-**Symptoms:**
-- Streamlit shows connection errors
-- Real-time features not working
-- Intermittent disconnections
-
-**Solution for Streamlit:**
-
-```bash
-# app.sh
-streamlit run app.py \
-    --server.port 8888 \
-    --server.address 0.0.0.0 \
-    --server.enableCORS false \
-    --server.enableXsrfProtection false
-```
-
-## Diagnostic Tools
-
-### Check App Logs
-
-```bash
-# In Domino UI
-# Go to Project > Apps > Select App > Logs
-
-# Or via API
 TOKEN=$(curl -s http://localhost:8899/access-token)
-curl -H "Authorization: Bearer $TOKEN" \
-  "$DOMINO_API_HOST/v4/apps/$APP_ID/logs"
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$DOMINO_API_HOST/api/apps/beta/apps/$APP_ID/versions/$VERSION_ID/instances"
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$DOMINO_API_HOST/api/apps/beta/apps/$APP_ID/versions/$VERSION_ID/instances/$INSTANCE_ID/logs?logType=stderr"
 ```
 
-### Test Port Binding Locally
+`APP_ID` comes from `GET /api/apps/v1/apps?projectId=$DOMINO_PROJECT_ID&name=<app name>` (`items[].id`) and `VERSION_ID` from that record's `currentVersion.id`. The App details page offers the same logs and a support bundle (`execution.log`, `executor.log`, Kubernetes events, nginx logs).
 
-```bash
-# Test if port 8888 is available
-lsof -i :8888
-
-# Test app binding
-curl -v http://localhost:8888
-```
-
-### Verify Build Output
-
-```bash
-# Check build creates expected files
-npm run build
-ls -la dist/
-cat dist/index.html | head -30
-
-# Verify asset paths are relative
-grep -r 'src="\/' dist/  # Should return nothing
-grep -r 'href="\/' dist/ # Should return nothing
-```
-
-### Test in Docker Locally
+Local reproduction of the container:
 
 ```dockerfile
-# Test Dockerfile
-FROM node:18
-
-WORKDIR /mnt/code
+FROM node:24
+WORKDIR /app
 COPY . .
-
-RUN npm ci
-RUN npm run build
-
+RUN npm ci && npm run build
 EXPOSE 8888
-CMD ["npx", "serve", "-s", "dist", "-l", "8888"]
+CMD ["node", "server.js"]
 ```
 
 ```bash
-docker build -t test-app .
-docker run -p 8888:8888 test-app
-# Visit http://localhost:8888
+docker build -t test-app . && docker run -p 8888:8888 -e MODEL_API_URL=... -e MODEL_API_TOKEN=... test-app
 ```
 
-## Quick Reference: Common Fixes
+Local Docker cannot reproduce the proxy prefix or identity headers; use App Preview in a workspace for that.
 
-| Issue | Quick Fix |
-|-------|-----------|
-| 404 on assets | `base: './'` in vite.config.js |
-| Connection refused | `host: '0.0.0.0'` and `port: 8888` |
-| Blank page | Check browser console for JS errors |
-| Routing broken | Use `serve -s` or HashRouter |
-| Env vars undefined | Prefix with `VITE_` |
-| Slow startup | Use `npm ci` instead of `npm install` |
-| API calls fail | Check CORS and auth headers |
+## Quick reference
 
-## Getting Help
+| Symptom | Fix |
+|---|---|
+| Never Running | Bind `0.0.0.0:8888` |
+| 404 on assets | `base: './'`; relative `static/` paths |
+| Deep links 404 | `HashRouter` |
+| Broke after restart | `DOMINO_RUN_HOST_PATH` instead of a hand-built prefix |
+| Model call 401 | Basic auth (sync) with the token as user and password; Bearer only for async |
+| CORS on model call | Call from the backend, not the browser |
+| Env var undefined | `VITE_` prefix for build-time values; project variables plus restart for runtime values |
+| Slow start | `npm ci`, vendored `serve`/`express`, packages in the environment |
 
-1. Check Domino app logs first
-2. Test locally with same configuration
-3. Review Domino documentation: https://docs.dominodatalab.com/en/latest/user_guide/e3ec27/apps-in-domino/
-4. Check blueprint examples: https://github.com/dominodatalab/domino-blueprints
+Docs: https://docs.domino.ai/cloud/platform-capabilities/features/apps/app-logs-and-versioning (logs and support bundle) and https://docs.domino.ai/cloud/platform-capabilities/features/apps/common-app-frameworks (minimal working examples).

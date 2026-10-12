@@ -9,8 +9,8 @@
         "domino_mcp_server.py"
       ],
       "env": {
-        "DOMINO_API_KEY": "${env:DOMINO_API_KEY}",
-        "DOMINO_HOST": "${env:DOMINO_HOST}"
+        "DOMINO_HOST": "${env:DOMINO_HOST}",
+        "DOMINO_TOKEN": "${env:DOMINO_TOKEN}"
       }
     },
     "domino_docs": {

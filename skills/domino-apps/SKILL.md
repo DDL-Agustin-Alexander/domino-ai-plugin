@@ -1,41 +1,34 @@
 ---
 name: domino-apps
-description: Deploy web applications to Domino Data Lab with expertise in React apps (Vite) behind Domino's reverse proxy. Covers app.sh configuration, port configuration, base path handling for SPAs, CI/CD with GitHub Actions, and proxy troubleshooting. Use when deploying apps to Domino, setting up CI/CD pipelines, fixing broken routing, or configuring JavaScript frameworks for Domino's proxy.
+description: Publish, deploy, update, restart, stop or roll back a web application as a Domino App, and automate those steps over the Apps API or a CI/CD pipeline. Use whenever the user wants to publish, deploy, ship, launch, release or host an app (React/Vite, Streamlit, Dash, Flask, Shiny, Gradio, FastAPI) on Domino, make an existing app work behind Domino's reverse proxy (app.sh entry point, mandatory 0.0.0.0:8888, DOMINO_RUN_HOST_PATH, relative base, HashRouter, server-side model endpoint calls), create a new App version, deploy an older version, start or stop an App over /api/apps/v1, or set up GitHub Actions deployment to Domino. Not for scaffolding a brand-new app from scratch (domino-app-init) or for diagnosing 404s, blank pages or broken routing in an already published app (domino-debug-proxy); use it when those hand off to publishing.
+compatibility: Domino 6.3 and Domino Cloud. Requires DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token or service account token.
 ---
 
-# Domino Apps Skill
+# Domino Apps
 
-This skill provides comprehensive knowledge for deploying web applications to Domino Data Lab, with special focus on React applications using Vite.
+Applies to Domino 6.3 and Domino Cloud. Routes, environment variables and proxy behaviour are the same on both targets.
 
-## Key Concepts
+A Domino App runs project code in a container behind Domino's reverse proxy. The proxy authenticates the viewer, strips the App's URL prefix before forwarding the request, and adds the `domino-username` header (plus an `Authorization` JWT when secure identity propagation is on, which is the default on 6.3 and Cloud).
 
-### Domino App Architecture
+## Rules every App must satisfy
 
-Domino apps run in containers behind a reverse proxy that:
-1. Authenticates users via Domino's auth system
-2. Strips the URL prefix before forwarding to your app
-3. Routes traffic to your app container
-4. Handles infrastructure provisioning, routing, and resource management
+1. **Serve on `0.0.0.0:8888`.** An App that does not expose a server on that address and port fails to start. Port 8888 is mandatory, not a default.
+2. **The entry point is a launch file** in the project (`app.sh`, or a Python or R script). It is fixed for the life of the App; create a new App to change it.
+3. **Read the URL prefix from `DOMINO_RUN_HOST_PATH`** wherever a framework needs its base path (Dash `requests_pathname_prefix`, Gradio `root_path`). Never assemble it from `DOMINO_PROJECT_OWNER`, `DOMINO_PROJECT_NAME` and `DOMINO_RUN_ID`; that prefix stopped matching when `SecureIdentityPropagationToAppsEnabled` became the default.
+4. **Use relative URLs** for assets and API calls (Vite `base: './'`, `new URL('api/', document.baseURI)`), never root-absolute `/assets/...` or `fetch('/api/...')`.
+5. **Keep secrets on the server.** Model endpoint tokens live in project or user environment variables and are read by backend code. Anything in a `VITE_`-prefixed variable is compiled into the browser bundle.
 
-**Note:** Port selection is flexible; port 8888 is no longer required. You can use any port your application prefers.
+## Quick start
 
-### Critical Configuration Points
+| Framework | `app.sh` runs | Details |
+|---|---|---|
+| Vite + React | `npm ci && npm run build && node server.js` (Express serves `dist/` and proxies model calls), or `npx serve -s dist -l 8888` when the app calls nothing | [REACT-VITE-GUIDE.md](./REACT-VITE-GUIDE.md) |
+| Streamlit | `streamlit run app.py --server.port 8888 --server.address 0.0.0.0 --server.enableCORS false --server.enableXsrfProtection false` | [FRAMEWORKS.md](./FRAMEWORKS.md) |
+| Dash | `python app.py` with `Dash(__name__, routes_pathname_prefix='/', requests_pathname_prefix=os.environ.get('DOMINO_RUN_HOST_PATH'))` and `app.run(host='0.0.0.0', port=8888)` | [FRAMEWORKS.md](./FRAMEWORKS.md) |
+| Flask | `python -m flask run --host=0.0.0.0 --port=8888` or `gunicorn -w 4 -b 0.0.0.0:8888 app:app` | [FRAMEWORKS.md](./FRAMEWORKS.md) |
+| Shiny | `R -e 'shiny::runApp("./", port=8888, host="0.0.0.0")'` | [FRAMEWORKS.md](./FRAMEWORKS.md) |
 
-1. **Host Binding**: Bind to `0.0.0.0` (not localhost) so Domino can reach your app
-2. **Relative Base Path**: Use `base: './'` in Vite config for React apps
-3. **app.sh**: Entry point script (launch file) that Domino executes
-
-## Related Documentation
-
-- [API-APPS.md](./API-APPS.md) - REST automation: v1 vs beta, publish chain, management vs app URL, inference split
-- [REACT-VITE-GUIDE.md](./REACT-VITE-GUIDE.md) - Deep dive into Vite + React configuration
-- [REACT-CICD.md](./REACT-CICD.md) - CI/CD setup with GitHub Actions
-- [FRAMEWORKS.md](./FRAMEWORKS.md) - Streamlit, Dash, Flask configurations
-- [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) - Common issues and solutions
-
-## Quick Start
-
-### React with Vite
+Scaffold any of these with the `domino-app-init` skill; diagnose a broken deployment with `domino-debug-proxy`.
 
 ```javascript
 // vite.config.js
@@ -44,129 +37,49 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base: './',  // CRITICAL for Domino proxy
-  server: { host: '0.0.0.0', port: 8888, strictPort: true },
-  preview: { host: '0.0.0.0', port: 8888, strictPort: true },
+  base: './',                                                  // relative asset URLs in the build
+  server: { host: '0.0.0.0', port: 8888, strictPort: true },   // laptop dev only
 })
 ```
 
-```bash
-# app.sh
-#!/bin/bash
-set -e
-cd /mnt/code
-npm ci
-npm run build
-npx serve -s dist -l 8888 --no-clipboard
-```
+Use `HashRouter` for client-side routes: they live after `#`, so they never reach the server and relative asset URLs resolve from the App root on every route. `BrowserRouter` with a basename derived from `window.location.pathname` breaks on nested routes.
 
-### Streamlit
+## Lifecycle
 
-```bash
-# app.sh
-#!/bin/bash
-streamlit run app.py --server.port 8888 --server.address 0.0.0.0
-```
+Create, publish and deploy are separate steps. Publishing records an immutable version (code commit, environment revision, mounts, identity propagation); deploying starts it. Hardware tier, autoscaling, vanity URL and iframe settings are deployment settings: changing them restarts the instance without creating a version. Develop in a workspace with **App Preview** (a real App runtime on port 8888, visible only to the author at `/preview/<draftAppId>`), then **Publish App**, then **Deploy** the version from the App details page.
 
-### Dash/Flask
+## Environment variables and headers
 
-```bash
-# app.sh
-#!/bin/bash
-python app.py  # Must bind to 0.0.0.0:8888
-```
+| Name | Meaning |
+|---|---|
+| `DOMINO_RUN_HOST_PATH` | URL path prefix under which the App is served |
+| `DOMINO_PROJECT_ID`, `DOMINO_PROJECT_NAME`, `DOMINO_PROJECT_OWNER` | Hosting project |
+| `DOMINO_RUN_ID` | Run ID of the App instance |
+| `DOMINO_STARTING_USERNAME` | User who started the run, not the viewer |
+| `DOMINO_API_HOST` | Base URL for Domino platform APIs from inside the App |
+| `domino-username` (request header) | Viewer's username; `Anonymous` when anonymous access is enabled |
+| `Authorization` (request header) | Viewer JWT; full user scope only with extended identity propagation and viewer consent |
 
-## Environment Variables
+Project and user-level environment variables are injected at start. Flask and Dash read the proxied headers by default; Shiny needs Shiny Server Pro.
 
-Domino provides these environment variables to your app:
+## Calling Domino APIs and model endpoints from an App
 
-| Variable | Description |
-|----------|-------------|
-| `DOMINO_PROJECT_NAME` | Current project name |
-| `DOMINO_PROJECT_OWNER` | Project owner username |
-| `DOMINO_RUN_ID` | Current run identifier |
-| `DOMINO_STARTING_USERNAME` | User who started the app |
+- **Platform API as the publisher**: `$DOMINO_API_PROXY/api/...` with no `Authorization` header, or a bearer from `http://localhost:8899/access-token` on `$DOMINO_API_HOST`. Fetch the token per request; it is short-lived.
+- **Platform API as the viewer**: with extended identity propagation enabled by a SysAdmin or CloudAdmin and consent granted, forward the viewer's `Authorization` header.
+- **Model endpoints**: read `MODEL_API_URL` and `MODEL_API_TOKEN` from environment variables set in project settings. Tokens are created per endpoint under **Settings > Invocation > Add Model Access Token**. Synchronous endpoints take HTTP Basic auth with the token as both username and password (`requests.post(url, auth=(token, token), json={"data": {...}})`); asynchronous endpoints take `Authorization: Bearer <token>`. Call them from backend code, never from the browser.
 
-## Inter-App Communication
+Authentication reference: https://docs.domino.ai/cloud/reference/api/domino-api-authentication . Legacy API keys (`DOMINO_USER_API_KEY`, `X-Domino-Api-Key`) are deprecated; do not use them.
 
-Domino apps can communicate with each other using bearer token authentication. This is useful for:
-- Calling Model APIs from an app
-- App-to-app service calls
-- Accessing internal Domino services
+## REST automation
 
-### Getting the Access Token
+`/api/apps/v1` for create, versions, publish (drafts), start and stop; `/api/apps/beta` only for instance reads (list instances, logs, real-time logs, views). The create body requires `name`, `projectId` and `visibility`. Full chain, bodies and the logs route: [API-APPS.md](./API-APPS.md). CI/CD with GitHub Actions and a service account: [REACT-CICD.md](./REACT-CICD.md).
 
-Domino provides an access token service at `localhost:8899`:
+## Reference files
 
-```python
-import requests
+- [REACT-VITE-GUIDE.md](./REACT-VITE-GUIDE.md): Vite config, Express backend, HashRouter, App Preview
+- [REACT-CICD.md](./REACT-CICD.md): GitHub Actions workflow and Public API deploy script
+- [FRAMEWORKS.md](./FRAMEWORKS.md): Streamlit, Dash, Flask, Gradio, FastAPI, Shiny
+- [API-APPS.md](./API-APPS.md): v1 vs beta routes, publish chain, logs
+- [TROUBLESHOOTING.md](./TROUBLESHOOTING.md): symptoms, causes and fixes
 
-# Get bearer token for inter-app communication
-API_TOKEN = requests.get("http://localhost:8899/access-token").text
-```
-
-### Making Authenticated Requests
-
-```python
-import requests
-
-# 1. Get access token from Domino's token service
-API_TOKEN = requests.get("http://localhost:8899/access-token").text
-
-# 2. Set up headers with bearer token
-headers = {
-    "Authorization": f"Bearer {API_TOKEN}",
-    "Content-Type": "application/json"
-}
-
-# 3. Make request to another Domino app or service
-payload = {
-    "query": "Your request data here"
-}
-
-try:
-    resp = requests.post(
-        "https://your-domino-instance/apps-internal/APP_ID/endpoint",
-        json=payload,
-        headers=headers,
-        timeout=100
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    print(data)
-except requests.exceptions.RequestException as err:
-    print("API call failed:", err)
-```
-
-### Key Points
-
-- **Token endpoint**: `http://localhost:8899/access-token` (only accessible from within Domino)
-- **Token type**: Bearer token for Authorization header
-- **Use cases**: Model API calls, app-to-app communication, internal services
-- **Timeout**: Set appropriate timeouts for long-running requests
-
-## REST automation (apps API)
-
-For create, publish, start, and stop from code, read [API-APPS.md](./API-APPS.md). Use `/api/apps/v1` for writes; use `/api/apps/beta` only for instance logs, views, and runtime telemetry.
-
-## API Reference
-
-OpenAPI and route discovery: [API-SPECS.md](../domino-api-intro/API-SPECS.md) (public routes section).
-
-### API Version Prioritization Rules
-
-- **Prioritize the Apps v1 API (`/api/apps/v1`)** for all apps creation, update, preview, publication, start and stop workflows. 
-- **The Beta API (`/api/apps/beta`) is deprecated** for new automation and maintained for backward compatibility and runtime reads. Do not build new functionality against `beta` endpoints if a `v1` equivalent exists.
-- **Instance Read Operations Exception**: Instance read operations (such as fetching active container logs, `realTimeLogs`, `views`, listing active running instances, or issuing an instance-level `DELETE`) were not migrated to the `v1` spec. They remain under `/api/apps/beta`.
-
-*Rule of Thumb:* Use `v1` for automating write or publish actions. Fall back to `beta` for streaming runtime telemetry like logs or views.
-
-**Authentication:** https://docs.domino.ai/cloud/reference/api/domino-api-authentication . In-run: `DOMINO_API_PROXY` (no Authorization header) or `DOMINO_USER_HOST` + `http://localhost:8899/access-token`. Outside run: public deployment URL + PAT/SA. Do not use API keys.
-
-**Get the cluster base URL:** `$DOMINO_USER_HOST` or `$DOMINO_API_HOST` in-run; confirm apps routes with `GET .../api/apps/v1/apps?limit=1`.
-
-**Public docs:**
-- https://docs.domino.ai/cloud/platform-capabilities/features/apps
-
-**Blueprint Reference:**
-- [React CI/CD Blueprint](https://github.com/dominodatalab/domino-blueprints/tree/main/React-app-deployment-with-CICD)
+Docs: https://docs.domino.ai/cloud/platform-capabilities/features/apps (same under `/6.3/`). Specs: https://docs.domino.ai/api-specs/cloud/public-api.json and https://docs.domino.ai/api-specs/6.3/public-api.json . Related skills: `domino-api-intro` (auth, hosts), `domino-ui-bootstrap` (design system SPA), `domino-ui-design` (FastAPI + Ant Design), `domino-extensions` (mount an App in the Domino UI).
