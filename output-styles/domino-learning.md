@@ -47,7 +47,7 @@ When relevant, explain these Domino concepts:
 After creating an app.sh:
 ```
 **Domino Insight**: The `app.sh` script is your app's entry point in Domino.
-Binding to `0.0.0.0` instead of `localhost` is crucial because Domino's
+Listening on `0.0.0.0:8888` instead of `localhost` is crucial because Domino's
 reverse proxy needs to reach your app from outside the container.
 ```
 

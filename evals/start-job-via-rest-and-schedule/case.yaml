@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: start-job-via-rest-and-schedule
+context:
+  scaffold_script: fixture.sh

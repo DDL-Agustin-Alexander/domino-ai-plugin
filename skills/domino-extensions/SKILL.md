@@ -1,132 +1,69 @@
 ---
 name: domino-extensions
-description: Build and operate Domino UI Extensions (mount Domino Apps in the shell with page context). Covers extension_manifest.json, official installer vs manual Extension API, publish and identity requirements, auth and host splits, and beta REST routes. Use when creating an Extension, wiring mount points, publishing an Extension App from a project, or automating Extension install lifecycle. Not for generic App deployment alone (see domino-apps) or SPA scaffolding (see domino-ui-bootstrap).
+description: Build and operate Domino UI Extensions (mount a published Domino App at a Domino UI mount point with page context). Covers extension_manifest.json, the official installer versus the manual Extensions API, App publish and identity requirements, auth and host rules for Extension backends, and the /api/extensions/beta routes. Use when creating an Extension, wiring mount points, publishing an Extension App from a project, pointing an Extension at a new App version, or automating the Extension install lifecycle. Not for generic App deployment alone (see domino-apps) or SPA scaffolding (see domino-ui-bootstrap).
+compatibility: Domino 6.3 and Domino Cloud. Requires DOMINO_API_HOST; in a run use DOMINO_API_PROXY or the localhost:8899 access-token endpoint, outside a run a Personal Access Token or service account token. Creating an Extension needs admin permissions; publishing its App with extended identity propagation needs a SysAdmin or CloudAdmin.
 ---
 
 # Domino Extensions
 
-An **Extension** surfaces a published **App** at a Domino UI **mount point** (project sidebar, dataset page, model details, file context menus, admin panel). Domino opens the App in a new tab and passes page context as query parameters. The App must support **extended identity propagation** so it can act as the viewing user with consent.
+Applies to Domino 6.3 and Domino Cloud. The routes and mount points below are identical in both public API specs.
+
+An **Extension** surfaces a published **App** at a Domino UI **mount point** (Project sidebar, Dataset details page, Dataset file three-dot menu, Model details page, Admin panel). Domino opens the App in a new tab and passes the originating page's context as query parameters. One App can back several Extensions; pointing an Extension at a newer App version is an admin configuration change, not a rebuild.
 
 ## When to use other skills
 
 | Goal | Skill |
-|------|--------|
+|---|---|
 | Vite/React design system, `@dominodatalab/extensions-tools`, proxy-safe URLs | [domino-ui-bootstrap](../domino-ui-bootstrap/SKILL.md) |
-| `app.sh`, ports, SPA base path, generic App CI | [domino-apps](../apps/SKILL.md) |
-| REST auth, jobs, projects, platform `/api/*` and `/v4/*` | [python-sdk](../python-sdk/SKILL.md) |
-| Governance from an extension backend | [domino-governance](../domino-governance/SKILL.md) plus external URL rules below |
+| `app.sh`, ports, prefixes, App publish chain (`/api/apps/v1`), CI | [domino-apps](../domino-apps/SKILL.md), [domino-apps/API-APPS.md](../domino-apps/API-APPS.md) |
+| Authentication, hosts, pagination and errors for any Domino API call | [domino-api-intro](../domino-api-intro/SKILL.md) |
+| Governance from an Extension backend | [domino-governance](../domino-governance/SKILL.md) |
 
-Product overview: https://docs.domino.ai/cloud/platform-capabilities/features/extensions
+Docs: https://docs.domino.ai/cloud/platform-capabilities/features/extensions (overview), https://docs.domino.ai/cloud/platform-capabilities/features/extensions/create-manage-extensions (build your own), https://docs.domino.ai/cloud/platform-capabilities/features/extensions/install-domino-official-extensions (official catalog). The same pages exist under `/6.3/`.
 
-Official catalog install (SysAdmin/CloudAdmin): https://docs.domino.ai/cloud/platform-capabilities/features/extensions/install-domino-official-extensions
+## Requirements on the App
 
-Authentication: https://docs.domino.ai/cloud/reference/api/domino-api-authentication . For HTTP client setup in Extension backends and install scripts, use [python-sdk/SKILL.md](../python-sdk/SKILL.md#authentication).
+1. **Extended identity propagation enabled** ("Allow App to act for viewers in Domino" on the Access & sharing step; `content.extendedIdentityPropagationToAppsEnabled: true` on the App version over the API). Only a SysAdmin or CloudAdmin can publish an App with it on; without it the App cannot back an Extension (`POST /api/extensions/beta/extensions` returns 400). The deployment needs `SecureIdentityPropagationToAppsEnabled` and `com.cerebro.domino.apps.extendedIdentityPropagationToAppsEnabled`, both on by default on Cloud and 6.3. Once enabled on an App it cannot be disabled.
+2. **A framework that reads proxied HTTP headers**: Flask and Dash do by default; Shiny needs Shiny Server Pro. The per-request viewer token arrives in the `Authorization` header after the viewer consents.
+3. **Published and viewable**: an Extension inherits the App's access controls; users without view access see it listed and are prompted to request access.
+4. Domino's App guidelines: call Domino APIs from backend code only (never from frontend JavaScript), authenticate with the per-request bearer from `Authorization` (never an API key), keep the App stateless or protect cached data like its source, declare dependencies in the Compute Environment's Dockerfile.
 
-## Extension manifest (`extension_manifest.json`)
+## Mount points and context
 
-Domino Official Extensions and custom Extension repos ship a manifest at the repo root. Schema version is **`manifestSchemaVersion`: 1** (integer). The official installer reads this file from a GitHub release; manual flows still mirror the same shape when you create entities yourself.
+| `uiMountPointTypeConfigs` key | Where | Query parameters passed to `/` |
+|---|---|---|
+| `projectSidebar` | Project navigation sidebar | `projectId` |
+| `dataset` | Dataset details page | `datasetId` |
+| `datasetFileContext` | Three-dot menu of a file in a Dataset | `datasetId`, `datasetSnapshotId`, `filePath` |
+| `modelDetails` | Model details page | `modelId`, `modelVersionId` |
+| `adminPanel` | New page in the Admin panel | none |
+| `netAppVolume`, `netAppVolumeFileContext` | NetApp Volume pages (in the API schema; the docs list only the five above) | `netAppVolumeId`, `netAppVolumeSnapshotId`, `filePath` |
 
-Top-level sections:
+`urlConfig.contextualQueryParams` accepts only the spec enum (the eight names above), and the App receives exactly what the config lists. The docs call the file parameter `datasetFilePath`; the spec and Domino's own extensions use `filePath`. Read the parameters on the App's root route, validate the ones you need and return a clear 400 when they are missing, and call Domino with the forwarded `Authorization` header. A worked Flask example and the exact config shapes are in [API-EXTENSIONS.md](./API-EXTENSIONS.md).
 
-| Section | Purpose |
-|---------|---------|
-| `project` | Hosting project (`name`, `description`, `visibility`, `isRestricted`, ...) |
-| `app` | Compute environment, entry point, vanity URL, visibility, mounts, hardware tier |
-| `extension` | Extension record: `name`, `description`, `enabled`, `uiMountPointTypeConfigs` |
+## Create an Extension (custom App)
 
-For full manifest examples and patterns (compute environment, mount configs, deep linking, autoscaling), refer to Domino's official Extension repos:
+1. **Build and preview** the App in a workspace (App Preview), then **Publish App** as a SysAdmin or CloudAdmin with extended identity propagation on. Over the API: [domino-apps/API-APPS.md](../domino-apps/API-APPS.md).
+2. **Create the Extension** from the App's three-dot menu (**Create Extension**) or **Admin panel > Extensions > Create Extension**: pick the App version and add one or more mount points. Needs admin permissions (a 403 means they are missing; see API-EXTENSIONS.md). Over the API: `POST /api/extensions/beta/extensions` with `name`, `enabled`, `appId`, **`appVersionId`** (a version with extended identity propagation on) and `uiMountPointTypeConfigs`; all five are required in both specs, `description` is optional. Verified body and the other routes: [API-EXTENSIONS.md](./API-EXTENSIONS.md).
+3. **Manage** from Admin panel > Extensions: toggle enabled, **Manage Extension > Edit** to change mount points or the App version, **Delete** to soft-delete. Publishing a new App version does not move the Extension; edit it in the UI or `PATCH` `appVersionId` over the API.
 
-- https://github.com/dominodatalab/AutoML_Extension
-- https://github.com/dominodatalab/clinical-data-explorer
-- https://github.com/dominodatalab/AutoDocumentation_Extension
+## Official Extensions (manifest-driven)
 
-Each ships an `extension_manifest.json` at the repo root; read the file matching your Domino version rather than copying from this skill.
+Domino-built Extensions are installed, upgraded and uninstalled from **Admin panel > Extensions > Manage Domino-official Extensions**; the installer reads `extension_manifest.json` (`manifestSchemaVersion: 1`, sections `project`, `app`, `extension`) from a GitHub release and creates the Project, Compute Environment, App and Extension itself. Do not edit those managed entities by hand. Manifest fields, lifecycle rules and the install routes: [MANIFEST.md](./MANIFEST.md).
 
-### Mount points (`uiMountPointTypeConfigs`)
+## Auth and hosts in Extension backends
 
-Keys match the Extensions API enum: `projectSidebar`, `dataset`, `datasetFileContext`, `modelDetails`, `adminPanel`, `netAppVolume`, `netAppVolumeFileContext`. Each mount defines `enabled`, scope (for example `allProjects` or project lists), and `urlConfig` with `contextualQueryParams` Domino passes to the App.
+| Call | Credential and base |
+|---|---|
+| Platform API as the **viewer** | Forward the request's `Authorization` bearer on `$DOMINO_API_HOST/api/...`. Consent expires (8 hours by default, up to 30 days) |
+| Platform API as the **publisher** | `$DOMINO_API_PROXY/api/...` with no header, or a bearer from `http://localhost:8899/access-token` on `$DOMINO_API_HOST` |
+| Governance `/api/governance/v1/*` | Base URL per the `domino-governance` skill; bearer PAT or service account, never an API key |
+| Model inference | The `url` from the endpoint record, not a hand-built host |
+| Automation outside any run | Public deployment URL plus PAT or service account token |
 
-Domino documents five primary user-facing mount types on the product page; the API includes NetApp-related mount types for volume integrations.
+Without consent the viewer JWT has limited scope, so privileged reads such as `GET /v4/users/self` (Domino Internal API, may change between Domino versions) can fail; prefer `/api/...` routes and request consent. Domino does not inject a public-URL variable such as `DOMINO_EXTERNAL_URL`; when the backend needs the deployment's public URL, configure it as a project environment variable.
 
-### Deep linking vs iframe (`renderIFrame`)
+## Reference files
 
-Apps can run full-page (deep linking) or inside an iframe. Platform convention: **`renderIFrame = !deepLinkingEnabled`**. Manifest field **`enableDeepLinking: true`** means the App expects full-page navigation; set `false` when the UI should load in an iframe. Align manifest, App publish settings, and start overrides so you do not mix modes silently.
-
-## Publish from a project (custom Extension)
-
-Typical human workflow:
-
-1. **Build the App** in a project (frontend plus optional backend). Enable extended identity propagation; Flask/Dash read proxied headers by default.
-2. **Publish the App** as a SysAdmin or CloudAdmin (App must be published before it backs an Extension). Use the Apps API publish chain (`/api/apps/v1/...` and related routes). See [python-sdk/API-APPS.md](../python-sdk/API-APPS.md); confirm paths in [API-SPECS.md](../domino-api-intro/API-SPECS.md) (**Public routes**).
-3. **Create the Extension** via Admin UI or **`POST /api/extensions/beta/extensions`** with `appId`, optional `appVersionId`, `name`, `enabled`, and `uiMountPointTypeConfigs`.
-
-REST surface (beta): prefix **`/api/extensions/beta/`** (`extensions`, `extensions-ui`, `official-installs`, ...). Confirm operation IDs and bodies in [API-SPECS.md](../domino-api-intro/API-SPECS.md) (public routes section).
-
-```python
-import os
-import requests
-
-if os.environ.get("DOMINO_API_PROXY"):
-    base_url = os.environ["DOMINO_API_PROXY"].rstrip("/")
-    headers = {}
-else:
-    base_url = (os.environ.get("DOMINO_USER_HOST") or os.environ.get("DOMINO_API_HOST") or "").rstrip("/")
-    token = requests.get("http://localhost:8899/access-token").text.strip()
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-body = {
-    "name": "My Extension",
-    "enabled": True,
-    "appId": "app-id-from-publish",
-    "uiMountPointTypeConfigs": {
-        "projectSidebar": {
-            "enabled": True,
-            "allProjects": True,
-            "urlConfig": {"contextualQueryParams": ["projectId"]},
-        }
-    },
-}
-response = requests.post(f"{base_url}/api/extensions/beta/extensions", headers=headers, json=body)
-```
-
-Only Admins create Extensions; viewers grant consent when the App acts as them.
-
-### Official Extension install (manifest-driven)
-
-For Domino-built Extensions, an admin installs from **Manage Domino-official Extensions** in the Admin panel. The installer creates project, environment, App, and Extension from the release manifest (background job with retry/cancel). API analogs: `official-install-menu`, `POST .../official-installs`, snapshot status endpoints under `/api/extensions/beta/official-installs/`.
-
-Do not edit installer-managed project, environment, App, or Extension by hand; use the official install UI for version changes.
-
-## Auth, identity, and hosts in Extension Apps
-
-| Context | Guidance |
-|---------|----------|
-| **App backend** calling platform APIs as the **starting user** | `DOMINO_API_PROXY` if set (no Authorization header); else access-token plus platform host. See [python-sdk](../python-sdk/SKILL.md). |
-| **Visitor identity** in the browser | Visitor JWT from the App ingress; validate with JWKS. **`GET /v4/users/self` with a visitor JWT often fails** for privileged data; do not assume it replaces admin APIs for org/role lists. |
-| **Governance** `/api/governance/v1/*` | Base URL and auth: [domino-governance — Configuration](../domino-governance/SKILL.md#configuration). Bearer PAT or SA only; never API keys. |
-| **Inference** `/endpoints/{vanity}` | Use the **`url`** from the GenAI/management API response, not `DOMINO_USER_HOST`. |
-| **Automation outside any run** | Public deployment URL plus PAT or SA only. |
-
-Domino does not inject a single `DOMINO_EXTERNAL_URL`; derive public URL from deployment config, forwarded headers, or app conventions (`DOMINO_PUBLIC_HOST` / `DOMINO_EXTERNAL_HOST` are app patterns, not guaranteed core run injection).
-
-## Platform caveats (Apps API + Extensions)
-
-These affect Extension Apps the same as standalone Apps:
-
-| Topic | Behavior |
-|-------|----------|
-| **`netAppVolumeIds` on App version create** | Accepted in the API but NetApp volumes may **not mount** (silent no-op vs workspace parity). Prefer explicit volume workflows; manifest `mountNetAppVolumes` does not fix API no-op alone. |
-| **App delete and vanity URL** | Deleting an App may **not release** its vanity URL for immediate reuse; recreate failures may need admin cleanup. |
-| **Apps beta vs v1** | Extension backing Apps may be created or published through beta or v1 routes; confirm routes in [API-SPECS.md](../domino-api-intro/API-SPECS.md) (public routes section). Prefer documented v1 publish flows for new automation where available. |
-
-## Prerequisites on the deployment
-
-- Extensions feature enabled.
-- **`SecureIdentityPropagationToAppsEnabled`** and extended identity propagation for Apps (default on Domino Cloud).
-- For official installs: platform egress to GitHub for catalog, manifests, and release artifacts.
-
-## Related API reference
-
-OpenAPI and route discovery: [API-SPECS.md](../domino-api-intro/API-SPECS.md).
-
-- Apps publish chain: [python-sdk/API-APPS.md](../python-sdk/API-APPS.md)
+- [API-EXTENSIONS.md](./API-EXTENSIONS.md): `/api/extensions/beta` routes, verified create body, mount config shapes, Flask context example, patch and delete.
+- [MANIFEST.md](./MANIFEST.md): `extension_manifest.json` fields, official install lifecycle and routes.

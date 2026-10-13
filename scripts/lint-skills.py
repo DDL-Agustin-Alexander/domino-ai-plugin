@@ -13,7 +13,22 @@ except ImportError:
 ROOT = Path(__file__).resolve().parent.parent
 SKILLS = ROOT / "skills"
 ALLOW_FILE = ROOT / "scripts" / "claude-mentions.allow"
+GEMINI_ALLOW_FILE = ROOT / "scripts" / "gemini-substitution.allow"
 MAX_DESCRIPTION = 1024
+# Codex truncates each plugin skill to 8,000 bytes when it loads it into the prompt
+# (openai/codex codex-rs ext/skills host_prompt.rs). Keep SKILL.md under that and move detail
+# into sibling reference files, which every host reads on demand.
+MAX_SKILL_BYTES = 8000
+# Gemini CLI rewrites every `${name}` in an extension's SKILL.md before the model sees it
+# (extension-manager.ts, recursivelyHydrateStrings): its built-in variables, the value of every
+# setting declared in gemini-extension.json, and every key of a trusted workspace's .env file.
+# The last set is unbounded (a project .env can define any name), so SKILL.md may not contain
+# `${` at all. Files that document product syntax written with `${...}` are listed in
+# scripts/gemini-substitution.allow with a reason; even there, Gemini's own names and the
+# declared settings stay forbidden, because those are substituted for every user.
+GEMINI_BUILTINS = {"extensionPath", "workspacePath", "/", "pathSeparator"}
+GEMINI_VAR = re.compile(r"\$\{([A-Za-z_/][A-Za-z0-9_]*|/)(?=[}:])")
+BRACE = "${"
 MAX_IDENTITY = 64
 FRONTMATTER = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n(.*)\Z", re.S)
 LINK = re.compile(r"\]\(([^)#\s]+)")
@@ -23,15 +38,28 @@ GIT_SOURCE = re.compile(r"git\+[a-z]+://[^\s\"'#]+", re.I)
 PINNED_SHA = re.compile(r"@[0-9a-f]{40}$")
 
 
-def load_allowlist() -> set[str]:
-    lines = ALLOW_FILE.read_text().splitlines() if ALLOW_FILE.exists() else []
+def load_allowlist(path: Path) -> set[str]:
+    lines = path.read_text().splitlines() if path.exists() else []
     return {ln.split("#", 1)[0].strip() for ln in lines if ln.split("#", 1)[0].strip()}
+
+
+def gemini_substituted_names() -> set[str]:
+    names = set(GEMINI_BUILTINS)
+    manifest = ROOT / "gemini-extension.json"
+    if manifest.is_file():
+        for setting in json.loads(manifest.read_text()).get("settings") or []:
+            if isinstance(setting, dict) and setting.get("envVar"):
+                names.add(setting["envVar"])
+    return names
 
 
 def main() -> int:
     errors: list[str] = []
+    notes: list[str] = []
     plugin = json.loads((ROOT / "plugin.json").read_text())["name"]
-    allowed = load_allowlist()
+    substituted = gemini_substituted_names()
+    allowed = load_allowlist(ALLOW_FILE)
+    gemini_allowed = load_allowlist(GEMINI_ALLOW_FILE)
     seen: dict[str, Path] = {}
     cross_links = 0
 
@@ -62,6 +90,10 @@ def main() -> int:
             if name in seen:
                 errors.append(f"{rel}/SKILL.md: name '{name}' duplicates {seen[name]}")
             seen[name] = rel
+            if name != skill_dir.name:
+                errors.append(f"{rel}/SKILL.md: name '{name}' must equal the directory name "
+                              f"'{skill_dir.name}' (agentskills.io; Agent Plugins clients skip "
+                              f"skills that differ)")
             if len(f"{plugin}:{name}") > MAX_IDENTITY:
                 errors.append(f"{rel}/SKILL.md: '{plugin}:{name}' exceeds {MAX_IDENTITY} chars")
         if not isinstance(description, str) or not description.strip():
@@ -71,6 +103,24 @@ def main() -> int:
                           f"(max {MAX_DESCRIPTION})")
         if not m.group(2).strip():
             errors.append(f"{rel}/SKILL.md: body must not be empty")
+        size = manifest.stat().st_size
+        if size > MAX_SKILL_BYTES:
+            errors.append(f"{rel}/SKILL.md: {size} bytes exceeds {MAX_SKILL_BYTES} (Codex truncates "
+                          f"the rest); move detail into sibling reference files")
+        skill_text = manifest.read_text(encoding="utf-8")
+        skill_rel = f"{rel.as_posix()}/SKILL.md"
+        if skill_rel in gemini_allowed:
+            for var in GEMINI_VAR.findall(skill_text):
+                if var in substituted:
+                    errors.append(f"{skill_rel}: '${{{var}}}' is substituted by Gemini CLI for every "
+                                  f"user (built-in variable or declared setting); write it without "
+                                  f"braces or rephrase")
+        elif BRACE in skill_text:
+            errors.append(f"{skill_rel}: contains '${{': Gemini CLI substitutes `${{name}}` in skill "
+                          f"text before the model reads it (its variables, the declared settings, and "
+                          f"any key in a trusted workspace's .env). Rephrase, move the example into a "
+                          f"sibling file, or list the file in "
+                          f"{GEMINI_ALLOW_FILE.relative_to(ROOT)} with a reason")
 
         for path in sorted(p for p in skill_dir.rglob("*") if p.is_file()):
             try:
@@ -104,14 +154,85 @@ def main() -> int:
         path = ROOT / stale
         if not path.exists() or not CLAUDE.search(path.read_text(encoding="utf-8")):
             errors.append(f"{ALLOW_FILE.relative_to(ROOT)}: '{stale}' no longer needs an entry")
+    # A skill may drop `${` in its own PR; a stale entry here is a note so that merge order
+    # between content PRs never breaks the integration branch.
+    for stale in sorted(gemini_allowed):
+        path = ROOT / stale
+        if not path.exists() or BRACE not in path.read_text(encoding="utf-8"):
+            notes.append(f"{GEMINI_ALLOW_FILE.relative_to(ROOT)}: '{stale}' no longer contains "
+                         f"'${{'; drop the entry")
 
+    rules_count = lint_rules(errors)
+
+    for note in notes:
+        print(f"::notice::{note}")
     for err in errors:
         print(f"::error::{err}")
     if errors:
         print(f"{len(errors)} problem(s) in skills/", file=sys.stderr)
         return 1
-    print(f"ok: {len(seen)} skills valid ({cross_links} links between skills)")
+    print(f"ok: {len(seen)} skills valid ({cross_links} links between skills); "
+          f"{rules_count} always-on rules file(s) valid")
     return 0
+
+
+RULES = ROOT / "rules"
+# rules/*.md is loaded into every session of every user (Claude Code session-start hook, Gemini CLI
+# contextFileName, Antigravity always-on rule), and its lead section is the bundled MCP server's
+# instructions, which Codex truncates at 1,000 bytes. Keep it short, plain and host-neutral.
+MAX_RULES_CHARS = 2600
+MAX_RULES_LEAD_BYTES = 900
+# Product names, matched case-sensitively so ordinary words ("a pagination cursor") pass.
+HOST_NAMES = re.compile(r"\b(Claude|Codex|ChatGPT|Gemini|Antigravity|Copilot|Cursor)\b")
+
+
+def lint_rules(errors: list[str]) -> int:
+    if not RULES.is_dir():
+        return 0
+    files = sorted(RULES.glob("*.md"))
+    for path in files:
+        rel = path.relative_to(ROOT).as_posix()
+        raw = path.read_bytes()
+        try:
+            text = raw.decode("ascii")
+        except UnicodeDecodeError:
+            errors.append(f"{rel}: must be ASCII only (some hosts read it without a UTF-8 BOM)")
+            text = raw.decode("utf-8", "replace")
+        if "\r" in text:
+            errors.append(f"{rel}: must use LF line endings (.gitattributes sets eol=lf for rules/*.md)")
+            text = text.replace("\r\n", "\n")
+        m = FRONTMATTER.match(text)
+        if not m:
+            errors.append(f"{rel}: must start with YAML front matter between --- lines")
+            continue
+        try:
+            meta = yaml.safe_load(m.group(1)) or {}
+        except yaml.YAMLError as exc:
+            errors.append(f"{rel}: front matter is not valid YAML: {exc}")
+            continue
+        if not isinstance(meta, dict):
+            errors.append(f"{rel}: front matter must be a mapping with `trigger` and `description`")
+            continue
+        if meta.get("trigger") != "always_on":
+            errors.append(f"{rel}: front matter needs `trigger: always_on`")
+        if meta.get("alwaysApply") is not True:
+            errors.append(f"{rel}: front matter needs `alwaysApply: true` (Cursor's always-on key; it ignores `trigger`)")
+        if not meta.get("description"):
+            errors.append(f"{rel}: front matter needs a `description`")
+        body = m.group(2)
+        if len(text) > MAX_RULES_CHARS:
+            errors.append(f"{rel}: {len(text)} characters exceeds {MAX_RULES_CHARS}; every session pays for it")
+        lead = body.split("\n## ", 1)[0].strip()
+        lead_bytes = len(lead.encode("utf-8"))
+        if lead_bytes > MAX_RULES_LEAD_BYTES:
+            errors.append(f"{rel}: lead section (before the first ## heading) is {lead_bytes} bytes; "
+                          f"keep it under {MAX_RULES_LEAD_BYTES}, since it is also the MCP server instructions")
+        if "${" in text:
+            errors.append(f"{rel}: must not contain '${{'; hosts substitute variables in context files")
+        neutral = f"{meta.get('description') or ''}\n{body}"   # hosts show the description too
+        for name in sorted({mm.group(0) for mm in HOST_NAMES.finditer(neutral)}):
+            errors.append(f"{rel}: names the host '{name}'; keep always-on text host-neutral")
+    return len(files)
 
 
 if __name__ == "__main__":

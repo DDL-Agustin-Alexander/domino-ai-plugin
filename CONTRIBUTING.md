@@ -1,7 +1,8 @@
 # Contributing to Domino Data Lab Plugin
 
 Thank you for your interest in contributing to the Domino Data Lab Plugin for Claude Code,
-ChatGPT, and Codex! One source tree serves both platforms; see README "What ships where".
+ChatGPT, Codex, Cursor, Gemini CLI, and Antigravity. One source tree serves every host; see
+README "What ships where".
 
 ## Getting Started
 
@@ -30,18 +31,30 @@ Codex and the ChatGPT desktop app"), and check the OpenAI package builds:
 scripts/build-openai.sh   # runs the manifest sync check and the skill linter first
 ```
 
+Validate the other manifests from the same checkout:
+
+```bash
+npx -y @google/gemini-cli@0.63.0 extensions validate .   # Gemini CLI extension (gemini-extension.json)
+agy plugin validate .                              # Antigravity (plugin.json, skills/, agents/)
+```
+
 ## Plugin Structure
 
 ```
 domino-ai-plugin/
-├── .claude-plugin/plugin.json   # Claude manifest; source of truth for name and version
-├── plugin.json                  # Portable manifest + OpenAI listing (synced by script)
+├── .claude-plugin/plugin.json   # Claude manifest; source of truth for name, version, description
+├── plugin.json                  # Portable (Agent Plugins) manifest + OpenAI listing (synced)
+├── .cursor-plugin/plugin.json   # Cursor manifest (synced)
+├── gemini-extension.json        # Gemini CLI extension manifest (synced)
 ├── .mcp.json / mcp.json         # MCP config for Claude Code / for Codex (portable)
-├── skills/                      # Shared skills; ship to every platform
+├── .cursor-plugin/mcp.json      # MCP config for Cursor; mcp_config.json registers the docs server for Antigravity
+├── rules/domino.md              # Always-on guidance (Claude Code hook, Cursor rule, Gemini CLI context file)
+├── skills/                      # Shared skills; ship to every host
 ├── mcp-servers/                 # Vendored Domino MCP server
-├── agents/                      # Subagents (Claude Code only)
+├── agents/                      # Subagents: thin routers to skills (Claude Code; Cursor reads them too)
 ├── output-styles/               # Custom output styles (Claude Code only)
-├── hooks/                       # Example hooks (docs only)
+├── hooks/                       # Hook documentation only; no hooks.json is shipped
+├── evals/                       # claude plugin eval cases
 └── scripts/                     # Build, lint, sync, and version checks
 ```
 
@@ -99,21 +112,26 @@ the inputs to collect, and put any template files in the skill's `assets/` folde
 ---
 name: domino-agent-name
 description: When to use this agent. Use PROACTIVELY when...
-tools: Read, Edit, Write, Bash, Grep, Glob
+tools: Read, Edit, Write, Bash, Grep, Glob, Skill
 model: inherit
-skills: skill1, skill2
+skills:
+  - domino-skill-one
+  - domino-skill-two
 ---
 ```
 
-Agents are Claude Code only and aren't included in the OpenAI package. Put any procedure that
-users on other platforms also need into a skill, and have the agent list that skill under
-`skills:`.
+`skills:` preloads the full text of each named skill into the agent's context (Claude Code
+2.0.43 or later); `Skill` in `tools:` lets the agent load any other plugin skill on demand
+(2.1.133 or later), and `mcp__plugin_dominodatalab_<server>__*` grants it the plugin's MCP
+tools. Agents are a Claude Code component and aren't in the OpenAI package; Cursor loads them
+as plain prompts without `skills:` or `tools:`, and Gemini CLI rejects them. So an agent is a
+thin router: it names the skills that apply and the order to apply them, and holds no
+procedure of its own. Anything users on other hosts also need goes into a skill.
 
 ## Skill Authoring Standards
 
 These rules came out of PR #8 (NetApp Volumes skill) review and the September 2026
-coverage audit. Skim them before authoring or editing a `SKILL.md`. `SKILL_AUDIT.md`
-(May 2026) predates most of them and is stale; do not rely on it.
+coverage audit. Skim them before authoring or editing a `SKILL.md`.
 
 ### 1. Authenticate with the local token endpoint, not API keys
 
@@ -169,7 +187,7 @@ newer features (e.g. NetApp volume mounts on jobs). Show REST + `curl` (or
 `requests`) instead. (PR #8: *"a lot of its methods use older APIs and won't
 support things like specifying NetApp volume mounts"*.)
 
-Exception: the `domino-data-sdk` and `python-sdk` skills exist specifically to
+Exception: the `domino-data-sdk` and `domino-python-sdk` skills exist specifically to
 document the SDK. They should clearly mark which methods are still supported
 vs deprecated. All other skills should not pull `from domino import Domino`
 into their examples.
@@ -214,7 +232,9 @@ that took multiple iterations to get right:
 
 - `commandToRun` → `runCommand`
 - `externalVolumeMounts` → `netAppVolumeIds`
-- `environmentId` is required on `POST /api/jobs/v1/jobs` and was missing
+- `hardwareTierId` → `hardwareTier`: on `POST /api/jobs/v1/jobs` only `projectId` and
+  `runCommand` are required; `environmentId` and `hardwareTier` are optional and default to
+  the project's environment and hardware tier (both published specs agree)
 
 Run each documented payload at least once against a live Domino instance and
 confirm a 2xx before merging. Note your test result (status code, any
@@ -285,16 +305,19 @@ script is worth citing, add it to the repo under the skill (for example
 
 Installs from a git source (the Anthropic marketplace, a marketplace added as `owner/repo`, the
 OpenAI directory) are copies that update only when the `plugin.json` `version` string changes.
-Any change under `skills/`, `agents/`,
-`mcp-servers/`, `output-styles/`, `hooks/`, `assets/`, `bin/`, `workflows/`, `themes/`,
-`monitors/`, `.mcp.json`, `mcp.json`, `.lsp.json`, `settings.json` or either `plugin.json` must
-therefore bump `version` **when it reaches `main`**, or nothing reaches installed copies.
+Any change under `skills/`, `agents/`, `commands/`, `templates/`,
+`mcp-servers/`, `output-styles/`, `hooks/`, `rules/`, `assets/`, `bin/`, `workflows/`,
+`themes/`, `monitors/`, `.agents/`, `.cursor-plugin/`, `.mcp.json`, `mcp.json`,
+`mcp_config.json`, `gemini-extension.json`, `.lsp.json`, `settings.json`,
+`.claude-plugin/marketplace.json` or either `plugin.json` must
+therefore bump `version` **when it reaches `main`**, or nothing reaches installed copies
+(`scripts/check-version.sh` holds the authoritative list).
 Feature PRs land on `develop` with the version untouched; the promotion PR from `develop` to
 `main` carries the bump. CI (`scripts/check-version.sh`) rejects a promotion without a bump
 and a `develop` PR with one.
 
 The version is **`YYYY.XYY.N`**, for example `2026.603.3`. It is valid semver because the
-OpenAI portal accepts nothing else, and both manifests carry the same string:
+OpenAI portal accepts nothing else, and all four manifests carry the same string:
 
 | Part | Meaning |
 |---|---|
@@ -303,7 +326,9 @@ OpenAI portal accepts nothing else, and both manifests carry the same string:
 | `N` | Skill release counter. Increases with every release on that line, is never reused, and is **not** reset by the year (`2026.603.14` is followed by `2027.603.15`). |
 
 Releases up to `2026.6-3.2` wrote the line as `X-Y`; `2026.603.3` is the same scheme in
-semver form, and `scripts/check-version.sh` still reads the old form on a base branch.
+semver form, and `scripts/check-version.sh` still reads the old form on a base branch. A release
+candidate adds the semver pre-release suffix `-rc.M` and lives only on an `rc/<YYYY.XYY.N>`
+branch; see [Release candidates](#release-candidates).
 
 The git tag `release-YYYY.XYY.N` is created automatically from the manifest on every push to
 `main` or a `release-*` branch (`.github/workflows/tag-release.yml`), so tag and manifest
@@ -311,17 +336,22 @@ always agree. Plugin version is independent of Domino's own version numbers; the
 compatibility, not identity.
 
 Bump the version only in `.claude-plugin/plugin.json`, then run `scripts/sync-manifests.py` to
-copy it into the portable `plugin.json`. CI fails if the two drift.
+copy it into the portable `plugin.json`, `.cursor-plugin/plugin.json` and
+`gemini-extension.json`. CI fails if any of them drifts.
 
 ### 11. Write skills provider-neutral
 
-Skills ship to Claude Code, ChatGPT, and Codex. Say "the model" or "the assistant", not
+Skills ship to Claude Code, ChatGPT, Codex, Cursor, Gemini CLI and Antigravity. Say "the model" or "the assistant", not
 "Claude", and don't depend on one host's tools (for example a named user-input tool). When an
 instruction really differs per host, such as which instructions file or MCP config to write,
 give a variant for each host in one place (see "Host-specific files" in
 `skills/domino-ui-bootstrap/SKILL.md`). `scripts/lint-skills.py` fails on any skill file that
 mentions Claude unless it is listed in `scripts/claude-mentions.allow` with a reason; Claude as
-a model name in an LLM example is a valid reason.
+a model name in an LLM example is a valid reason. It also fails on any `${` in a `SKILL.md`:
+Gemini CLI rewrites `${name}` in skill text with its own variables, the extension's declared
+settings and every key of a trusted workspace's `.env`. Put such examples in a sibling file, or
+list the file in `scripts/gemini-substitution.allow` with a reason when the braces are product
+syntax (Launcher `${param}` placeholders).
 
 ## Release branches, tags and backports
 
@@ -333,6 +363,7 @@ a model name in an LLM example is a valid reason.
 | Release: promote `develop` to `main` | `main`, head `develop` | The one bump to the next `YYYY.XYY.N`; CI requires it; the tag follows on merge. |
 | Repo mechanics only (`.github/`, `scripts/`, CONTRIBUTING, README) | `main` | Unchanged; no content paths, so no bump and no tag. |
 | Backport onto a `release-X.Y` branch | that branch | Bump `N` on that line. |
+| Release candidate for internal testing | `rc/<YYYY.XYY.N>`, cut from `develop` | `YYYY.XYY.N-rc.M`; bump `M` on every change. CI rejects a plain version there and a suffix anywhere else. See [Release candidates](#release-candidates). |
 
 `develop` is the integration branch: it batches content changes so that `main` receives one
 release per promotion instead of one per PR. Nothing resolves `develop`: the Anthropic
@@ -344,9 +375,9 @@ Three things carry a version, and they are deliberately different:
 
 | Object | Form | Who reads it |
 |---|---|---|
-| Branch | `main`, `release-6.3`, `release-6.4` … | The Domino Standard Environment (DSE) update script, which resolves **by exact branch name**: `release-X.Y.Z`, then `release-X.Y`, then `main`, from the cluster's `DOMINO_VERSION`. Any other branch name is invisible to it. The script ships in the DSE image; Domino 6.3 runs it at Workspace launch when the `updateSkillsOnLaunch` setting is on. Domino Cloud doesn't run it at launch, so Cloud Workspaces keep the version their image installed, and a Workspace that persists `~/.claude` keeps its earlier copy. |
-| Tag | `release-YYYY.XYY.N` | Humans, and admins pinning a Workspace to one release through the script's override argument (`DOMINO_CLAUDE_SKILLS_BRANCH`), which accepts a branch, tag or commit. |
-| `plugin.json` `version` | `YYYY.XYY.N` | Claude Code, to decide whether an installed copy is stale; the OpenAI portal, to order uploads. |
+| Branch | `main`, `release-6.3`, `release-6.4` … | The Domino Standard Environment (DSE) update script, which resolves **by exact branch name**: `release-X.Y.Z`, then `release-X.Y`, then `main`, from the cluster's `DOMINO_VERSION`. Any other branch name, `develop` and `rc/<version>` included, is invisible to it. The script ships in the DSE image; Domino 6.3 runs it at Workspace launch when the `updateSkillsOnLaunch` setting is on. Domino Cloud doesn't run it at launch, so Cloud Workspaces keep the version their image installed, and a Workspace that persists `~/.claude` keeps its earlier copy. |
+| Tag | `release-YYYY.XYY.N`, or `release-YYYY.XYY.N-rc.M` for a release candidate | Humans, and admins pinning a Workspace to one release through the script's override argument (`DOMINO_CLAUDE_SKILLS_BRANCH`), which accepts a branch, tag or commit. |
+| `plugin.json` `version` | `YYYY.XYY.N`; `YYYY.XYY.N-rc.M` on an `rc/` branch | Claude Code, to decide whether an installed copy is stale; the OpenAI portal, to order uploads; Gemini CLI, which shows it for the installed extension. |
 
 Rules:
 
@@ -399,6 +430,71 @@ How each channel receives a release:
   the existing plugin in the portal; the portal rejects an upload whose `plugin.json` version
   is unchanged. Upload only releases from `main`: a backport on `release-X.Y` can carry a later
   year than `main`, so it would sort as newer and roll the listing back.
+- **Gemini CLI**: `gemini extensions install https://github.com/dominodatalab/domino-ai-plugin`
+  installs from the repository's latest GitHub Release once one exists (otherwise from the
+  default branch). `tag-release.yml` publishes a Release on every push to `main` and marks only
+  releases from `main` as latest, so a backport never moves default users; `gemini extensions
+  update dominodatalab` picks up the next release. Nothing else to do.
+
+### Release candidates
+
+A release that should be tested internally before it goes public is cut as a candidate first.
+
+- **Version:** `YYYY.XYY.N-rc.M` with `M >= 1`, for example `2026.603.5-rc.1`. It is semver
+  pre-release syntax, so `2026.603.5-rc.1` < `2026.603.5-rc.2` < `2026.603.5`, and every
+  candidate changes the string, so installed copies update. `scripts/sync-manifests.py` copies
+  the suffixed string into all four manifests; `claude plugin validate`, `agy plugin validate`,
+  Gemini CLI's `extensions validate` and `scripts/build-openai.sh` all accept it.
+- **Branch:** `rc/<YYYY.XYY.N>`, for example `rc/2026.603.5`, cut from `develop` (the content
+  that will become that release). `main`, `develop` and `release-*` never carry the suffix:
+  `scripts/check-version.sh` (rule 7) and `tag-release.yml` both refuse it there, and an `rc/`
+  base refuses a plain version. The DSE updater never resolves `rc/` branches, so a candidate
+  reaches nobody who did not ask for it.
+- **Cut and bump:** `git switch -c rc/2026.603.5 origin/develop && git push -u origin rc/2026.603.5`,
+  then a PR to that branch that sets `version` to `2026.603.5-rc.1` in `.claude-plugin/plugin.json`
+  and runs `scripts/sync-manifests.py`. On merge, `tag-release.yml` creates
+  `release-2026.603.5-rc.1` and a GitHub Release marked **pre-release** and never **latest**, so
+  Gemini CLI's default install and update ignore it. Fixes land on `develop` as usual; merge
+  `develop` into the `rc/` branch (or cherry-pick) with the bump to `rc.2`, and so on. CI
+  (rule 8) checks that the plain part equals the branch's version and is newer than `main`'s,
+  and that `M` increases over the base and over every `release-<version>-rc.*` tag already
+  created. Maintainers add `rc/**` to the ruleset that requires the `Version check / version`
+  status, as for `main` and `release-*`.
+- **Ship:** promote `develop` to `main` with the plain `2026.603.5` exactly as without a
+  candidate. A candidate branch is never renamed into a release; delete it afterwards, the
+  tags stay.
+- **Install a candidate** (the branch name or the tag both work as the ref):
+  - Claude Code: `claude plugin marketplace remove domino-marketplace` if the GitHub marketplace
+    is already added, then `claude plugin marketplace add dominodatalab/domino-ai-plugin#rc/2026.603.5`
+    and `claude plugin install dominodatalab@domino-marketplace`. Back to the release: remove the
+    marketplace again and add it without `#ref`.
+  - Codex: `codex plugin marketplace add dominodatalab/domino-ai-plugin@rc/2026.603.5` (or
+    `--ref rc/2026.603.5`), then `codex plugin add dominodatalab@domino-marketplace`. Back:
+    `codex plugin marketplace remove domino-marketplace` and add it without the ref.
+  - Gemini CLI: `gemini extensions install https://github.com/dominodatalab/domino-ai-plugin --ref rc/2026.603.5`
+    (or `--ref release-2026.603.5-rc.1`, or `--pre-release` for the newest candidate). Back:
+    `gemini extensions uninstall dominodatalab`, then install without the ref.
+  - Cursor: its docs don't document choosing a ref for a GitHub-imported marketplace (an
+    import tracks one branch). Use a local checkout instead:
+    `git clone -b rc/2026.603.5 https://github.com/dominodatalab/domino-ai-plugin ~/.cursor/plugins/local/dominodatalab`,
+    then Developer: Reload Window. Back: delete that folder and reinstall from GitHub.
+  - Antigravity: `agy plugin install` takes a local directory and installs a copy, so
+    `git clone -b rc/2026.603.5 https://github.com/dominodatalab/domino-ai-plugin ~/domino-ai-plugin-rc`
+    and `agy plugin install ~/domino-ai-plugin-rc`. Back: `agy plugin uninstall dominodatalab`,
+    then `agy plugin install` from a `main` checkout.
+  - Domino Workspaces: the DSE updater follows `release-X.Y` by name, so test by hand in the
+    image's clone, which Claude Code reads in place:
+    `git -C ~/.claude/marketplaces/domino/plugins/domino-claude-plugin fetch origin rc/2026.603.5`
+    and `... checkout -B rc/2026.603.5 origin/rc/2026.603.5`, then start a new session. Back:
+    `... checkout -B main origin/main`.
+- **Dry run of the gate:** there are no automated tests for `scripts/`; before changing
+  `check-version.sh`, build a scratch origin (`git init --bare`, a clone with
+  `.claude-plugin/plugin.json` at the shipped version on `main`, `develop`, `release-6.3` and
+  `rc/<next>`), commit one PR head per rule and run `scripts/check-version.sh origin/<base>`
+  for each, expecting exit 1 for: a suffix on `develop`, `main` or `release-*`; a plain version,
+  another release's version, or a version not newer than `main` on `rc/`; a content change
+  without a bump; `rc.M` at or below an existing `release-<version>-rc.*` tag. Expect exit 0
+  for the frozen `develop` version, a plain bump on `main`, and `rc.1`, then `rc.2` on `rc/`.
 
 `scripts/verify-update-flow.sh` reproduces the DSE install layout in a throwaway Claude Code
 configuration and asserts that the clone is read in place. Run it when Claude Code changes its

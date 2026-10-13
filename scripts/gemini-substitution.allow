@@ -1,0 +1,10 @@
+# SKILL.md files allowed to contain `${`, each with its reason.
+#
+# Gemini CLI rewrites every `${name}` in an extension's skill text before the model reads it,
+# using its own variables (extensionPath, workspacePath, /, pathSeparator), the values of the
+# settings declared in gemini-extension.json, and every key of a trusted workspace's .env file.
+# That last set is unbounded, so scripts/lint-skills.py rejects `${` in every SKILL.md that is
+# not listed here. A listed file still may not use Gemini's own names or a declared setting.
+# An entry whose file no longer contains `${` is reported as a note, not an error, so a skill
+# can drop the syntax in its own PR without breaking the integration branch.
+skills/domino-launchers/SKILL.md        # Domino Launcher command syntax: one ${name} placeholder per form field
