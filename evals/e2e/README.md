@@ -1,9 +1,12 @@
 # Live end-to-end evals
 
-This harness runs Claude Code with a weak model (Claude Haiku) **inside real Domino Workspaces** and grades
-each session by what happened in Domino: the Job that ran and what it printed, the snapshot that exists, the App
-that answers, the healthy Model API, the HPC Job that was (or was not) created. The transcript serves only as
-evidence of process: which skill loaded, whether a script was uploaded before a start, the exact request body.
+This harness runs Claude Code with a weak model (Claude Haiku, the tester) **inside real Domino Workspaces**
+and grades each session by what happened in Domino. A Fable-class or Astra-class model, the orchestrator, runs
+it: it writes or updates the skill, runs the commands below, reads the results, fixes the skill and runs again
+until the skill meets the bar in AGENTS.md "Testing new and updated skills" (CONTRIBUTING standards 8 and 14).
+Grading looks at the Job that ran and what it printed, the snapshot that exists, the App that answers, the
+healthy Model API, the HPC Job that was (or was not) created. The transcript serves only as evidence of process:
+which skill loaded, whether a script was uploaded before a start, the exact request body.
 It complements the static checks and the `claude plugin eval` cases in `evals/`; see AGENTS.md "Testing new and
 updated skills" for when each level applies.
 
@@ -183,16 +186,19 @@ a case for the new behaviour.
 - **Baseline:** include a `none` variant (no plugin) the first time a skill is tested, to show what the plugin adds.
 - **Stability:** run each discriminating scenario at least twice on the build under test (`next`, `next-r2`); one
   run can flip.
+- **Frozen checks:** write the scenarios and checks before the first run. Change them later only for a harness
+  problem (a wrong check, a bad setup), re-grade with `tools/regrade.py`, and say so in the PR.
 - **Defects:** record each failure caused by a skill against the owning file, with transcript quotes and API
-  evidence, and a proposed change. The skill's author fixes it (CONTRIBUTING standard 8); the harness never edits
-  skills. Harness problems (a wrong check, a bad setup) are fixed here and re-graded with `tools/regrade.py`.
-- **Re-run** the failed scenarios, plus a short regression pass, on the fixed build until they pass.
+  evidence, before changing the skill. The orchestrator then fixes the skill; this harness's code never edits
+  skills.
+- **Iterate** on the fixed build, re-running the failed scenarios plus a short regression pass, until the skill
+  meets the bar. The final round adds at least one prompt the skill was not iterated against.
 - **Report** pass rates, turns, Claude Code's reported cost and the defects in the PR description, never in skills
   (CONTRIBUTING standard 12).
 
 ## Cleanup
 
-`teardown` stops and deletes each lane's Workspace (retrying the delete, which often answers 500 right after a stop),
+`teardown` stops and deletes each lane's Workspace (retrying the delete, which can answer 500 right after a stop),
 deletes its Datasets, archives its Project, kills its `dom connect` and removes its `Host` entry from
 `~/.domino/ssh/config`. Verify afterwards: each Workspace reads `deleted: true`, each Project returns 404, no
 Dataset remains, no `dom connect` process is left, and `~/.domino/ssh/config` holds only entries that were there
@@ -206,5 +212,6 @@ before. Scenario cleanups archive Apps and Model APIs; a Model API's deployment 
 - Claude Code blocks a standalone `sleep`; waiting belongs in a single command or in a tool that waits server-side.
 - A Workspace image can preinstall a Domino plugin under `~/.claude`; the fresh `CLAUDE_CONFIG_DIR` keeps it out of
   every session, and `no_domino_skills_visible` proves it for the baseline.
-- No API returns a Model API access token, so an agent cannot make a prediction on its own; `s07` grades a healthy
-  deployment and treats asking the user for the URL and token as correct.
+- A Model API prediction needs an access token. The skills create one by API (`domino-model-endpoints`, "Access
+  tokens"); `s07` still grades a healthy deployment, records the prediction as optional, and treats asking the user
+  for the URL and token as correct.
