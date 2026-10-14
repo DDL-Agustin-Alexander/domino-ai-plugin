@@ -7,7 +7,8 @@ skills and in `CONTRIBUTING.md`.
 ## What this is
 
 A Claude Code plugin (`.claude-plugin/plugin.json`, name `dominodatalab`) that is also an
-Agent Plugins package (`plugin.json`, `mcp.json`) for ChatGPT and Codex. `scripts/build-openai.sh`
+Agent Plugins package (`plugin.json`, `mcp.json`) for ChatGPT and Codex, a Cursor plugin
+(`.cursor-plugin/`) and a Gemini CLI extension (`gemini-extension.json`). `scripts/build-openai.sh`
 builds the OpenAI plugin-directory ZIP from `skills/` alone. Copilot, OpenCode and Antigravity
 read the same agentskills.io layout from their own skills directories. Content here ships to
 customer environments from a **public** repository. Three facts drive most rules below:
@@ -30,12 +31,16 @@ customer environments from a **public** repository. Three facts drive most rules
 |---|---|
 | `skills/<name>/SKILL.md` | One skill per directory. Reference files sit beside `SKILL.md`. |
 | `skills/<name>/assets/` | Templates a skill copies into the user's project (no `templates/` or `commands/` dirs) |
-| `agents/`, `output-styles/` | Claude-only components; not in the OpenAI package |
-| `hooks/` | Documentation only today; no `hooks.json` is shipped |
-| `mcp-servers/` | Bundled MCP server, started by `.mcp.json` (Claude Code) and `mcp.json` (Codex) |
-| `.claude-plugin/plugin.json` | Claude manifest and source of truth for name and `version`; see the rules below before touching it |
+| `agents/`, `output-styles/` | Claude Code components; not in the OpenAI package. An agent is a thin router: it preloads the skills for its area (`skills:`, Claude Code 2.0.43+; loading further plugin skills from a subagent needs 2.1.133+) and holds no procedure of its own. Cursor reads `agents/` as plain prompts (its frontmatter has no `skills:` or `tools:`). The files are named `_<name>.md`: Gemini CLI skips underscore-prefixed files in `agents/` (its strict sub-agent schema would reject `skills:` and log an error per file), while Claude Code, Cursor and Antigravity take the agent's name from the frontmatter `name` |
+| `hooks/` | Documentation only (`hooks/README.md`); no `hooks.json` is shipped, so neither Claude Code nor Gemini CLI loads anything from it. The plugin's only hook is the inline `SessionStart` entry in `.claude-plugin/plugin.json` |
+| `rules/domino.md` | Always-on Domino guidance, loaded into every session: by a `SessionStart` hook in `.claude-plugin/plugin.json` (Claude Code), as an always-on rule (Antigravity reads `trigger: always_on`, Cursor reads `alwaysApply: true`), as the Gemini CLI extension's context file (`contextFileName` in `gemini-extension.json`), and as the bundled MCP server's instructions (lead section only, for Codex). Every user pays for it on every turn, so it holds only what an assistant needs to work in Domino: lint caps it at 2,600 characters, ASCII, host-neutral, with a lead section under 900 bytes |
+| `mcp-servers/` | Bundled MCP server, started by `.mcp.json` (Claude Code), `mcp.json` (Codex), `.cursor-plugin/mcp.json` (Cursor) and `gemini-extension.json` (Gemini CLI). All four also register the Domino docs MCP server, `domino_docs` at `https://docs.domino.ai/mcp`; `mcp_config.json` registers it for Antigravity |
+| `.claude-plugin/plugin.json` | Claude manifest and source of truth for name, `version` and `description`; see the rules below before touching it |
 | `plugin.json` | Portable manifest plus OpenAI listing metadata; identity fields are copied by `scripts/sync-manifests.py` |
+| `.cursor-plugin/` | Cursor: `plugin.json` (identity fields copied by `scripts/sync-manifests.py`; Cursor's schema is closed, so only its own keys), `mcp.json` (`${CURSOR_PLUGIN_ROOT}` paths, `${env:NAME}` values Cursor asks for at install) and `marketplace.json` (needed to import the repo from GitHub) |
+| `gemini-extension.json` | Gemini CLI extension manifest: name, version and description copied by `scripts/sync-manifests.py`; `contextFileName` points at `rules/domino.md` (Gemini loads the whole file, YAML front matter included; a few tokens per session); `mcpServers` starts the bundled server via `${extensionPath}` and registers the docs server; `settings` declares the values the server needs outside a Workspace. Gemini CLI (0.63) passes a stdio MCP server a filtered copy of the environment: names matching TOKEN, SECRET, PASSWORD, PASSWD, KEY, AUTH, CREDENTIAL, CREDS, PRIVATE or CERT and values that look like known tokens are removed, and under `GITHUB_SHA` everything outside a small allowlist is; a declared setting is injected from Gemini's own store (the shell's value of that name is still dropped). It also rewrites `${name}` in skill and agent text with its built-ins, the declared settings and every key of a trusted workspace's `.env`, which is why lint rejects `${` in `SKILL.md` outside `scripts/gemini-substitution.allow` |
 | `assets/` | OpenAI listing icon |
+| `evals/` | `claude plugin eval` cases, one directory per case; `evals/e2e/` is the live end-to-end harness, not a case |
 | `scripts/check-version.sh` | The CI version gate; run it locally before opening a PR |
 | `scripts/build-openai.sh` | Builds the OpenAI ZIP; runs `sync-manifests.py --check` and `lint-skills.py` first |
 | `scripts/verify-update-flow.sh` | Reproduces how Claude installs and updates this plugin |
@@ -55,7 +60,8 @@ customer environments from a **public** repository. Three facts drive most rules
   because the OpenAI portal requires it. `N` never repeats and never resets. Releases up to
   `2026.6-3.2` wrote the line as `6-3`.
   CI creates the tag `release-<version>` on merge to `main` or `release-*`. After a bump, run
-  `scripts/sync-manifests.py` so `plugin.json` carries it too; CI fails if they drift.
+  `scripts/sync-manifests.py` so `plugin.json`, `.cursor-plugin/plugin.json` and
+  `gemini-extension.json` carry it too; CI fails if they drift.
 - Never create a branch named `release-*` for anything but a real snapshot. The Domino
   Workspace updater resolves `release-X.Y.Z`, `release-X.Y`, `main` by exact name and would
   serve an integration branch to every matching cluster on its next launch.
@@ -79,7 +85,8 @@ standards are CONTRIBUTING.md 1, 4, 7, 9 and 10; the requirements are:
   `$DOMINO_API_HOST/assets/public-api.json` is a subset and misses whole services.
 - `/v4/*` routes are the Domino Internal API (documented per cluster under `/docs`, absent from
   the Public API). Use the `/api/...` equivalent; where none exists, label the call
-  "internal API, may change between Domino versions" where it appears.
+  `(non-public route; may change in a future Domino version)` where it appears and link the
+  canonical note in `skills/domino-api-intro/SKILL.md` ("Route types").
 - Product behaviour comes from docs.domino.ai (`/cloud/...` and `/6.3/...`; `llms.txt` indexes
   every page, and any page is Markdown with `.md` appended). Cite docs.domino.ai, not
   `docs.dominodatalab.com/en/latest`.
@@ -98,18 +105,32 @@ standards are CONTRIBUTING.md 1, 4, 7, 9 and 10; the requirements are:
 - No internal references in skill content: no Jira, Confluence, Slack or internal-repo links,
   ticket keys, or paths users cannot obtain. No placeholder hosts such as `your-domino.com`;
   use `$DOMINO_API_HOST` or the value an API response returns.
+- Skill content states facts and instructions only: no provenance (how, when or where
+  something was verified, audits, reviews, test clusters). Put verification evidence in the PR
+  description. Real uncertainty becomes reader guidance ("if this returns 404, confirm the route
+  in your deployment's `/docs`"); version facts and the "non-public route; may change in a future Domino version" label stay (CONTRIBUTING standard 12).
+- A skill holds facts, routes, steps, real constraints, decision rules and the short reasons
+  behind them, and nothing else: no change history ("now", "no longer", "previously"), no
+  project jargon (PR, audit, round, release candidate, E2E, harness, eval, ticket keys), no ids
+  or error text from test runs, no long rationale or hedging, no paragraph another skill owns
+  (link it), no tangents, no marketing or all-caps emphasis. When-to-use text goes in
+  `description`. Write and revise skills with the `skill-creator` skill from Anthropic's
+  `claude-plugins-official` marketplace (CONTRIBUTING standard 13).
 
-Existing skills predate these requirements and many violate them (directory names, missing
+Existing skills predate these requirements and many violate them (missing
 frontmatter, stale links). Fix violations in the files you are already changing. Do not sweep
 the tree in an unrelated PR; tree-wide fixes have their own tracked work.
 
 ## Commands
 
 ```bash
-claude plugin validate .                              # manifest and structure
+claude plugin validate .claude-plugin/plugin.json     # plugin manifest and structure
+claude plugin validate .                              # marketplace manifest (.claude-plugin/marketplace.json)
 scripts/build-openai.sh                               # manifest sync, skill lint, OpenAI ZIP in dist/
 scripts/check-version.sh origin/develop               # what CI will say (use your PR's base)
 scripts/check-codeowners.py                           # every skill has its own CODEOWNERS line
+npx -y @google/gemini-cli@0.63.0 extensions validate . # Gemini CLI: manifest name and version, context file path and existence, semver
+agy plugin validate .                                 # Antigravity: plugin.json, skills/, agents/, MCP config
 scripts/verify-update-flow.sh                         # install/update behaviour (needs the claude CLI, ~2 min)
 claude --plugin-dir .                                 # load this checkout in place; replaces a same-named installed plugin for the session
 /reload-plugins                                       # inside a session, after editing a skill
@@ -125,11 +146,63 @@ claude plugin eval . --scaffold --allow-tools Write Edit --runs 1 --ablation non
 Drop `--runs 1 --ablation none` for the default three runs plus the no-plugin baseline before
 trusting a change. When adding a skill, add a case whose prompt should trigger it.
 
+## Testing new and updated skills
+
+Three levels; run every one that applies.
+
+1. **Static checks, every change:** the commands above (`scripts/build-openai.sh`,
+   `scripts/check-version.sh origin/develop`, `scripts/check-codeowners.py`, `claude plugin validate`).
+2. **A `claude plugin eval` case for every skill** in `evals/<case>/`: a prompt that should trigger it,
+   with graders; run it as above.
+3. **A live end-to-end round for every new skill and every change to a write path** (anything that
+   starts, creates, uploads or deploys in Domino). Two roles:
+   - **Orchestrator:** a Fable-class or Astra-class model (CONTRIBUTING standard 8, since it writes
+     skill content). It writes or updates the skill, runs `evals/e2e/`, drives the tester, grades each
+     session by what happened in Domino (not by the text), fixes the skill and runs again, iterating with
+     the tester until the skill meets the bar below.
+   - **Tester:** Claude Haiku runs Claude Code with the plugin inside real Domino Workspaces. A weak model
+     exposes vague instructions that a strong model papers over.
+
+   **The bar**, on the final build: every scenario for the skill passes in every run (at least two runs
+   each), the no-plugin baseline fails the scenarios the skill exists for, no other scenario regresses,
+   and the static checks and the skill's `claude plugin eval` case pass.
+
+   Rules for the loop:
+   - write the scenarios and graders before the first run; change them later only to fix a harness bug,
+     and say so in the PR;
+   - include a no-plugin baseline (`none`) the first time a skill is tested;
+   - write prompts as a user would, never naming the skill or a route; the final round adds at least one
+     prompt the skill was not iterated against;
+   - record each skill-caused failure against the owning skill file, with transcript and API evidence,
+     before changing the skill;
+   - end with verified cleanup: Workspaces deleted, Projects archived, Datasets deleted, `dom connect`
+     stopped and its SSH host entries removed;
+   - report pass rates, turns and cost in the PR description, never in skills (CONTRIBUTING standard 12).
+
+```bash
+cd evals/e2e && cp config.example.yaml config.local.yaml   # host, auth, environment, tiers, builds, variants
+uv run e2e.py provision --lane dfs-0 --lane git-0          # one Project, Dataset and Workspace per lane; SSH via the Dom CLI
+uv run e2e.py prep                                         # plugin builds and remote scripts into every Workspace
+uv run e2e.py run --run-dir runs/<name> --scenario <id> --variant next --variant next-r2 --variant none
+uv run e2e.py report runs/<name>                           # runs/<name>/results.md
+uv run e2e.py teardown                                     # then verify the cleanup (README "Cleanup")
+uv run tools/dryrun_checks.py                              # offline check of scenarios and graders
+```
+
+Config keys: `domino.host` and `domino.auth`, `workspace.environment_id`, `hardware_tier` and `dom_cli`,
+`compute.job_tier` and `model_api_tier`, `claude.model` and `oauth_token_file`, `plugin.builds`,
+`variants` and `variant_build`, `remote.run_root`. The Claude OAuth token is read from
+`claude.oauth_token_file` and reaches the Workspace over SSH stdin only; the Domino token is minted in
+memory. Scenario format, check types and cleanup: `evals/e2e/README.md`.
+
 ## Pull requests
 
 - Fill every section of `.github/PULL_REQUEST_TEMPLATE.md`. Under **Model attestation**,
   write the model identifier and tick neither box: the human who reviews and opens the PR
   ticks one. An agent never attests for a human.
+- A new skill or a write-path change ships only after its live end-to-end round meets the bar
+  ("Testing new and updated skills"). The orchestrator puts the round results under **Testing**:
+  model, build, pass rate per scenario and baseline, the held-out prompt, cost, cleanup.
 - Base branch: `develop` for content, `main` for the promotion PR and repo mechanics.
 - A new or renamed skill directory needs its own line in `.github/CODEOWNERS` in the same PR;
   `scripts/check-codeowners.py` fails CI otherwise.
@@ -146,14 +219,22 @@ trusting a change. When adding a skill, add a case whose prompt should trigger i
   read in place. A release reaches a Workspace when its clone checks out the new commit: at
   launch on Domino 6.3 with `updateSkillsOnLaunch`, and only through a newer image on Domino
   Cloud. Laptops on the Anthropic marketplace get it once Anthropic advances its pin.
-- `SKILL_AUDIT.md` is from May 2026 and stale; do not treat it as current.
-- Claude Code invokes a plugin skill by its **directory** name (`dominodatalab:jobs` for
-  `skills/jobs/`), not its frontmatter `name` (`domino-jobs`). Twenty skills still differ, so
-  eval `skill-fired` graders accept both forms. An agent's `skills:` preload list, by
-  contrast, resolves the frontmatter `name` (`domino-apps` works; an unknown name is skipped
-  silently, which is how `domino-app-deployment` went unnoticed).
-- `mcp-servers/domino_mcp_server` needs `mcp<2`; mcp 2.x renamed `FastMCP` and the server dies
-  on import. Check it starts with `claude --plugin-dir . mcp list` (expect `✔ Connected`).
+- Every skill's directory name equals its frontmatter `name` (`skills/domino-jobs/` is
+  `domino-jobs`), and `scripts/lint-skills.py` fails otherwise. This matters across hosts:
+  Claude Code invokes a plugin skill by its directory name (`dominodatalab:domino-jobs`), Codex
+  and Gemini CLI by `name`, and Agent Plugins clients skip a skill whose two differ. An agent's
+  `skills:` preload list resolves the frontmatter `name`; an unknown name is skipped silently.
+- `SKILL.md` stays at or under 8,000 bytes (lint-enforced): Codex truncates the rest when it
+  loads the skill. Put detail in sibling reference files and link them from `SKILL.md`.
+- `mcp-servers/domino_mcp_server` runs on the official `mcp` SDK 2.x server class
+  (`mcp>=2.3,<3`, `from mcp.server import MCPServer`); the SDK's own `mcp.server.fastmcp` no
+  longer exists in 2.x and the standalone `fastmcp` package is deliberately not a dependency.
+  Register tools with the server's `@_tool` decorator: it passes the whole docstring, dedented,
+  as the tool description, so the `Args:` and `Returns:` sections the skills document
+  (`commitId`, `run_id`, conflicts) reach clients whatever the SDK's default becomes. Raise
+  `DominoError` (a `ToolError`) for failures the model should read: the SDK masks the text of
+  any other exception. Check it starts with `claude --plugin-dir . mcp list` (expect
+  `✔ Connected`).
 
 ## Domino API, SDK, and platform skills
 

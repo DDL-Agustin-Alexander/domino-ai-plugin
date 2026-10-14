@@ -9,9 +9,13 @@
         "domino_mcp_server.py"
       ],
       "env": {
-        "DOMINO_API_KEY": "${DOMINO_API_KEY}",
-        "DOMINO_HOST": "${DOMINO_HOST}"
+        "DOMINO_HOST": "${DOMINO_HOST}",
+        "DOMINO_TOKEN": "${DOMINO_TOKEN}"
       }
+    },
+    "domino_docs": {
+      "type": "http",
+      "url": "https://docs.domino.ai/mcp"
     }
   }
 }

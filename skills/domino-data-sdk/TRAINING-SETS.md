@@ -1,248 +1,153 @@
-# Domino Training Sets
+# TrainingSets
 
-Training Sets provide versioned, reproducible datasets for machine learning. The `training_sets` module enables programmatic management of training data.
+A TrainingSet is a named, versioned collection of training DataFrames with column roles (key,
+target, excluded, categorical, timestamp, ordinal) and free-form metadata. Versions are what
+Model Monitoring uses as the training baseline. Each version is stored as Parquet under
+`DOMINO_TRAINING_SET_PATH` (default `/var/opt/domino/trainingset/project`), a volume Domino
+mounts into executions, so creating and loading versions only works inside a Domino execution
+in the owning Project (`DOMINO_PROJECT_ID`).
 
-## Overview
+Docs: https://docs.domino.ai/cloud/reference/api/data_api/trainingsets_usecases (create,
+retrieve, update, delete, custom authentication). Source:
+`domino_data/training_sets/client.py` and `model.py`.
 
-Training Sets help you:
-- Version your training data for reproducibility
-- Track schema and metadata across versions
-- Query and filter training set versions
-- Integrate with ML pipelines
+## Import
 
-## Installation
+`domino_data.training_sets` is a package with an empty `__init__`; import the modules:
 
 ```python
-from domino_data.training_sets import (
-    create_training_set_version,
-    get_training_set,
-    get_training_set_version,
-    list_training_sets,
-    list_training_set_versions,
-    update_training_set,
-    update_training_set_version,
-    delete_training_set,
-    delete_training_set_version
-)
+from domino_data.training_sets import client as ts, model
+# or, through python-domino: from domino.training_sets import TrainingSetClient as ts, model
 ```
 
-## Create Training Set Version
+The functions below live in `client`; the dataclasses in `model`.
+
+## Create a version
 
 ```python
 import pandas as pd
-from domino_data.training_sets import create_training_set_version
 
-# Prepare your training data
-df = pd.DataFrame({
-    "customer_id": [1, 2, 3, 4, 5],
-    "feature_a": [0.1, 0.2, 0.3, 0.4, 0.5],
-    "feature_b": [10, 20, 30, 40, 50],
-    "label": [1, 0, 1, 0, 1]
-})
-
-# Create a new version
-version = create_training_set_version(
-    training_set_name="customer-churn-model",
-    df=df,
-    key_columns=["customer_id"],
-    description="Initial training data - Q1 2024"
+version = ts.create_training_set_version(
+    training_set_name="customer-churn",          # ^[-A-Za-z0-9_]+$ ; created on first use
+    df=df,                                        # pandas DataFrame
+    description="Q3 2026 features",
+    key_columns=["customer_id"],                  # row identifiers; dropped from training data
+    target_columns=["churned"],                   # prediction targets
+    exclude_columns=["notes"],                    # dropped from training data
+    monitoring_meta=model.MonitoringMeta(
+        timestamp_columns=["event_ts"],
+        categorical_columns=["churned", "plan"],  # a classification target must be listed here
+        ordinal_columns=["tier"],                 # not used by Model Monitoring
+    ),
+    meta={"source": "warehouse", "quarter": "2026Q3"},
 )
-
-print(f"Created version: {version.number}")
+print(version.number)
 ```
 
-### Parameters
+Every column not named in `key_columns`, `exclude_columns` or `monitoring_meta` is treated as
+numerical. Naming a column the DataFrame lacks raises `SchemaMismatchException`. Versions in a
+TrainingSet must come from the same Project. A TrainingSet without `monitoring_meta` cannot be
+selected as a monitoring baseline for a classification model.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `training_set_name` | str | Name of the training set |
-| `df` | DataFrame | Training data |
-| `key_columns` | List[str] | Columns that uniquely identify rows |
-| `description` | str | Version description |
-
-## Get Training Set
+## Retrieve
 
 ```python
-from domino_data.training_sets import get_training_set
+t = ts.get_training_set("customer-churn")        # model.TrainingSet
+print(t.name, t.project_id, t.description, t.meta)
 
-# Retrieve training set metadata
-ts = get_training_set("customer-churn-model")
-
-print(f"Name: {ts.name}")
-print(f"Created: {ts.created_at}")
-print(f"Versions: {ts.version_count}")
+v = ts.get_training_set_version("customer-churn", 2)   # model.TrainingSetVersion
+print(v.number, v.description, v.key_columns, v.target_columns, v.all_columns, v.meta)
+raw_df = v.load_raw_pandas()            # every column
+train_df = v.load_training_pandas()     # without key_columns and exclude_columns
 ```
 
-## Get Specific Version
+`TrainingSet` fields: `name`, `project_id`, `description`, `meta`. `TrainingSetVersion` fields:
+`training_set_name`, `number`, `description`, `key_columns`, `target_columns`,
+`exclude_columns`, `all_columns`, `monitoring_meta`, `meta`, `path`, `container_path`,
+`pending`, plus the `absolute_container_path` property. There is no `created_at`,
+`version_count` or `row_count`; compute row counts from the loaded DataFrame.
+
+## List and search
 
 ```python
-from domino_data.training_sets import get_training_set_version
-
-# Get version by number
-version = get_training_set_version(
-    training_set_name="customer-churn-model",
-    number=1
+sets = ts.list_training_sets(meta={"source": "warehouse"}, asc=True, offset=0, limit=10000)
+versions = ts.list_training_set_versions(
+    training_set_name="customer-churn",
+    meta={"quarter": "2026Q3"},              # version metadata, all keys must match
+    training_set_meta={"source": "warehouse"},
+    asc=False, offset=0, limit=50,
 )
-
-print(f"Version: {version.number}")
-print(f"Description: {version.description}")
-print(f"Row count: {version.row_count}")
+latest = versions[0].number if versions else None
 ```
 
-## List Training Sets
+Results are scoped to the current Project.
+
+## Update
 
 ```python
-from domino_data.training_sets import list_training_sets
+t = ts.get_training_set("customer-churn")
+t.description = "widget transactions"
+t.meta = {**t.meta, "region": "west"}
+t = ts.update_training_set(t)
 
-# List all training sets
-all_sets = list_training_sets()
-
-for ts in all_sets:
-    print(f"{ts.name}: {ts.version_count} versions")
-
-# Filter with metadata
-filtered = list_training_sets(
-    meta={"project": "churn-prediction"},
-    asc=False,
-    offset=0,
-    limit=10
-)
+v = ts.get_training_set_version("customer-churn", 2)
+v.description = "2026 transactions"
+v.meta = {**v.meta, "status": "final"}
+v = ts.update_training_set_version(v)
 ```
 
-## List Versions
+The attribute is `meta`, not `metadata`.
+
+## Delete
 
 ```python
-from domino_data.training_sets import list_training_set_versions
+ts.delete_training_set_version("customer-churn", 2)    # True on success
+ts.delete_training_set("customer-churn")               # only when no versions remain
 
-# List all versions of a training set
-versions = list_training_set_versions(
-    training_set_name="customer-churn-model"
-)
-
-for v in versions:
-    print(f"v{v.number}: {v.description}")
-
-# Filter versions
-recent = list_training_set_versions(
-    training_set_name="customer-churn-model",
-    meta={"status": "production"},
-    asc=False,
-    limit=5
-)
+for v in ts.list_training_set_versions(training_set_name="old-set"):
+    ts.delete_training_set_version(v.training_set_name, v.number)
+ts.delete_training_set("old-set")
 ```
 
-## Update Training Set
+## Authentication
+
+The client reads `DOMINO_API_HOST` (or `DOMINO_USER_HOST`) for the host and authenticates with
+`DOMINO_API_PROXY`, then `DOMINO_TOKEN_FILE`, then `DOMINO_USER_API_KEY` (deprecated); all are
+injected in executions. It has no `token=` parameter. Domino endpoints receive none of these,
+so load training data for an endpoint at build time or from a Dataset instead.
+
+## Errors
 
 ```python
-from domino_data.training_sets import update_training_set
-
-# Update metadata
-ts = get_training_set("customer-churn-model")
-ts.description = "Updated description"
-ts.meta = {"project": "churn-v2", "team": "ml-ops"}
-
-update_training_set(ts)
-```
-
-## Update Version
-
-```python
-from domino_data.training_sets import update_training_set_version
-
-# Update version metadata
-version = get_training_set_version("customer-churn-model", 1)
-version.description = "Production training data"
-version.meta = {"status": "production"}
-
-update_training_set_version(version)
-```
-
-## Delete Training Set
-
-```python
-from domino_data.training_sets import delete_training_set
-
-# Only works if no versions exist
-delete_training_set("old-training-set")
-```
-
-## Delete Version
-
-```python
-from domino_data.training_sets import delete_training_set_version
-
-# Delete specific version
-delete_training_set_version(
-    training_set_name="customer-churn-model",
-    number=1
-)
-```
-
-## Error Handling
-
-```python
-from domino_data.training_sets import (
-    ServerException,
-    SchemaMismatchException
-)
+from domino_data.training_sets.client import ServerException, SchemaMismatchException
 
 try:
-    version = create_training_set_version(
-        training_set_name="my-data",
-        df=df,
-        key_columns=["id"]
-    )
-except SchemaMismatchException:
-    print("DataFrame columns don't match existing schema")
+    ts.create_training_set_version(training_set_name="my-set", df=df, key_columns=["id"])
+except SchemaMismatchException as e:
+    print(e)                       # "DataFrame missing columns: {...}"
 except ServerException as e:
-    print(f"Server rejected request: {e}")
+    print(e.message, e.server_msg) # message and the server's errors list
 ```
 
-## Best Practices
+`ValueError` is raised for a name outside `[-A-Za-z0-9_]`.
 
-1. **Meaningful names**: Use descriptive training set names
-2. **Key columns**: Always specify columns that uniquely identify rows
-3. **Versioning**: Create new versions for each training run
-4. **Metadata**: Use `meta` field for filtering and organization
-5. **Descriptions**: Document what changed in each version
-6. **Schema consistency**: Maintain consistent columns across versions
+## Patterns
 
-## Common Patterns
-
-### Training Pipeline Integration
+Tie a version to an experiment run (domino-experiment-tracking skill):
 
 ```python
-from domino_data.training_sets import (
-    create_training_set_version,
-    get_training_set_version
-)
 import mlflow
 
-# Create training version
-version = create_training_set_version(
-    training_set_name="model-training-data",
-    df=training_df,
-    key_columns=["id"],
-    description=f"Training run {mlflow.active_run().info.run_id}"
+version = ts.create_training_set_version(
+    training_set_name="model-training-data", df=train_df, key_columns=["id"],
+    target_columns=["label"], description=f"run {mlflow.active_run().info.run_id}",
 )
-
-# Log to MLflow
 mlflow.log_param("training_set_version", version.number)
 ```
 
-### Data Validation
+Validate before versioning:
 
 ```python
-# Validate before creating version
-def validate_training_data(df):
-    assert not df.isnull().any().any(), "No nulls allowed"
-    assert len(df) > 100, "Need at least 100 samples"
-    return True
-
-if validate_training_data(df):
-    create_training_set_version(
-        training_set_name="validated-data",
-        df=df,
-        key_columns=["id"]
-    )
+assert not df.isnull().any().any(), "nulls present"
+assert len(df) >= 100, "too few rows"
 ```

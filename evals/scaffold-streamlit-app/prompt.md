@@ -1,6 +1,6 @@
 ---
 description: A converted command (domino-app-init) fires from natural phrasing and writes a proxy-safe app.sh.
-tags: [converted-command, apps]
+tags: [trigger, converted-command, apps, domino-app-init]
 max_turns: 15
 allowed_tools: [Read, Glob, Grep, Skill, Write]
 ---

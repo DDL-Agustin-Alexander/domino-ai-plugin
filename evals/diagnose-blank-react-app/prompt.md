@@ -1,6 +1,6 @@
 ---
 description: Proxy debugging finds every misconfiguration in a seeded Vite app without editing files.
-tags: [converted-command, apps]
+tags: [trigger, converted-command, apps, domino-debug-proxy, domino-apps]
 max_turns: 15
 allowed_tools: [Read, Glob, Grep, Skill]
 ---

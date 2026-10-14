@@ -23,9 +23,8 @@ def setup_experiment(base_name: str = "experiment") -> str:
     """
     Set up a Domino-compatible MLflow experiment.
 
-    IMPORTANT: Experiment names must be unique across the entire Domino
-    deployment, not just your project. This function automatically appends
-    username and project name to ensure uniqueness.
+    Experiment names are unique across the whole Domino deployment, not per
+    project, so this function appends the project name and username.
 
     Args:
         base_name: Base name for the experiment
@@ -52,14 +51,15 @@ def log_domino_context():
     Call this at the start of each run to capture:
     - User who started the run
     - Project name
-    - Domino run ID
-    - Hardware tier used
+    - Domino run ID and run number
+    - Hardware tier id (DOMINO_HARDWARE_TIER_ID)
     """
     mlflow.set_tags({
         "domino.user": os.environ.get('DOMINO_STARTING_USERNAME', 'unknown'),
         "domino.project": os.environ.get('DOMINO_PROJECT_NAME', 'unknown'),
         "domino.run_id": os.environ.get('DOMINO_RUN_ID', 'unknown'),
-        "domino.hardware_tier": os.environ.get('DOMINO_HARDWARE_TIER_NAME', 'unknown'),
+        "domino.run_number": os.environ.get('DOMINO_RUN_NUMBER', 'unknown'),
+        "domino.hardware_tier": os.environ.get('DOMINO_HARDWARE_TIER_ID', 'unknown'),
     })
 
 
