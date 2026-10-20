@@ -14,7 +14,7 @@ Docs: https://docs.domino.ai/cloud/platform-capabilities/features/compute-cluste
 
 ## Is Slurm available here?
 
-Ask the platform, not the Workspace. `GET /v4/dataplanes/dataplanes` (non-public route; may change in a future Domino version, see [route types](../domino-api-intro/SKILL.md#route-types)) lists the data planes with `status.supportsSlurm`; `GET /api/hpc/v1/jobs/submit-supported?projectId=&dataPlaneId=` says whether this Project can submit there. A Workspace without `sbatch` only means no cluster is attached. Offer to attach a cluster only when a Slurm-enabled plane exists; with none, Slurm is an administrator task.
+Ask the platform, not the Workspace. `GET /v4/dataplanes/dataplanes` (non-public route; may change in a future Domino version, see [route types](../domino-api-intro/SKILL.md#route-types)) lists the data planes with `status.supportsSlurm`; `GET /api/hpc/v1/jobs/submit-supported?projectId=&dataPlaneId=` says whether this Project can submit there. Offer to attach a cluster only when a Slurm-enabled plane exists; with none, Slurm is an administrator task.
 
 ## Prerequisites
 
@@ -31,7 +31,7 @@ Usernames have to be valid Linux usernames (`^[a-z_][a-z0-9_-]{0,31}`), or the l
 
 Terminal: `sinfo` (zero nodes when idle is normal), `sbatch job.sh` (prints the job id), `squeue -j <id>` (`PD` pending while workers provision, `R` running, empty = done), `scontrol show job <id>` while queued or running, `sacct -j <id>` after completion (filter by job, user or time, never `sacct -a`), `scancel <id>`.
 
-Resource requests go in `#SBATCH` header lines or as `sbatch` options (`--time`, `--cpus-per-task`, `--mem`), which override the header. Arrays: `--array=0-9` plus `$SLURM_ARRAY_TASK_ID` in each task's output path. Dependencies: `--dependency=afterok:<id>` (`afterany`, `afternotok`). Domino overrides `--output` and `--error` to collect the logs, so redirect inside the script to the Dataset; workers neither read nor write the Workspace files, so code and inputs live in the Dataset too. Write a real Dataset name (with several, the one holding the inputs or the Project's default; say which) and never leave `<...>` in a script: angle brackets are shell redirections, so it will not parse. Start every script with `umask 077`: worker nodes and their Unix group are shared between users, so files are readable by others otherwise.
+Resource requests go in `#SBATCH` header lines or as `sbatch` options (`--time`, `--cpus-per-task`, `--mem`), which override the header. Arrays: `--array=0-9` plus `$SLURM_ARRAY_TASK_ID` in each task's output path. Dependencies: `--dependency=afterok:<id>` (`afterany`, `afternotok`). Domino overrides `--output` and `--error` to collect the logs, so redirect inside the script to the Dataset; workers neither read nor write the Workspace files, so code and inputs live in the Dataset too. Write a real Dataset name (with several, the one holding the inputs or the Project's default; say which); never leave `<...>` in a script, since angle brackets are shell redirections. Start every script with `umask 077`: workers and their Unix group are shared between users, so files are otherwise readable by others.
 
 ```bash
 #!/bin/bash
@@ -44,7 +44,7 @@ D=/domino/datasets/local/my-dataset     # a Dataset of the Project: ls $DOMINO_D
 
 ## Path 2: HPC Jobs through the API
 
-The **HPC** tab on the Project's Jobs page lists every HPC Job. Its **Run** button and the API below need the `ShortLived.EnableHPCJobs` feature flag, set by the administrator; `sbatch` in a Workspace needs no flag.
+The **HPC** tab on the Project's Jobs page lists every HPC Job. Its **Run** button needs the `ShortLived.EnableHPCJobs` feature flag; it and the API below need a Slurm partition the administrator sets up for the Project on the target data plane (a preview on Domino 6.3). `sbatch` in a Workspace needs neither.
 
 Call `submit-supported` first (`dataPlaneId` required); on `false` stop and report, do not start: a start there is a 500 `(503) Unexpected response code`, creates nothing and fails again on retry.
 
@@ -68,7 +68,7 @@ requests.post(f"{base}/api/hpc/v1/jobs", json={**q, "filePath": "hpc/sweep.sh", 
 ## Limitations
 
 - The cluster attaches at Workspace launch; a standard Job cannot carry a Slurm cluster; submit through `/api/hpc/v1/jobs`.
-- Workers reach Datasets only: no Data Sources, no NetApp Volumes.
+- Workers reach Datasets and NetApp Volumes: no Data Sources.
 - No interactive or scheduled Slurm jobs; no external Slurm clusters.
 - Jobs of different users share worker nodes and one Unix group, unsandboxed, so every script sets `umask 077`.
 
