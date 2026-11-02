@@ -27,8 +27,8 @@ organization runs ONTAP. Differences:
   cannot be cloned into a new volume (volumes can be copied for Project Templates).
 - NetApp Volumes need ONTAP infrastructure and an administrator-registered filesystem;
   Domino sets no volume size limit (the ONTAP volume type does). Limits exist on snapshots
-  per volume (`maxSnapshots` on the volume) and volumes per filesystem (`maxVolumes`, 490
-  by default from 6.4).
+  per volume (`maxSnapshots`) and, on some deployments, volumes per filesystem
+  (`maxVolumes`; [Which path applies](#which-path-applies)).
 
 Comparison and examples: [DATA-ACCESS.md](./DATA-ACCESS.md).
 
@@ -46,13 +46,19 @@ From Domino (then add it to projects manually) or from inside a project (auto-at
 1. **Data > NetApp Volumes** (toolbar, or a project's left panel).
 2. **Add NetApp Volume > Create Volume**.
 3. **Name** (letters, numbers, underscores, hyphens), **Description**, **Data Plane**,
-   **Capacity**; 6.3, or 6.4 with manual selection enabled, also asks for the **NetApp
-   Filesystem** ([TROUBLESHOOTING.md](./TROUBLESHOOTING.md#409-filesystem-full)). **Next**.
+   **Capacity**, and a **NetApp Filesystem** where asked ([Which path applies](#which-path-applies)). **Next**.
 4. Add users or organizations with a **Reader**, **Editor** or **Owner** role. **Finish**.
 
 REST: `POST /remotefs/v1/volumes` with `name`, `capacity` (bytes), `grants` and
-`filesystemId`, or (6.4+) `dataPlaneId` for automatic placement
-([API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#create-a-volume)).
+`filesystemId` or `dataPlaneId` ([API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#create-a-volume)).
+
+## Which path applies
+
+Run `curl -s "$DOMINO_API_HOST/version"`. `6.3.x`: creates need `filesystemId`; no volume
+cap. Domino 7.0 and later, and Domino Cloud where filesystems carry `maxVolumes`:
+`dataPlaneId` alone lets Domino pick a filesystem with room, each filesystem caps its
+volumes (full: `409`), and the UI asks for a filesystem only if an admin enabled manual
+selection.
 
 ## Attach, detach, delete
 
@@ -92,12 +98,9 @@ permanent and needs delete permission on the volume. Docs:
 https://docs.domino.ai/cloud/platform-capabilities/core-concepts/data/datasets/version-data-with-snapshots.
 
 REST: `POST /remotefs/v1/snapshots` (`volumeId`, `description` as the commit message,
-`tagNames`), `POST /remotefs/v1/snapshots/{id}/tags`, `PUT /remotefs/v1/snapshots/{id}`,
-`/rpc/restore-snapshot`, `/rpc/delete-snapshot`
-([API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#snapshots)). `/rpc/create-snapshot-from-run`
-is super-user only (403 otherwise); to snapshot at the end of a job use
-`snapshotNetAppVolumesOnCompletion` where enabled, or `POST /remotefs/v1/snapshots` from
-the job.
+`tagNames`); tag, edit, restore, delete and end-of-job snapshots:
+[API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#snapshots). `/rpc/create-snapshot-from-run`
+is super-user only (403 otherwise).
 
 ## Roles
 
@@ -107,21 +110,19 @@ the job.
 | Editor | `VolumeEditor` | Reader plus write data, edit the description, take and delete snapshots, mount, mark for deletion or restore |
 | Owner | `VolumeOwner` | Editor plus change who has access and their roles (grants), request volume deletion |
 
-Edit permissions: three-dot menu on the volume, **Edit permissions**, or **Share** on the
-details page. REST: `PUT /remotefs/v1/volumes/{id}/grants`.
+Edit permissions: three-dot menu, **Edit permissions**, or **Share** on the details page. REST: `PUT /remotefs/v1/volumes/{id}/grants`.
 
 ## Volumes in Jobs
 
-`POST /api/jobs/v1/jobs` takes `netAppVolumeIds` (volume ids to mount) and
-`snapshotNetAppVolumesOnCompletion: true` to snapshot every mounted volume when the job
-ends; the latter needs a feature flag (400 where off). Body:
+`POST /api/jobs/v1/jobs` takes `netAppVolumeIds` (ids to mount); snapshotting every
+mounted volume when the job ends needs a deployment flag. Body:
 [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md#mount-volumes-in-a-job).
 
 ## Reference files
 
 - [API-NETAPP-VOLUMES.md](./API-NETAPP-VOLUMES.md): REST API with request bodies (volumes, filesystems, attach/detach, snapshots, tags, grants, deletion, listing, files, jobs)
 - [DATA-ACCESS.md](./DATA-ACCESS.md): comparison with Datasets, mount paths, snapshot mounting, read/write examples, best practices
-- [TROUBLESHOOTING.md](./TROUBLESHOOTING.md): missing mounts, permission errors, tag paths, missing or full filesystems (409), slow reads
+- [TROUBLESHOOTING.md](./TROUBLESHOOTING.md): missing mounts, permissions, tag paths, missing or full filesystems, slow reads
 
 ## Documentation
 

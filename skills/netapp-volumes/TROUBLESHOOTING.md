@@ -36,8 +36,8 @@ for your data plane; ask your Domino administrator
 
 ## 409 filesystem full
 
-Domino 6.4 caps volumes per filesystem (`maxVolumes` on the filesystem record, 490 by
-default; `numVolumes` is the current count).
+Where filesystems carry a volume cap ([Which path applies](./SKILL.md#which-path-applies)),
+`maxVolumes` on the filesystem record is the cap and `numVolumes` the current count.
 
 - `POST /remotefs/v1/volumes` with a `filesystemId` returns
   `409 filesystem has reached its maximum number of volumes`: pick another filesystem on
@@ -45,7 +45,8 @@ default; `numVolumes` is the current count).
   places the volume automatically.
 - `409 no filesystem on the data plane has capacity for another volume` from automatic
   placement: every filesystem on that data plane is full; an administrator registers
-  another one or raises `maxVolumes` with `PUT /remotefs/v1/filesystems/{id}`.
+  another one or raises a filesystem's `maxVolumes`
+  ([Change a filesystem setting](./API-NETAPP-VOLUMES.md#change-a-filesystem-setting)).
 - `bulk-copy-volumes-to-project` reports a full `targetFilesystemId` as `status: 409` on
   that item only; drop `targetFilesystemId` to let the copy fall back to an automatically
   selected filesystem.
